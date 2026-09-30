@@ -1,18 +1,33 @@
 use atlas_agentic::{
-    agents::{AgentRegistry, ChatAgent},
+    agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     handle_command, AppResult, Runtime,
 };
 
 struct FakeModel;
 
 impl atlas_agentic::models::ModelProvider for FakeModel {
-    fn complete(&self, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
-        Ok(format!("{system_prompt} | {user_prompt}"))
+    fn complete(&self, request: &atlas_agentic::models::ModelRequest) -> Result<String, String> {
+        Ok(format!(
+            "{} | {}",
+            request.system_prompt, request.user_prompt
+        ))
     }
 }
 
 fn test_runtime() -> Runtime {
-    Runtime::new(AgentRegistry::new(vec![Box::new(ChatAgent::new(
+    let definition = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "deepseek-flash"
+system_prompt = "You are Atlas, the default local agent."
+"#,
+    )
+    .unwrap();
+
+    Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition,
         Box::new(FakeModel),
     ))]))
 }
@@ -33,6 +48,6 @@ fn ask_command_returns_agent_response() {
 
     assert_eq!(
         result.unwrap(),
-        AppResult::Message("You are Atlas, a helpful AI companion. | hello atlas".to_string())
+        AppResult::Message("You are Atlas, the default local agent. | hello atlas".to_string())
     );
 }

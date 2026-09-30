@@ -6,10 +6,12 @@ This file tells coding agents what this repo is and how to work in it.
 
 Atlas Agentic is a Rust project for a desktop-first AI agent system.
 
+Read `RULE.md` before changing agent, provider, runtime, or tool architecture.
+
 The first product idea is a Jev-like router that chooses which agent should process a user task. The router is not the worker. It only selects the agent name.
 
 Current state: minimal Rust CLI skeleton.
-Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the default `chat_agent`. The `chat_agent` calls a `ModelProvider`. The real CLI uses `DeepSeekProvider`; tests use fake providers.
+Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the default local Atlas agent loaded from `agents/atlas.toml`. `LocalAgent` calls a `ModelProvider`. The provider is selected from the local agent definition.
 
 ## Current Repo Structure
 
@@ -20,19 +22,30 @@ Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the defa
 ├── README.md
 ├── VISION.md
 ├── AGENTS.md
+├── agents
+│   └── atlas.toml
 ├── src
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── runtime.rs
+│   ├── agent_output.rs
 │   ├── agents
 │   │   ├── mod.rs
-│   │   └── chat.rs
-│   └── models
+│   │   └── local.rs
+│   ├── models
 │       ├── mod.rs
 │       └── deepseek.rs
+│   └── tools
+│       ├── mod.rs
+│       ├── create_file.rs
+│       ├── list_dir.rs
+│       └── pwd.rs
 └── tests
+    ├── agents_behavior.rs
     ├── cli_behavior.rs
-    └── cli_binary.rs
+    ├── cli_binary.rs
+    ├── models_behavior.rs
+    └── tool_call_behavior.rs
 ```
 
 ## Current Code
@@ -47,20 +60,36 @@ Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the defa
 
 `src/runtime.rs` contains the first runtime boundary.
 
+`src/agent_output.rs` parses raw model text into internal Atlas output types.
+
 `src/agents/mod.rs` contains:
 
 - `Agent`
 - `AgentRegistry`
 
-Concrete agents live in separate files:
+Concrete local agent definitions live in `agents/*.toml`.
 
-- `src/agents/chat.rs`: `ChatAgent`
+The default agent is:
 
-Planned future agents such as `CodeAgent` and `PlannerAgent` should only be added when they have behavior beyond a different prompt.
+- `agents/atlas.toml`: Atlas, the default local agent
+
+Rust agent runtime:
+
+- `src/agents/local.rs`: `LocalAgent` and `LocalAgentDefinition`
+
+Planned future agents should start as new local TOML definitions. Add new Rust agent types only when they need behavior beyond a different prompt/config.
 
 `src/models/mod.rs` contains the `ModelProvider` trait.
 
-`src/models/deepseek.rs` contains the DeepSeek chat-completions provider.
+`src/models/mod.rs` also contains the provider factory. `src/models/deepseek.rs` contains the DeepSeek chat-completions provider.
+
+`src/tools/mod.rs` contains the `Tool` trait and registry.
+
+`src/tools/create_file.rs` contains the first safe file creation tool.
+`src/tools/list_dir.rs` contains the safe `ls` workspace listing tool.
+`src/tools/pwd.rs` contains the `pwd` workspace path tool.
+
+Tool definitions are passed to model providers through `ModelRequest.tools`. Do not hard-code tool protocol instructions in `agents/*.toml`.
 
 `tests/cli_behavior.rs` covers the current CLI behavior.
 
@@ -79,6 +108,8 @@ Use this to run the current CLI:
 cargo run -- ask "hello atlas"
 ```
 
+The CLI loads `agents/atlas.toml` by default.
+
 The real CLI needs `DEEPSEEK_API_KEY` for `ask`. It can come from the process environment or a local `.env` file:
 
 ```bash
@@ -92,6 +123,13 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-flash
 ```
 
+Local agent files choose their provider:
+
+```toml
+model_provider = "deepseek"
+model = "deepseek-flash"
+```
+
 ## Near-Term Architecture
 
 The next code phase should introduce explicit agent routing.
@@ -102,17 +140,21 @@ Target structure:
 src/
   main.rs
   lib.rs
-  router.rs
   agents/
     mod.rs
-    chat.rs
-    code.rs
-    planner.rs
-    research.rs
-    memory.rs
+    local.rs
   models/
     mod.rs
     deepseek.rs
+```
+
+Local agent definitions can grow like:
+
+```text
+agents/
+  atlas.toml
+  coder.toml
+  planner.toml
 ```
 
 Keep this simple at first. Do not build a large framework before the router and agent contracts are clear.
@@ -121,7 +163,7 @@ Keep this simple at first. Do not build a large framework before the router and 
 
 The router should choose one agent name for a task.
 
-Initial agent names:
+Planned local agent names:
 
 - `chat_agent`
 - `code_agent`
@@ -165,6 +207,20 @@ Agent
 - Keep routing separate from agent execution.
 - Keep model provider code separate from agent logic.
 - Do not commit API keys or secrets.
+
+## Commit Help
+
+When a coding agent changes files, it should help prepare the commit.
+
+Before committing:
+
+- run `cargo fmt --check`
+- run `cargo test`
+- check `git status --short`
+- summarize the important changed files
+- suggest a clear commit message
+
+If the user asks to commit, create one focused commit for the current task. Do not include `.env`, secrets, `target/`, or unrelated local changes.
 
 ## GitHub CI
 

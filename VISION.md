@@ -49,24 +49,25 @@ Rust core
 
 ## First Phase
 
-Phase 1 builds the agent code structure.
+Phase 1 builds the agent runtime around local agent definitions.
 
 The target is:
 
 ```text
 atlas ask "build a login page"
-  -> router chooses code_agent
-  -> code_agent uses its model/provider
+  -> runtime loads agents/atlas.toml
+  -> Atlas uses its model/provider
   -> response returns to user
 ```
 
-For this phase, the router can be simple rules or a mock Jev-like router. Later it can call a real Jev-compatible decision model.
+For this phase, there is no router. Atlas is the default local agent. Later, the router can choose between multiple local agent definitions.
 
 ## Model Strategy
 
 DeepSeek AI is the first planned worker model for agent processing.
 
 The router chooses an agent name. The selected agent decides how to use its model prompt and provider.
+Local agent definitions declare their provider with `model_provider`, so the runtime is not hard-wired to one model service.
 
 Example:
 

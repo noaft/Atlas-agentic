@@ -16,6 +16,20 @@ fn help_command_does_not_require_deepseek_key() {
 #[test]
 fn ask_command_loads_deepseek_key_from_dotenv() {
     let temp_dir = tempfile::tempdir().unwrap();
+    let agents_dir = temp_dir.path().join("agents");
+    std::fs::create_dir(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("atlas.toml"),
+        [
+            "name = \"atlas\"",
+            "display_name = \"Atlas\"",
+            "model_provider = \"deepseek\"",
+            "model = \"deepseek-flash\"",
+            "system_prompt = \"You are Atlas.\"",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
     std::fs::write(
         temp_dir.path().join(".env"),
         [

@@ -7,8 +7,15 @@ Atlas is being shaped as a desktop-first agent system with a Jev-like router tha
 
 - See [VISION.md](VISION.md) for the system direction.
 - See [AGENTS.md](AGENTS.md) for repo structure and coding-agent guidance.
+- See [RULE.md](RULE.md) for architecture rules.
 
 ## CLI Runtime
+
+The default agent is loaded from:
+
+```text
+agents/atlas.toml
+```
 
 Run help without any model setup:
 
@@ -16,7 +23,7 @@ Run help without any model setup:
 cargo run -- help
 ```
 
-Call DeepSeek through the first `chat_agent` runtime:
+Call DeepSeek through the default local Atlas agent:
 
 ```bash
 export DEEPSEEK_API_KEY="your_api_key_here"
@@ -33,3 +40,18 @@ export DEEPSEEK_MODEL="deepseek-flash"
 ```
 
 Secrets must come from environment variables. Do not hard-code API keys.
+
+Agent files choose the provider:
+
+```toml
+model_provider = "deepseek"
+model = "deepseek-flash"
+```
+
+Atlas can execute structured tool calls from the agent. Tool definitions are passed to the model request at runtime, not hard-coded into the local agent prompt.
+
+Default runtime tools:
+
+- `pwd`: show the current workspace path
+- `ls`: list files and directories inside the workspace
+- `create_file`: create a new file with a relative path

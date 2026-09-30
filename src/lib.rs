@@ -1,6 +1,8 @@
+pub mod agent_output;
 pub mod agents;
 pub mod models;
 pub mod runtime;
+pub mod tools;
 
 pub use runtime::Runtime;
 

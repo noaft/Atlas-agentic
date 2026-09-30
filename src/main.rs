@@ -1,8 +1,10 @@
 use atlas_agentic::{
-    agents::{AgentRegistry, ChatAgent},
+    agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     handle_command,
-    models::deepseek::{DeepSeekConfig, DeepSeekProvider},
-    render, Runtime,
+    models::provider_from_definition,
+    render,
+    tools::{CreateFileTool, ListDirTool, PwdTool, ToolRegistry},
+    Runtime,
 };
 
 fn main() {
@@ -18,16 +20,28 @@ fn main() {
         return;
     }
 
-    let config = match DeepSeekConfig::from_env() {
-        Ok(config) => config,
+    let definition = match LocalAgentDefinition::from_file("agents/atlas.toml") {
+        Ok(definition) => definition,
         Err(error) => {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }
     };
-    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(ChatAgent::new(
-        Box::new(DeepSeekProvider::new(config)),
-    ))]));
+    let provider = match provider_from_definition(&definition) {
+        Ok(provider) => provider,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition, provider,
+    ))]))
+    .with_tools(ToolRegistry::new(vec![
+        Box::new(PwdTool::new(".")),
+        Box::new(ListDirTool::new(".")),
+        Box::new(CreateFileTool::new(".")),
+    ]));
 
     match handle_command(args, &runtime) {
         Ok(result) => println!("{}", render(result)),

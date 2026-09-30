@@ -1,11 +1,15 @@
-mod chat;
+mod local;
 
-pub use chat::ChatAgent;
+pub use local::{LocalAgent, LocalAgentDefinition};
 
 pub trait Agent {
-    fn name(&self) -> &'static str;
-    fn system_prompt(&self) -> &'static str;
-    fn process(&self, input: &str) -> Result<String, String>;
+    fn name(&self) -> &str;
+    fn system_prompt(&self) -> &str;
+    fn process(
+        &self,
+        input: &str,
+        tools: &[crate::tools::ToolDefinition],
+    ) -> Result<String, String>;
 }
 
 pub struct AgentRegistry {
