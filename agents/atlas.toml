@@ -2,6 +2,8 @@ name = "atlas"
 display_name = "Atlas"
 model_provider = "deepseek"
 model = "deepseek-flash"
+temperature = 0.3
+top_p = 0.9
 
 system_prompt = """
 You are Atlas, the default local agent.

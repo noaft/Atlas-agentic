@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
@@ -42,31 +44,11 @@ impl DeepSeekProvider {
 
 impl ModelProvider for DeepSeekProvider {
     fn complete(&self, request: &ModelRequest) -> Result<String, String> {
-        let url = format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
-        let system_prompt = render_model_instructions(request);
-        let request = ChatRequest {
-            model: self.config.model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system",
-                    content: &system_prompt,
-                },
-                ChatMessage {
-                    role: "user",
-                    content: request.user_prompt,
-                },
-            ],
-            stream: false,
-        };
-
         let response = self
             .client
-            .post(url)
+            .post(self.chat_url())
             .bearer_auth(&self.config.api_key)
-            .json(&request)
+            .json(&self.chat_request(request, false))
             .send()
             .map_err(|error| format!("DeepSeek request failed: {error}"))?;
 
@@ -84,6 +66,85 @@ impl ModelProvider for DeepSeekProvider {
             .next()
             .map(|choice| choice.message.content)
             .ok_or_else(|| "DeepSeek returned no choices".to_string())
+    }
+
+    fn stream(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let mut response = self
+            .client
+            .post(self.chat_url())
+            .bearer_auth(&self.config.api_key)
+            .json(&self.chat_request(request, true))
+            .send()
+            .map_err(|error| format!("DeepSeek request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!("DeepSeek returned HTTP {}", response.status()));
+        }
+
+        let mut buffer = String::new();
+        let mut full_response = String::new();
+        let mut bytes = [0_u8; 8192];
+
+        loop {
+            let read = response
+                .read(&mut bytes)
+                .map_err(|error| format!("DeepSeek stream failed: {error}"))?;
+            if read == 0 {
+                break;
+            }
+
+            buffer.push_str(&String::from_utf8_lossy(&bytes[..read]));
+            while let Some(newline) = buffer.find('\n') {
+                let line = buffer[..newline].trim().to_string();
+                buffer = buffer[newline + 1..].to_string();
+
+                if line.is_empty() {
+                    continue;
+                }
+                if line == "data: [DONE]" {
+                    return Ok(full_response);
+                }
+                if let Some(delta) = parse_stream_delta(&line)? {
+                    on_delta(&delta);
+                    full_response.push_str(&delta);
+                }
+            }
+        }
+
+        Ok(full_response)
+    }
+}
+
+impl DeepSeekProvider {
+    fn chat_url(&self) -> String {
+        format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        )
+    }
+
+    fn chat_request(&self, request: &ModelRequest, stream: bool) -> ChatRequest {
+        let system_prompt = render_model_instructions(request);
+        ChatRequest {
+            model: self.config.model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: system_prompt,
+                },
+                ChatMessage {
+                    role: "user",
+                    content: request.user_prompt.to_string(),
+                },
+            ],
+            stream,
+            temperature: request.temperature,
+            top_p: request.top_p,
+        }
     }
 }
 
@@ -118,16 +179,20 @@ pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
 }
 
 #[derive(Serialize)]
-struct ChatRequest<'a> {
+struct ChatRequest {
     model: String,
-    messages: Vec<ChatMessage<'a>>,
+    messages: Vec<ChatMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
 }
 
 #[derive(Serialize)]
-struct ChatMessage<'a> {
-    role: &'a str,
-    content: &'a str,
+struct ChatMessage {
+    role: &'static str,
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -145,12 +210,44 @@ struct AssistantMessage {
     content: String,
 }
 
+#[derive(Deserialize)]
+struct ChatStreamResponse {
+    choices: Vec<ChatStreamChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamChoice {
+    delta: ChatStreamDelta,
+}
+
+#[derive(Deserialize)]
+struct ChatStreamDelta {
+    content: Option<String>,
+}
+
+fn parse_stream_delta(line: &str) -> Result<Option<String>, String> {
+    let Some(data) = line.strip_prefix("data: ") else {
+        return Ok(None);
+    };
+    let response: ChatStreamResponse = serde_json::from_str(data)
+        .map_err(|error| format!("DeepSeek stream response was invalid: {error}"))?;
+
+    Ok(response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.delta.content))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use crate::{
-        models::{deepseek::render_model_instructions, ModelRequest},
+        models::{
+            deepseek::{parse_stream_delta, render_model_instructions},
+            ModelRequest,
+        },
         tools::ToolDefinition,
     };
 
@@ -168,6 +265,8 @@ mod tests {
             system_prompt: "You are Atlas.",
             user_prompt: "Create a file.",
             tools: &tools,
+            temperature: Some(0.2),
+            top_p: Some(0.9),
         };
 
         let prompt = render_model_instructions(&request);
@@ -177,5 +276,13 @@ mod tests {
         assert!(prompt.contains(r#"{"type":"tool_call","tool":"tool_name","args":{}}"#));
         assert!(prompt.contains("Use a tool name exactly as listed below"));
         assert!(prompt.contains("create_file"));
+    }
+
+    #[test]
+    fn parses_stream_delta_line() {
+        let delta =
+            parse_stream_delta(r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#).unwrap();
+
+        assert_eq!(delta, Some("hello".to_string()));
     }
 }

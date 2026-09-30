@@ -1,10 +1,12 @@
+use std::io::Write;
+
 use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     handle_command,
     models::provider_from_definition,
     render,
     tools::{CreateFileTool, ListDirTool, PwdTool, ToolRegistry},
-    Runtime,
+    AppResult, Runtime,
 };
 
 fn main() {
@@ -44,6 +46,21 @@ fn main() {
     ]));
 
     match handle_command(args, &runtime) {
+        Ok(AppResult::Stream { prompt }) => {
+            let mut stdout = std::io::stdout();
+            let result = runtime.ask_stream(&prompt, &mut |delta| {
+                print!("{delta}");
+                let _ = stdout.flush();
+            });
+
+            match result {
+                Ok(_) => println!(),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Ok(result) => println!("{}", render(result)),
         Err(error) => {
             eprintln!("Error: {error}");

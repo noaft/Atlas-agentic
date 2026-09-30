@@ -22,6 +22,8 @@ name = "atlas"
 display_name = "Atlas"
 model_provider = "fake"
 model = "deepseek-flash"
+temperature = 0.3
+top_p = 0.8
 system_prompt = "You are Atlas, the default local agent."
 "#,
     )
@@ -29,6 +31,8 @@ system_prompt = "You are Atlas, the default local agent."
     let agent = LocalAgent::new(definition, Box::new(EchoModel));
 
     assert_eq!(agent.name(), "atlas");
+    assert_eq!(agent.definition().temperature, Some(0.3));
+    assert_eq!(agent.definition().top_p, Some(0.8));
     assert_eq!(
         agent.system_prompt(),
         "You are Atlas, the default local agent."
@@ -37,6 +41,22 @@ system_prompt = "You are Atlas, the default local agent."
         agent.process("hello", &[]).unwrap(),
         "You are Atlas, the default local agent. | hello"
     );
+}
+
+#[test]
+fn rejects_agent_definition_with_invalid_temperature() {
+    let result = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+temperature = 3.0
+system_prompt = "Invalid temperature."
+"#,
+    );
+
+    assert_eq!(result.unwrap_err(), "temperature must be between 0 and 2");
 }
 
 #[test]

@@ -10,6 +10,12 @@ pub trait Agent {
         input: &str,
         tools: &[crate::tools::ToolDefinition],
     ) -> Result<String, String>;
+    fn process_stream(
+        &self,
+        input: &str,
+        tools: &[crate::tools::ToolDefinition],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String>;
 }
 
 pub struct AgentRegistry {

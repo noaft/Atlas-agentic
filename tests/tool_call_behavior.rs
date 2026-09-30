@@ -44,6 +44,36 @@ impl ModelProvider for ToolAwareModel {
     }
 }
 
+struct StreamingModel;
+
+impl ModelProvider for StreamingModel {
+    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
+        Ok("hello world".to_string())
+    }
+
+    fn stream(
+        &self,
+        _request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        on_delta("hello");
+        on_delta(" ");
+        on_delta("world");
+        Ok("hello world".to_string())
+    }
+}
+
+struct SamplingAwareModel;
+
+impl ModelProvider for SamplingAwareModel {
+    fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+        Ok(format!(
+            "temperature={:?}; top_p={:?}",
+            request.temperature, request.top_p
+        ))
+    }
+}
+
 fn definition() -> LocalAgentDefinition {
     LocalAgentDefinition::from_toml(
         r#"
@@ -164,6 +194,46 @@ fn runtime_passes_registered_tools_to_model_request() {
     let result = runtime.ask("what tools exist?").unwrap();
 
     assert_eq!(result, "create_file,ls,pwd tools available");
+}
+
+#[test]
+fn runtime_passes_agent_sampling_settings_to_model_request() {
+    let definition = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+temperature = 0.2
+top_p = 0.7
+system_prompt = "You are Atlas."
+"#,
+    )
+    .unwrap();
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition,
+        Box::new(SamplingAwareModel),
+    ))]));
+
+    let result = runtime.ask("sampling?").unwrap();
+
+    assert_eq!(result, "temperature=Some(0.2); top_p=Some(0.7)");
+}
+
+#[test]
+fn runtime_streams_model_deltas_and_returns_final_message() {
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(StreamingModel),
+    ))]));
+    let mut deltas = Vec::new();
+
+    let result = runtime
+        .ask_stream("hello", &mut |delta| deltas.push(delta.to_string()))
+        .unwrap();
+
+    assert_eq!(deltas, vec!["hello", " ", "world"]);
+    assert_eq!(result, "hello world");
 }
 
 #[test]

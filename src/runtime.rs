@@ -28,4 +28,19 @@ impl Runtime {
 
         self.tools.execute(&output).map(|result| result.message)
     }
+
+    pub fn ask_stream(
+        &self,
+        prompt: &str,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let response = self
+            .agents
+            .default_agent()
+            .ok_or_else(|| "no agent is registered".to_string())?
+            .process_stream(prompt, &self.tools.definitions(), on_delta)?;
+        let output = AgentOutput::parse(&response)?;
+
+        self.tools.execute(&output).map(|result| result.message)
+    }
 }

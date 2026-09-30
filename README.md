@@ -30,6 +30,12 @@ export DEEPSEEK_API_KEY="your_api_key_here"
 cargo run -- ask "hello atlas"
 ```
 
+Stream the model response as chunks arrive:
+
+```bash
+cargo run -- ask --stream "hello atlas"
+```
+
 You can also put the same values in a local `.env` file. Start from `.env.example`; the real `.env` file is ignored by git.
 
 Optional configuration:
@@ -46,6 +52,8 @@ Agent files choose the provider:
 ```toml
 model_provider = "deepseek"
 model = "deepseek-flash"
+temperature = 0.3
+top_p = 0.9
 ```
 
 Atlas can execute structured tool calls from the agent. Tool definitions are passed to the model request at runtime, not hard-coded into the local agent prompt.

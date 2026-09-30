@@ -51,3 +51,16 @@ fn ask_command_returns_agent_response() {
         AppResult::Message("You are Atlas, the default local agent. | hello atlas".to_string())
     );
 }
+
+#[test]
+fn ask_stream_command_returns_stream_request() {
+    let runtime = test_runtime();
+    let result = handle_command(["ask", "--stream", "hello atlas"], &runtime);
+
+    assert_eq!(
+        result.unwrap(),
+        AppResult::Stream {
+            prompt: "hello atlas".to_string()
+        }
+    );
+}

@@ -5,6 +5,7 @@ Follow these rules when changing this repo.
 ## 1. Do Not Hard-Code
 
 Do not hard-code secrets, API keys, model names, file paths, URLs, prompts, or agent behavior inside random code.
+Do not hard-code sampling settings like temperature or top-p in provider code.
 
 Use config files or environment variables.
 

@@ -16,6 +16,10 @@ impl LocalAgent {
     pub fn new(definition: LocalAgentDefinition, model: Box<dyn ModelProvider>) -> Self {
         Self { definition, model }
     }
+
+    pub fn definition(&self) -> &LocalAgentDefinition {
+        &self.definition
+    }
 }
 
 impl Agent for LocalAgent {
@@ -32,7 +36,27 @@ impl Agent for LocalAgent {
             system_prompt: self.system_prompt(),
             user_prompt: input,
             tools,
+            temperature: self.definition.temperature,
+            top_p: self.definition.top_p,
         })
+    }
+
+    fn process_stream(
+        &self,
+        input: &str,
+        tools: &[ToolDefinition],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.model.stream(
+            &ModelRequest {
+                system_prompt: self.system_prompt(),
+                user_prompt: input,
+                tools,
+                temperature: self.definition.temperature,
+                top_p: self.definition.top_p,
+            },
+            on_delta,
+        )
     }
 }
 
@@ -42,6 +66,8 @@ pub struct LocalAgentDefinition {
     pub display_name: String,
     pub model_provider: String,
     pub model: String,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     pub system_prompt: String,
 }
 
@@ -66,6 +92,8 @@ struct RawLocalAgentDefinition {
     display_name: Option<String>,
     model_provider: Option<String>,
     model: Option<String>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
     system_prompt: Option<String>,
 }
 
@@ -76,9 +104,27 @@ impl RawLocalAgentDefinition {
             display_name: required_field(self.display_name, "display_name")?,
             model_provider: required_field(self.model_provider, "model_provider")?,
             model: required_field(self.model, "model")?,
+            temperature: validate_range(self.temperature, "temperature", 0.0, 2.0)?,
+            top_p: validate_range(self.top_p, "top_p", 0.0, 1.0)?,
             system_prompt: required_field(self.system_prompt, "system_prompt")?,
         })
     }
+}
+
+fn validate_range(
+    value: Option<f32>,
+    name: &str,
+    minimum: f32,
+    maximum: f32,
+) -> Result<Option<f32>, String> {
+    if let Some(value) = value {
+        if !(minimum..=maximum).contains(&value) {
+            return Err(format!(
+                "{name} must be between {minimum:.0} and {maximum:.0}"
+            ));
+        }
+    }
+    Ok(value)
 }
 
 fn required_field(value: Option<String>, name: &str) -> Result<String, String> {

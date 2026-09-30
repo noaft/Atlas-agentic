@@ -108,6 +108,12 @@ Use this to run the current CLI:
 cargo run -- ask "hello atlas"
 ```
 
+Use streaming output:
+
+```bash
+cargo run -- ask --stream "hello atlas"
+```
+
 The CLI loads `agents/atlas.toml` by default.
 
 The real CLI needs `DEEPSEEK_API_KEY` for `ask`. It can come from the process environment or a local `.env` file:
@@ -128,6 +134,8 @@ Local agent files choose their provider:
 ```toml
 model_provider = "deepseek"
 model = "deepseek-flash"
+temperature = 0.3
+top_p = 0.9
 ```
 
 ## Near-Term Architecture
