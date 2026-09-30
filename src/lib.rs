@@ -1,10 +1,16 @@
+pub mod agents;
+pub mod models;
+pub mod runtime;
+
+pub use runtime::Runtime;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppResult {
     Help,
     Message(String),
 }
 
-pub fn handle_command<I, S>(args: I) -> Result<AppResult, String>
+pub fn handle_command<I, S>(args: I, runtime: &Runtime) -> Result<AppResult, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -22,7 +28,7 @@ where
             if prompt.trim().is_empty() {
                 Err("ask needs a prompt".to_string())
             } else {
-                Ok(AppResult::Message(agent::respond(&prompt)))
+                runtime.ask(&prompt).map(AppResult::Message)
             }
         }
         Some(command) => Err(format!("unknown command: {command}")),
@@ -40,11 +46,5 @@ pub fn render(result: AppResult) -> String {
         ]
         .join("\n"),
         AppResult::Message(message) => message,
-    }
-}
-
-mod agent {
-    pub fn respond(prompt: &str) -> String {
-        format!("Atlas heard: {}", prompt.trim())
     }
 }

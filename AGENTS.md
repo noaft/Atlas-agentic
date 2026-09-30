@@ -9,6 +9,7 @@ Atlas Agentic is a Rust project for a desktop-first AI agent system.
 The first product idea is a Jev-like router that chooses which agent should process a user task. The router is not the worker. It only selects the agent name.
 
 Current state: minimal Rust CLI skeleton.
+Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the default `chat_agent`. The `chat_agent` calls a `ModelProvider`. The real CLI uses `DeepSeekProvider`; tests use fake providers.
 
 ## Current Repo Structure
 
@@ -21,9 +22,17 @@ Current state: minimal Rust CLI skeleton.
 ├── AGENTS.md
 ├── src
 │   ├── main.rs
-│   └── lib.rs
+│   ├── lib.rs
+│   ├── runtime.rs
+│   ├── agents
+│   │   ├── mod.rs
+│   │   └── chat.rs
+│   └── models
+│       ├── mod.rs
+│       └── deepseek.rs
 └── tests
-    └── cli_behavior.rs
+    ├── cli_behavior.rs
+    └── cli_binary.rs
 ```
 
 ## Current Code
@@ -35,7 +44,23 @@ Current state: minimal Rust CLI skeleton.
 - `AppResult`: output type for CLI behavior
 - `handle_command`: parses CLI commands
 - `render`: converts app result into display text
-- a temporary internal `agent` module that echoes the prompt
+
+`src/runtime.rs` contains the first runtime boundary.
+
+`src/agents/mod.rs` contains:
+
+- `Agent`
+- `AgentRegistry`
+
+Concrete agents live in separate files:
+
+- `src/agents/chat.rs`: `ChatAgent`
+
+Planned future agents such as `CodeAgent` and `PlannerAgent` should only be added when they have behavior beyond a different prompt.
+
+`src/models/mod.rs` contains the `ModelProvider` trait.
+
+`src/models/deepseek.rs` contains the DeepSeek chat-completions provider.
 
 `tests/cli_behavior.rs` covers the current CLI behavior.
 
@@ -52,6 +77,19 @@ Use this to run the current CLI:
 
 ```bash
 cargo run -- ask "hello atlas"
+```
+
+The real CLI needs `DEEPSEEK_API_KEY` for `ask`. It can come from the process environment or a local `.env` file:
+
+```bash
+export DEEPSEEK_API_KEY="your_api_key_here"
+```
+
+Optional env vars:
+
+```bash
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
 ```
 
 ## Near-Term Architecture
