@@ -4,6 +4,7 @@ pub mod app;
 pub mod conversations;
 pub mod models;
 pub mod runtime;
+pub mod settings;
 pub mod tools;
 
 pub use runtime::Runtime;

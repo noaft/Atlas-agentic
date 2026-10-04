@@ -1,0 +1,174 @@
+use std::{
+    fs, io,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+};
+
+use atlas_agentic::settings::{AtlasSettings, SettingsStore, SETTINGS_VERSION};
+use tempfile::tempdir;
+
+#[test]
+fn missing_settings_file_returns_version_one_defaults() {
+    let data = tempdir().unwrap();
+    let store = SettingsStore::at(data.path().join("settings.json"));
+
+    let settings = store.load().unwrap();
+
+    assert_eq!(settings.version, SETTINGS_VERSION);
+    assert_eq!(settings.deepseek.api_key, None);
+    assert_eq!(settings.deepseek.base_url, "https://api.deepseek.com");
+    assert_eq!(settings.deepseek.model, "deepseek-flash");
+    assert_eq!(settings.conversation.history_limit, 40);
+    assert_eq!(settings.workspace.default_path, None);
+}
+
+#[test]
+fn round_trip_preserves_api_base_model_history_and_default_workspace() {
+    let data = tempdir().unwrap();
+    let workspace = data.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = SettingsStore::at(data.path().join("config/settings.json"));
+    let mut settings = AtlasSettings::default();
+    settings.deepseek.api_key = Some("local-secret".to_string());
+    settings.deepseek.base_url = "https://models.example.test".to_string();
+    settings.deepseek.model = "deepseek-coder".to_string();
+    settings.conversation.history_limit = 24;
+    settings.workspace.default_path = Some(workspace);
+
+    store.save(&settings).unwrap();
+
+    assert_eq!(store.load().unwrap(), settings);
+}
+
+#[test]
+fn rejects_zero_history_blank_model_blank_base_url_and_unknown_version() {
+    let data = tempdir().unwrap();
+    let path = data.path().join("settings.json");
+    let store = SettingsStore::at(path.clone());
+
+    let mut zero_history = AtlasSettings::default();
+    zero_history.conversation.history_limit = 0;
+    assert!(store.save(&zero_history).unwrap_err().contains("history"));
+
+    let mut blank_model = AtlasSettings::default();
+    blank_model.deepseek.model = "  ".to_string();
+    assert!(store.save(&blank_model).unwrap_err().contains("model"));
+
+    let mut blank_url = AtlasSettings::default();
+    blank_url.deepseek.base_url = "\t".to_string();
+    assert!(store.save(&blank_url).unwrap_err().contains("base URL"));
+
+    fs::write(
+        &path,
+        r#"{"version":2,"deepseek":{"apiKey":null,"baseUrl":"https://api.deepseek.com","model":"deepseek-flash"},"conversation":{"historyLimit":40},"workspace":{"defaultPath":null}}"#,
+    )
+    .unwrap();
+    assert!(store
+        .load()
+        .unwrap_err()
+        .contains("unsupported settings version: 2"));
+}
+
+#[test]
+fn failed_publication_preserves_previous_settings() {
+    let data = tempdir().unwrap();
+    let path = data.path().join("settings.json");
+    let publications = Arc::new(AtomicUsize::new(0));
+    let store = SettingsStore::at_with_publisher(path, {
+        let publications = Arc::clone(&publications);
+        move |source, destination| {
+            if publications.fetch_add(1, Ordering::SeqCst) == 1 {
+                Err(io::Error::other("injected publication failure"))
+            } else {
+                fs::rename(source, destination)
+            }
+        }
+    });
+    let original = AtlasSettings::default();
+    store.save(&original).unwrap();
+    let mut replacement = original.clone();
+    replacement.deepseek.model = "replacement".to_string();
+
+    let error = store.save(&replacement).unwrap_err();
+
+    assert!(error.contains("injected publication failure"), "{error}");
+    assert_eq!(store.load().unwrap(), original);
+}
+
+#[test]
+fn concurrent_writers_leave_one_complete_valid_document() {
+    let data = tempdir().unwrap();
+    let store = Arc::new(SettingsStore::at(data.path().join("settings.json")));
+    let handles = (0..12)
+        .map(|number| {
+            let store = Arc::clone(&store);
+            thread::spawn(move || {
+                let mut settings = AtlasSettings::default();
+                settings.deepseek.model = format!("model-{number}");
+                store.save(&settings).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let saved = store.load().unwrap();
+    assert!(saved.deepseek.model.starts_with("model-"));
+    let number = saved.deepseek.model[6..].parse::<usize>().unwrap();
+    assert!(number < 12);
+}
+
+#[cfg(unix)]
+#[test]
+fn settings_permissions_are_private_with_permissive_umask() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let data = tempdir().unwrap();
+    let path = data.path().join("atlas/config/settings.json");
+    let store = SettingsStore::at(path.clone());
+    let previous = unsafe { libc::umask(0) };
+
+    let result = store.save(&AtlasSettings::default());
+    unsafe { libc::umask(previous) };
+    result.unwrap();
+
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn from_user_config_uses_atlas_config_dir_override() {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap();
+    let data = tempdir().unwrap();
+    let previous = std::env::var_os("ATLAS_CONFIG_DIR");
+    std::env::set_var("ATLAS_CONFIG_DIR", data.path());
+
+    let result = SettingsStore::from_user_config().and_then(|store| {
+        store.save(&AtlasSettings::default())?;
+        Ok(())
+    });
+
+    match previous {
+        Some(value) => std::env::set_var("ATLAS_CONFIG_DIR", value),
+        None => std::env::remove_var("ATLAS_CONFIG_DIR"),
+    }
+    result.unwrap();
+    assert!(PathBuf::from(data.path()).join("settings.json").is_file());
+}
