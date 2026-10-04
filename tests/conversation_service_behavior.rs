@@ -52,6 +52,7 @@ struct ScriptedModel {
     responses: RefCell<VecDeque<Response>>,
     requests: Rc<RefCell<Vec<Request>>>,
     title_result: Result<String, String>,
+    manual_title_during_generation: Option<&'static str>,
     store: ConversationStore,
 }
 
@@ -72,12 +73,18 @@ impl ModelProvider for ScriptedModel {
         assert_eq!(request.system_prompt, "Return a conversation title.");
         // Title generation must happen after the first complete turn is durable.
         let saved = self.store.list().unwrap();
-        assert!(saved.iter().any(|metadata| {
-            let conversation = self.store.load(&metadata.id).unwrap();
-            conversation.messages.len() == 2
-                && conversation.messages[0].content == request.user_prompt
-                && !metadata.title_attempted
-        }));
+        let metadata = saved
+            .iter()
+            .find(|metadata| {
+                let conversation = self.store.load(&metadata.id).unwrap();
+                conversation.messages.len() == 2
+                    && conversation.messages[0].content == request.user_prompt
+                    && !metadata.title_attempted
+            })
+            .expect("title generation must follow the persisted first turn");
+        if let Some(title) = self.manual_title_during_generation {
+            self.store.rename(&metadata.id, title).unwrap();
+        }
         self.title_result.clone()
     }
 
@@ -107,6 +114,15 @@ fn runtime(
     responses: Vec<Response>,
     title_result: Result<&str, &str>,
 ) -> (Runtime, Rc<RefCell<Vec<Request>>>) {
+    runtime_with_manual_title(store, responses, title_result, None)
+}
+
+fn runtime_with_manual_title(
+    store: &ConversationStore,
+    responses: Vec<Response>,
+    title_result: Result<&str, &str>,
+    manual_title_during_generation: Option<&'static str>,
+) -> (Runtime, Rc<RefCell<Vec<Request>>>) {
     let requests = Rc::new(RefCell::new(Vec::new()));
     let definition = LocalAgentDefinition::from_toml(
         r#"
@@ -123,6 +139,7 @@ conversation_title_prompt = "Return a conversation title."
         responses: RefCell::new(responses.into()),
         requests: Rc::clone(&requests),
         title_result: title_result.map(str::to_string).map_err(str::to_string),
+        manual_title_during_generation,
         store: store.clone(),
     };
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
@@ -397,6 +414,46 @@ fn continuation_preserves_generated_title_without_another_title_request() {
             .count(),
         1
     );
+}
+
+#[test]
+fn manual_rename_during_title_generation_wins_over_late_generated_title() {
+    for manual_title in ["My chosen title", "Untitled conversation"] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ConversationStore::at(temp.path().join("data"));
+        let (runtime, requests) = runtime_with_manual_title(
+            &store,
+            vec![
+                Response::success(vec!["first answer"]),
+                Response::success(vec!["next answer"]),
+            ],
+            Ok("Late generated title"),
+            Some(manual_title),
+        );
+        let service = ConversationService::new(&runtime, &store, 40);
+
+        let result = service.ask("first input", None, &mut |_| {}).unwrap();
+
+        assert_eq!(result.metadata.title, manual_title);
+        assert!(result.metadata.title_attempted);
+        assert_eq!(
+            store.load(&result.metadata.id).unwrap().metadata,
+            result.metadata
+        );
+        let continued = service
+            .ask("next input", Some(&result.metadata.id), &mut |_| {})
+            .unwrap();
+        assert_eq!(continued.metadata.title, manual_title);
+        assert!(continued.metadata.title_attempted);
+        assert_eq!(
+            requests
+                .borrow()
+                .iter()
+                .filter(|request| request.title)
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

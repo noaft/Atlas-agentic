@@ -150,7 +150,7 @@ fn append_load_list_rename_and_record_title_attempt_update_expected_fields() {
 
     let renamed = store.rename(&first.id, "My conversation").unwrap();
     assert_eq!(renamed.title, "My conversation");
-    assert_eq!(renamed.title_attempted, appended.title_attempted);
+    assert!(renamed.title_attempted);
     assert_eq!(renamed.created_at, appended.created_at);
     assert_eq!(renamed.updated_at, appended.updated_at);
     assert_eq!(renamed.message_count, appended.message_count);
@@ -158,7 +158,7 @@ fn append_load_list_rename_and_record_title_attempt_update_expected_fields() {
     let titled = store
         .record_title_attempt(&first.id, Some("Sanitized title"))
         .unwrap();
-    assert_eq!(titled.title, "Sanitized title");
+    assert_eq!(titled.title, "My conversation");
     assert!(titled.title_attempted);
     assert_eq!(titled.updated_at, renamed.updated_at);
 

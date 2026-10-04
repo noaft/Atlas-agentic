@@ -12,6 +12,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
 use super::{Conversation, ConversationId, ConversationMessage, ConversationMetadata, MessageRole};
 
 const INDEX_VERSION: u32 = 1;
@@ -79,7 +82,7 @@ impl ConversationStore {
     pub fn create_turn(&self, user: &str, assistant: &str) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
-            fs::create_dir_all(self.conversations_dir()).map_err(|error| {
+            create_private_dir_all(&self.conversations_dir()).map_err(|error| {
                 format!(
                     "failed to create {}: {error}",
                     self.conversations_dir().display()
@@ -193,7 +196,11 @@ impl ConversationStore {
     }
 
     pub fn rename(&self, id: &ConversationId, title: &str) -> Result<ConversationMetadata, String> {
-        self.update_metadata(id, |metadata| metadata.title = title.to_string())
+        self.update_metadata(id, |metadata| {
+            metadata.title = title.to_string();
+            // A manual title also closes any in-flight automatic title attempt.
+            metadata.title_attempted = true;
+        })
     }
 
     pub fn record_title_attempt(
@@ -202,8 +209,10 @@ impl ConversationStore {
         title: Option<&str>,
     ) -> Result<ConversationMetadata, String> {
         self.update_metadata(id, |metadata| {
-            if let Some(title) = title {
-                metadata.title = title.to_string();
+            if !metadata.title_attempted {
+                if let Some(title) = title {
+                    metadata.title = title.to_string();
+                }
             }
             metadata.title_attempted = true;
         })
@@ -215,7 +224,7 @@ impl ConversationStore {
             let position = find_metadata_position(&index, id)?;
             let history_path = self.history_path(id);
             let trash_dir = self.root.join("trash");
-            fs::create_dir_all(&trash_dir)
+            create_private_dir_all(&trash_dir)
                 .map_err(|error| format!("failed to create {}: {error}", trash_dir.display()))?;
             let trash_path = trash_dir.join(format!("{id}.jsonl"));
             fs::rename(&history_path, &trash_path).map_err(|error| {
@@ -286,10 +295,10 @@ impl ConversationStore {
     }
 
     fn open_lock(&self) -> Result<File, String> {
-        fs::create_dir_all(&self.root)
+        create_private_dir_all(&self.root)
             .map_err(|error| format!("failed to create {}: {error}", self.root.display()))?;
         let lock_path = self.lock_path();
-        OpenOptions::new()
+        private_file_options()
             .create(true)
             .read(true)
             .write(true)
@@ -325,7 +334,7 @@ impl ConversationStore {
             .root
             .join(format!(".conversations.json.{}.tmp", Uuid::new_v4()));
         let result = (|| {
-            let file = OpenOptions::new()
+            let file = private_file_options()
                 .create_new(true)
                 .write(true)
                 .open(&temporary_path)
@@ -362,7 +371,7 @@ impl ConversationStore {
         path: &Path,
         messages: &[ConversationMessage],
     ) -> Result<(), String> {
-        let file = OpenOptions::new()
+        let file = private_file_options()
             .create_new(true)
             .write(true)
             .open(path)
@@ -376,23 +385,36 @@ impl ConversationStore {
             .append(true)
             .open(path)
             .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        if file
+        let original_len = file
             .metadata()
             .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
-            .len()
-            > 0
-        {
-            file.seek(SeekFrom::End(-1))
-                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
-            let mut last_byte = [0];
-            file.read_exact(&mut last_byte)
-                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
-            if last_byte[0] != b'\n' {
-                file.write_all(b"\n")
-                    .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+            .len();
+        let result = (|| {
+            if original_len > 0 {
+                file.seek(SeekFrom::End(-1))
+                    .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+                let mut last_byte = [0];
+                file.read_exact(&mut last_byte)
+                    .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+                if last_byte[0] != b'\n' {
+                    file.write_all(b"\n")
+                        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+                }
             }
+            write_messages(&mut file, path, messages)
+        })();
+        if let Err(error) = result {
+            // write_messages has dropped its buffered writer before rollback, so
+            // no pending bytes can be flushed after we restore the history length.
+            return match file.set_len(original_len) {
+                Ok(()) => Err(format!("{error}; history append rolled back")),
+                Err(rollback_error) => Err(format!(
+                    "{error}; failed to roll back {} to {original_len} bytes: {rollback_error}",
+                    path.display()
+                )),
+            };
         }
-        write_messages(file, path, messages)
+        Ok(())
     }
 
     fn read_history(&self, path: &Path) -> Result<Vec<ConversationMessage>, String> {
@@ -437,7 +459,31 @@ impl ConversationStore {
     }
 }
 
-fn write_messages(file: File, path: &Path, messages: &[ConversationMessage]) -> Result<(), String> {
+fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    // Creation modes never change an existing user-supplied data root.
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(path)
+}
+
+fn private_file_options() -> OpenOptions {
+    #[cfg(unix)]
+    {
+        let mut options = OpenOptions::new();
+        options.mode(0o600);
+        options
+    }
+    #[cfg(not(unix))]
+    OpenOptions::new()
+}
+
+fn write_messages(
+    file: impl Write,
+    path: &Path,
+    messages: &[ConversationMessage],
+) -> Result<(), String> {
     let mut writer = BufWriter::new(file);
     for message in messages {
         serde_json::to_writer(&mut writer, message)
