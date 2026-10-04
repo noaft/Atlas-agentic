@@ -41,6 +41,13 @@ impl Runtime {
         self
     }
 
+    pub fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
+        self.agents
+            .default_agent()
+            .ok_or_else(|| "no agent is registered".to_string())?
+            .generate_conversation_title(first_input)
+    }
+
     pub fn ask_stream(
         &self,
         prompt: &str,

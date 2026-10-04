@@ -1,7 +1,9 @@
+mod service;
 mod store;
 mod title;
 mod types;
 
+pub use service::{ConversationAskResult, ConversationService};
 pub use store::ConversationStore;
 pub use title::sanitize_title;
 pub use types::{
