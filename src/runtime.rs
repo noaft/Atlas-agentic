@@ -23,6 +23,14 @@ struct ToolContinuation<'a> {
     instruction: &'static str,
 }
 
+#[derive(Serialize)]
+struct ProtocolRepair<'a> {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    pending_request: &'a str,
+    instruction: &'static str,
+}
+
 pub struct Runtime {
     agents: AgentRegistry,
     tools: ToolRegistry,
@@ -76,6 +84,7 @@ impl Runtime {
 
         let mut input = prompt.to_string();
         let mut tool_results = Vec::new();
+        let mut retried_empty_response = false;
 
         loop {
             let mut final_stream = FinalContentStream::default();
@@ -83,7 +92,13 @@ impl Runtime {
                 agent.process_stream(&input, history, &tool_definitions, &mut |delta| {
                     final_stream.push(delta, on_delta);
                 })?;
+            if response.trim().is_empty() && !retried_empty_response {
+                input = render_protocol_repair(&input)?;
+                retried_empty_response = true;
+                continue;
+            }
             let output = AgentOutput::parse_tool_protocol(&response)?;
+            retried_empty_response = false;
 
             match output {
                 AgentOutput::Final { content } => {
@@ -112,6 +127,15 @@ impl Runtime {
             }
         }
     }
+}
+
+fn render_protocol_repair(pending_request: &str) -> Result<String, String> {
+    serde_json::to_string_pretty(&ProtocolRepair {
+        message_type: "protocol_repair",
+        pending_request,
+        instruction: "The previous response was empty. Return exactly one non-empty JSON object using the required final or tool_call format, with type as the first field and no markdown.",
+    })
+    .map_err(|error| format!("failed to serialize protocol repair: {error}"))
 }
 
 fn render_tool_continuation(

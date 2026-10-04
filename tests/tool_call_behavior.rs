@@ -10,7 +10,10 @@ use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     conversations::{ConversationMessage, MessageRole},
     models::{ModelProvider, ModelRequest},
-    tools::{CreateFileTool, ListDirTool, PwdTool, Tool, ToolDefinition, ToolRegistry, ToolResult},
+    tools::{
+        CreateFileTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition, ToolRegistry,
+        ToolResult,
+    },
     Runtime,
 };
 use chrono::{TimeZone, Utc};
@@ -687,6 +690,69 @@ fn runtime_stream_rejects_invalid_tool_protocol_without_emitting_it() {
         assert!(error.starts_with("invalid agent tool protocol:"), "{error}");
         assert!(deltas.is_empty(), "leaked protocol: {deltas:?}");
     }
+}
+
+#[test]
+fn runtime_retries_one_empty_tool_response_and_preserves_the_pending_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.path().join("note.txt"),
+        "hello from the workspace",
+    )
+    .unwrap();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![""],
+            vec![r#"{"type":"tool_call","tool":"read_file","args":{"path":"note.txt"}}"#],
+            vec![r#"{"type":"final","content":"Atlas read the file."}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(ReadFileTool::new(
+        workspace.path(),
+    ))]));
+    let mut deltas = Vec::new();
+
+    let result = runtime
+        .ask_stream("read note.txt", &mut |delta| deltas.push(delta.to_string()))
+        .unwrap();
+
+    assert_eq!(result, "Atlas read the file.");
+    assert_eq!(deltas, vec!["Atlas read the file."]);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 3);
+    let repair: serde_json::Value = serde_json::from_str(&requests[1].user_prompt).unwrap();
+    assert_eq!(repair["type"], "protocol_repair");
+    assert_eq!(repair["pending_request"], "read note.txt");
+    let continuation: serde_json::Value = serde_json::from_str(&requests[2].user_prompt).unwrap();
+    assert_eq!(continuation["type"], "tool_results");
+    assert_eq!(continuation["tool_results"][0]["tool"], "read_file");
+    assert_eq!(
+        continuation["tool_results"][0]["output"],
+        "hello from the workspace"
+    );
+}
+
+#[test]
+fn runtime_reports_a_second_consecutive_empty_tool_response() {
+    let workspace = tempfile::tempdir().unwrap();
+    let model = ToolProtocolStreamingModel::new([vec![""], vec![""]]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(ReadFileTool::new(
+        workspace.path(),
+    ))]));
+
+    let error = ask(&runtime, "read note.txt").unwrap_err();
+
+    assert_eq!(error, "invalid agent tool protocol: response was empty");
 }
 
 #[test]
