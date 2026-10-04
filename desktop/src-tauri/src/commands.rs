@@ -1,17 +1,66 @@
+use std::{path::PathBuf, sync::Arc};
+
 use atlas_agentic::conversations::{
-    Conversation, ConversationId, ConversationMessage, ConversationMetadata, ConversationStore,
-    MessageRole,
+    Conversation, ConversationAskResult, ConversationId, ConversationMessage, ConversationMetadata,
+    ConversationService, ConversationStore, MessageRole,
 };
+use atlas_agentic::{app::build_runtime, Runtime};
 use serde::Serialize;
-use tauri::State;
+use tauri::{ipc::Channel, State};
+
+type RuntimeFactory = Arc<dyn Fn() -> Result<Runtime, String> + Send + Sync>;
 
 pub struct DesktopState {
     store: ConversationStore,
+    history_limit: usize,
+    runtime_factory: RuntimeFactory,
 }
 
 impl DesktopState {
+    #[cfg(test)]
     pub fn new(store: ConversationStore) -> Self {
-        Self { store }
+        Self::with_runtime_factory(
+            store,
+            40,
+            Arc::new(|| Err("Atlas runtime is not configured".to_string())),
+        )
+    }
+
+    pub fn with_runtime_paths(
+        store: ConversationStore,
+        history_limit: usize,
+        workspace_root: PathBuf,
+        agent_file: PathBuf,
+    ) -> Self {
+        Self::with_runtime_factory(
+            store,
+            history_limit,
+            Arc::new(move || build_runtime(&workspace_root, &agent_file)),
+        )
+    }
+
+    fn with_runtime_factory(
+        store: ConversationStore,
+        history_limit: usize,
+        runtime_factory: RuntimeFactory,
+    ) -> Self {
+        Self {
+            store,
+            history_limit,
+            runtime_factory,
+        }
+    }
+
+    fn ask_with_sink(
+        &self,
+        prompt: &str,
+        conversation_id: Option<&ConversationId>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ConversationAskResultDto, String> {
+        let runtime = (self.runtime_factory)()?;
+        ConversationService::new(&runtime, &self.store, self.history_limit)
+            .ask(prompt, conversation_id, on_delta)
+            .map(Into::into)
     }
 }
 
@@ -81,6 +130,30 @@ pub struct DeleteResult {
     pub id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAskResultDto {
+    pub answer: String,
+    pub metadata: ConversationMetadataDto,
+    pub created: bool,
+}
+
+impl From<ConversationAskResult> for ConversationAskResultDto {
+    fn from(result: ConversationAskResult) -> Self {
+        Self {
+            answer: result.answer,
+            metadata: result.metadata.into(),
+            created: result.created,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum ChatEvent {
+    Delta { content: String },
+}
+
 fn parse_id(id: &str) -> Result<ConversationId, String> {
     ConversationId::parse(id)
 }
@@ -146,12 +219,123 @@ pub fn delete_conversation(
     delete_impl(&id, &state)
 }
 
+#[tauri::command(async)]
+pub fn ask(
+    prompt: String,
+    conversation_id: Option<String>,
+    channel: Channel<ChatEvent>,
+    state: State<'_, DesktopState>,
+) -> Result<ConversationAskResultDto, String> {
+    let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
+    let mut channel_error = None;
+    let result = state.ask_with_sink(&prompt, conversation_id.as_ref(), &mut |delta| {
+        if channel_error.is_none() {
+            if let Err(error) = channel.send(ChatEvent::Delta {
+                content: delta.to_string(),
+            }) {
+                channel_error = Some(format!("failed to stream response: {error}"));
+            }
+        }
+    });
+    if let Some(error) = channel_error {
+        return Err(error);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use atlas_agentic::conversations::ConversationStore;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    use atlas_agentic::{
+        agents::{Agent, AgentRegistry},
+        conversations::{ConversationMessage, ConversationStore},
+        tools::ToolDefinition,
+        Runtime,
+    };
     use tempfile::TempDir;
 
     use super::{delete_impl, list_impl, load_impl, rename_impl, DesktopState};
+
+    #[derive(Clone)]
+    struct FakeResponse {
+        chunks: Vec<&'static str>,
+        error: Option<&'static str>,
+    }
+
+    struct FakeAgent {
+        responses: Arc<Mutex<VecDeque<FakeResponse>>>,
+        histories: Arc<Mutex<Vec<Vec<ConversationMessage>>>>,
+    }
+
+    impl Agent for FakeAgent {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        fn system_prompt(&self) -> &str {
+            "fake"
+        }
+
+        fn process(
+            &self,
+            _input: &str,
+            _history: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> Result<String, String> {
+            Err("fake agent requires streaming".to_string())
+        }
+
+        fn process_stream(
+            &self,
+            _input: &str,
+            history: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+            on_delta: &mut dyn FnMut(&str),
+        ) -> Result<String, String> {
+            self.histories.lock().unwrap().push(history.to_vec());
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("fake response queue exhausted");
+            let mut answer = String::new();
+            for chunk in response.chunks {
+                on_delta(chunk);
+                answer.push_str(chunk);
+            }
+            if let Some(error) = response.error {
+                Err(error.to_string())
+            } else {
+                Ok(answer)
+            }
+        }
+
+        fn generate_conversation_title(&self, _first_input: &str) -> Result<String, String> {
+            Ok("Desktop title".to_string())
+        }
+    }
+
+    fn state_with_responses(
+        store: ConversationStore,
+        responses: Vec<FakeResponse>,
+        histories: Arc<Mutex<Vec<Vec<ConversationMessage>>>>,
+    ) -> DesktopState {
+        let responses = Arc::new(Mutex::new(responses.into_iter().collect()));
+        let runtime_factory = Arc::new(move || {
+            Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                FakeAgent {
+                    responses: Arc::clone(&responses),
+                    histories: Arc::clone(&histories),
+                },
+            )])))
+        });
+        DesktopState::with_runtime_factory(store, 40, runtime_factory)
+    }
 
     fn fixture() -> (TempDir, ConversationStore, DesktopState) {
         let data = TempDir::new().unwrap();
@@ -221,5 +405,105 @@ mod tests {
         assert_eq!(deleted.id, saved.id.to_string());
         assert!(store.list().unwrap().is_empty());
         assert!(store.load(&saved.id).is_err());
+    }
+
+    #[test]
+    fn ask_forwards_deltas_in_order_and_returns_metadata() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().to_path_buf());
+        let histories = Arc::new(Mutex::new(Vec::new()));
+        let state = state_with_responses(
+            store.clone(),
+            vec![FakeResponse {
+                chunks: vec!["Hello", " ", "desktop"],
+                error: None,
+            }],
+            histories,
+        );
+        let mut deltas = Vec::new();
+
+        let result = state
+            .ask_with_sink("hello", None, &mut |delta| deltas.push(delta.to_string()))
+            .unwrap();
+
+        assert_eq!(deltas, vec!["Hello", " ", "desktop"]);
+        assert_eq!(result.answer, "Hello desktop");
+        assert!(result.created);
+        assert_eq!(result.metadata.title, "Desktop title");
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn first_ask_failure_leaves_store_empty() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().to_path_buf());
+        let histories = Arc::new(Mutex::new(Vec::new()));
+        let state = state_with_responses(
+            store.clone(),
+            vec![FakeResponse {
+                chunks: vec!["partial"],
+                error: Some("model failed"),
+            }],
+            histories,
+        );
+        let mut deltas = Vec::new();
+
+        let error = state
+            .ask_with_sink("hello", None, &mut |delta| deltas.push(delta.to_string()))
+            .unwrap_err();
+
+        assert_eq!(error, "model failed");
+        assert_eq!(deltas, vec!["partial"]);
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn continuing_ask_passes_history_and_keeps_id() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().to_path_buf());
+        let saved = store.create_turn("first question", "first answer").unwrap();
+        let histories = Arc::new(Mutex::new(Vec::new()));
+        let state = state_with_responses(
+            store.clone(),
+            vec![FakeResponse {
+                chunks: vec!["next answer"],
+                error: None,
+            }],
+            Arc::clone(&histories),
+        );
+
+        let result = state
+            .ask_with_sink("next question", Some(&saved.id), &mut |_| {})
+            .unwrap();
+
+        assert_eq!(result.metadata.id, saved.id.to_string());
+        assert!(!result.created);
+        let captured = histories.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].len(), 2);
+        assert_eq!(captured[0][0].content, "first question");
+        assert_eq!(captured[0][1].content, "first answer");
+        assert_eq!(store.load(&saved.id).unwrap().messages.len(), 4);
+    }
+
+    #[test]
+    fn provider_failure_does_not_damage_history() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().to_path_buf());
+        let saved = store.create_turn("first question", "first answer").unwrap();
+        let state = DesktopState::with_runtime_factory(
+            store.clone(),
+            40,
+            Arc::new(|| Err("provider is not configured".to_string())),
+        );
+
+        let error = state
+            .ask_with_sink("next question", Some(&saved.id), &mut |_| {})
+            .unwrap_err();
+
+        assert_eq!(error, "provider is not configured");
+        let loaded = store.load(&saved.id).unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(loaded.metadata.message_count, 2);
     }
 }
