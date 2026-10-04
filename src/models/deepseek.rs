@@ -135,6 +135,9 @@ impl DeepSeekProvider {
             model: self.config.model.clone(),
             messages,
             stream,
+            response_format: (!request.tools.is_empty()).then_some(ResponseFormat {
+                output_type: "json_object",
+            }),
             temperature: request.temperature,
             top_p: request.top_p,
         }
@@ -178,9 +181,17 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    output_type: &'static str,
 }
 
 #[derive(Serialize)]
@@ -276,6 +287,32 @@ mod tests {
         assert!(prompt.contains(r#"{"type":"tool_call","tool":"tool_name","args":{}}"#));
         assert!(prompt.contains("Use a tool name exactly as listed below"));
         assert!(prompt.contains("create_file"));
+    }
+
+    #[test]
+    fn tool_request_enables_provider_json_output() {
+        let provider = DeepSeekProvider::new(DeepSeekConfig {
+            api_key: "test-key".to_string(),
+            base_url: "http://localhost".to_string(),
+            model: "test-model".to_string(),
+        });
+        let tools = vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read a file.".to_string(),
+            input_schema: json!({"type": "object"}),
+        }];
+        let request = ModelRequest {
+            system_prompt: "You are Atlas.",
+            user_prompt: "Read README.md.",
+            history: &[],
+            tools: &tools,
+            temperature: None,
+            top_p: None,
+        };
+
+        let payload = serde_json::to_value(provider.chat_request(&request, true)).unwrap();
+
+        assert_eq!(payload["response_format"], json!({"type": "json_object"}));
     }
 
     #[test]

@@ -248,6 +248,10 @@ fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer()
     assert_eq!(messages[1].content, "Hello from Atlas");
     let answer_request = server.request();
     assert_eq!(answer_request["stream"], true);
+    assert_eq!(
+        answer_request["response_format"],
+        json!({"type":"json_object"})
+    );
     assert_eq!(answer_request["messages"].as_array().unwrap().len(), 2);
     assert!(answer_request["messages"][0]["content"]
         .as_str()
@@ -259,6 +263,7 @@ fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer()
     );
     let title_request = server.request();
     assert_eq!(title_request["stream"], false);
+    assert!(title_request.get("response_format").is_none());
     assert_eq!(title_request["messages"].as_array().unwrap().len(), 2);
     assert_eq!(
         title_request["messages"][1],
