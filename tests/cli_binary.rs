@@ -1,56 +1,455 @@
-use std::process::Command;
+use std::{
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpListener, TcpStream},
+    process::{Command, Output},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+use atlas_agentic::conversations::{ConversationStore, MessageRole};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+
+struct CliFixture {
+    workspace: TempDir,
+    data: TempDir,
+}
+
+impl CliFixture {
+    fn new() -> Self {
+        Self {
+            workspace: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn store(&self) -> ConversationStore {
+        ConversationStore::at(self.data.path().to_path_buf())
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_atlas"));
+        command
+            .current_dir(self.workspace.path())
+            .env_clear()
+            .env("ATLAS_SKIP_DOTENV", "1")
+            .env("ATLAS_DATA_DIR", self.data.path());
+        command
+    }
+
+    fn install_agent(&self) {
+        let agents = self.workspace.path().join("agents");
+        std::fs::create_dir(&agents).unwrap();
+        std::fs::write(
+            agents.join("atlas.toml"),
+            include_str!("../agents/atlas.toml"),
+        )
+        .unwrap();
+    }
+
+    fn ask_command(&self, server: &FakeDeepSeek) -> Command {
+        let mut command = self.command();
+        command
+            .env("DEEPSEEK_API_KEY", "fake_key_for_test")
+            .env("DEEPSEEK_BASE_URL", &server.url);
+        command
+    }
+}
+
+fn successful_stdout(output: Output) -> String {
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    String::from_utf8(output.stdout).unwrap()
+}
 
 #[test]
-fn help_command_does_not_require_deepseek_key() {
-    let output = Command::new(env!("CARGO_BIN_EXE_atlas"))
-        .arg("help")
-        .env_remove("DEEPSEEK_API_KEY")
-        .env("ATLAS_SKIP_DOTENV", "1")
+fn help_command_does_not_require_deepseek_key_or_agent_file() {
+    let fixture = CliFixture::new();
+    let stdout = successful_stdout(fixture.command().arg("help").output().unwrap());
+    for usage in [
+        "Atlas Agentic",
+        "--conversation <id>",
+        "conversation list",
+        "conversation show <id>",
+        "conversation rename <id>",
+        "conversation delete <id>",
+    ] {
+        assert!(stdout.contains(usage), "missing {usage}: {stdout}");
+    }
+}
+
+#[test]
+fn invalid_commands_are_reported_before_provider_setup() {
+    let fixture = CliFixture::new();
+    for (args, expected) in [
+        (vec!["unknown"], "unknown command: unknown"),
+        (
+            vec!["ask", "--conversation", "invalid", "hello"],
+            "invalid conversation ID",
+        ),
+        (vec!["ask"], "ask needs a prompt"),
+    ] {
+        let output = fixture.command().args(args).output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains("DEEPSEEK_API_KEY"));
+    }
+}
+
+#[test]
+fn list_displays_empty_store_without_provider_setup() {
+    let fixture = CliFixture::new();
+    assert_eq!(
+        successful_stdout(
+            fixture
+                .command()
+                .args(["conversation", "list"])
+                .output()
+                .unwrap()
+        ),
+        "No conversations.\n"
+    );
+}
+
+#[test]
+fn management_commands_render_and_update_local_conversations_without_provider_setup() {
+    let fixture = CliFixture::new();
+    let store = fixture.store();
+    let older = store.create_turn("Older question", "Older answer").unwrap();
+    let newer = store.create_turn("Newer question", "Newer answer").unwrap();
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .args(["conversation", "list"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        stdout.find(&newer.id.to_string()).unwrap() < stdout.find(&older.id.to_string()).unwrap()
+    );
+    for metadata in [&older, &newer] {
+        assert!(stdout.contains(&format!(
+            "Conversation: {} | Untitled conversation",
+            metadata.id
+        )));
+        assert!(stdout.contains(&format!("Created: {}", metadata.created_at.to_rfc3339())));
+        assert!(stdout.contains(&format!("Updated: {}", metadata.updated_at.to_rfc3339())));
+    }
+    assert_eq!(stdout.matches("Messages: 2").count(), 2);
+    let id = newer.id.to_string();
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .args(["conversation", "show", &id])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains(&format!("Conversation: {id} | Untitled conversation")));
+    assert!(stdout.contains(&format!(
+        "user [{}]\nNewer question",
+        newer.created_at.to_rfc3339()
+    )));
+    assert!(stdout.contains(&format!(
+        "assistant [{}]\nNewer answer",
+        newer.created_at.to_rfc3339()
+    )));
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .args(["conversation", "rename", &id, "Atlas runtime work"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        stdout,
+        format!("Renamed conversation: {id} | Atlas runtime work\n")
+    );
+    assert_eq!(
+        store.load(&newer.id).unwrap().metadata.title,
+        "Atlas runtime work"
+    );
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .args(["conversation", "delete", &id])
+            .output()
+            .unwrap(),
+    );
+    let trash_path = fixture
+        .data
+        .path()
+        .join("trash")
+        .join(format!("{id}.jsonl"));
+    assert_eq!(
+        stdout,
+        format!(
+            "Deleted conversation: {id}\nHistory recoverable at: {}\n",
+            trash_path.display()
+        )
+    );
+    assert!(trash_path.is_file());
+    assert_eq!(store.list().unwrap().len(), 1);
+    let output = fixture
+        .command()
+        .args(["conversation", "show", &id])
         .output()
         .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conversation not found"));
+}
 
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Atlas Agentic"));
+#[test]
+fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let first = successful_stdout(
+        fixture
+            .ask_command(&server)
+            .args(["ask", "hello atlas"])
+            .output()
+            .unwrap(),
+    );
+    let saved = fixture.store().list().unwrap().remove(0);
+    assert_eq!(
+        first,
+        format!(
+            "Hello from Atlas\nConversation: {} | Atlas greeting\n",
+            saved.id
+        )
+    );
+    assert!(saved.title_attempted);
+    let messages = fixture.store().load(&saved.id).unwrap().messages;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].role, MessageRole::User);
+    assert_eq!(messages[0].content, "hello atlas");
+    assert_eq!(messages[1].role, MessageRole::Assistant);
+    assert_eq!(messages[1].content, "Hello from Atlas");
+    let answer_request = server.request();
+    assert_eq!(answer_request["stream"], true);
+    assert_eq!(answer_request["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        answer_request["messages"][1],
+        json!({"role":"user","content":"hello atlas"})
+    );
+    let title_request = server.request();
+    assert_eq!(title_request["stream"], false);
+    assert_eq!(title_request["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        title_request["messages"][1],
+        json!({"role":"user","content":"hello atlas"})
+    );
+    let second = successful_stdout(
+        fixture
+            .ask_command(&server)
+            .args(["ask", "--stream", "another question"])
+            .output()
+            .unwrap(),
+    );
+    let all = fixture.store().list().unwrap();
+    assert_eq!(all.len(), 2);
+    assert_ne!(all[0].id, saved.id);
+    assert_eq!(
+        second,
+        format!(
+            "Hello from Atlas\nConversation: {} | Atlas greeting\n",
+            all[0].id
+        )
+    );
+    assert_eq!(server.request()["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(server.request()["stream"], false);
+}
+
+#[test]
+fn continuation_uses_supplied_id_and_configured_recent_history_without_retitle() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let store = fixture.store();
+    let saved = store.create_turn("Old question", "Old answer").unwrap();
+    store
+        .append_turn(&saved.id, "Recent question", "Recent answer")
+        .unwrap();
+    store.rename(&saved.id, "Existing title").unwrap();
+    let id = saved.id.to_string();
+    let stdout = successful_stdout(
+        fixture
+            .ask_command(&server)
+            .env("ATLAS_HISTORY_MESSAGES", "2")
+            .args(["ask", "--conversation", &id, "--stream", "Continue please"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        stdout,
+        format!("Hello from Atlas\nConversation: {id} | Existing title\n")
+    );
+    let request = server.request();
+    assert_eq!(request["stream"], true);
+    assert_eq!(
+        &request["messages"].as_array().unwrap()[1..],
+        &[
+            json!({"role":"user","content":"Recent question"}),
+            json!({"role":"assistant","content":"Recent answer"}),
+            json!({"role":"user","content":"Continue please"}),
+        ]
+    );
+    assert!(server.requests.try_recv().is_err());
+    assert_eq!(store.list().unwrap().len(), 1);
+    let conversation = store.load(&saved.id).unwrap();
+    assert_eq!(conversation.metadata.message_count, 6);
+    assert_eq!(conversation.messages[4].content, "Continue please");
+    assert_eq!(conversation.messages[5].content, "Hello from Atlas");
+}
+
+#[test]
+fn invalid_history_limit_is_reported_without_sending_a_request() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let output = fixture
+        .ask_command(&server)
+        .env("ATLAS_HISTORY_MESSAGES", "0")
+        .args(["ask", "hello"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("ATLAS_HISTORY_MESSAGES must be a positive integer"));
+    assert!(server.requests.try_recv().is_err());
+    assert!(fixture.store().list().unwrap().is_empty());
 }
 
 #[test]
 fn ask_command_loads_deepseek_key_from_dotenv() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let agents_dir = temp_dir.path().join("agents");
-    std::fs::create_dir(&agents_dir).unwrap();
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
     std::fs::write(
-        agents_dir.join("atlas.toml"),
-        [
-            "name = \"atlas\"",
-            "display_name = \"Atlas\"",
-            "model_provider = \"deepseek\"",
-            "model = \"deepseek-flash\"",
-            "system_prompt = \"You are Atlas.\"",
-            "conversation_title_prompt = \"Write a short conversation title.\"",
-        ]
-        .join("\n"),
+        fixture.workspace.path().join(".env"),
+        format!(
+            "DEEPSEEK_API_KEY=fake_key_for_test\nDEEPSEEK_BASE_URL={}\n",
+            server.url
+        ),
     )
     .unwrap();
-    std::fs::write(
-        temp_dir.path().join(".env"),
-        [
-            "DEEPSEEK_API_KEY=fake_key_for_test",
-            "DEEPSEEK_BASE_URL=http://127.0.0.1:9",
-        ]
-        .join("\n"),
-    )
-    .unwrap();
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .env_remove("ATLAS_SKIP_DOTENV")
+            .args(["ask", "hello atlas"])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.starts_with("Hello from Atlas\nConversation: "));
+    assert_eq!(server.request()["stream"], true);
+    assert_eq!(server.request()["stream"], false);
+}
 
-    let output = Command::new(env!("CARGO_BIN_EXE_atlas"))
-        .arg("ask")
-        .arg("hello atlas")
-        .current_dir(temp_dir.path())
-        .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("DEEPSEEK_BASE_URL")
-        .output()
-        .unwrap();
+struct FakeDeepSeek {
+    url: String,
+    requests: Receiver<Value>,
+    stopped: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("DeepSeek request failed"), "{stderr}");
+impl FakeDeepSeek {
+    fn new() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, requests) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let (mut socket, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let request = read_request(&mut socket);
+                let (content_type, body) = if request["stream"] == true {
+                    let delta = json!({"choices":[{"delta":{"content":"{\"type\":\"final\",\"content\":\"Hello from Atlas\"}"}}]});
+                    (
+                        "text/event-stream",
+                        format!("data: {delta}\n\ndata: [DONE]\n\n"),
+                    )
+                } else {
+                    ("application/json", json!({"choices":[{"message":{"role":"assistant","content":"Atlas greeting"}}]}).to_string())
+                };
+                sender.send(request).unwrap();
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        Self {
+            url,
+            requests,
+            stopped,
+            worker: Some(worker),
+        }
+    }
+
+    fn request(&self) -> Value {
+        self.requests.recv_timeout(Duration::from_secs(3)).unwrap()
+    }
+}
+
+impl Drop for FakeDeepSeek {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let result = worker.join();
+            if !thread::panicking() {
+                result.unwrap();
+            }
+        }
+    }
+}
+
+fn read_request(socket: &mut TcpStream) -> Value {
+    let mut reader = BufReader::new(socket);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "POST /chat/completions HTTP/1.1\r\n");
+    let mut length = None;
+    let mut authorization = None;
+    loop {
+        line.clear();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+        if line == "\r\n" {
+            break;
+        }
+        let (name, value) = line.split_once(':').unwrap();
+        if name.eq_ignore_ascii_case("content-length") {
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+        if name.eq_ignore_ascii_case("authorization") {
+            authorization = Some(value.trim().to_string());
+        }
+    }
+    assert_eq!(authorization.as_deref(), Some("Bearer fake_key_for_test"));
+    let mut body = vec![0; length.unwrap()];
+    reader.read_exact(&mut body).unwrap();
+    serde_json::from_slice(&body).unwrap()
 }

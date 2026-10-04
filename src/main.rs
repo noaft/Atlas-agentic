@@ -2,9 +2,12 @@ use std::io::Write;
 
 use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
+    conversations::{
+        history_limit_from_env, ConversationId, ConversationService, ConversationStore,
+    },
     handle_command,
     models::provider_from_definition,
-    render,
+    render_conversation, render_conversation_metadata, render_conversation_summary, render_help,
     tools::{CreateFileTool, ListDirTool, PwdTool, ToolRegistry},
     AppResult, Runtime,
 };
@@ -14,31 +17,72 @@ use atlas_agentic::tools::ExecCommandTool;
 
 fn main() {
     load_dotenv();
-
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-
-    if matches!(
-        args.first().map(String::as_str),
-        None | Some("help") | Some("--help") | Some("-h")
-    ) {
-        println!("{}", render(atlas_agentic::AppResult::Help));
-        return;
+    if let Err(error) = handle_command(std::env::args().skip(1)).and_then(run_command) {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
     }
+}
 
-    let definition = match LocalAgentDefinition::from_file("agents/atlas.toml") {
-        Ok(definition) => definition,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
+fn run_command(command: AppResult) -> Result<(), String> {
+    match command {
+        AppResult::Help => println!("{}", render_help()),
+        AppResult::Ask {
+            prompt,
+            conversation_id,
+        } => run_ask(&prompt, conversation_id.as_ref())?,
+        AppResult::ConversationList => {
+            let conversations = ConversationStore::from_user_data()?.list()?;
+            if conversations.is_empty() {
+                println!("No conversations.");
+            } else {
+                println!(
+                    "{}",
+                    conversations
+                        .iter()
+                        .map(render_conversation_summary)
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                );
+            }
         }
-    };
-    let provider = match provider_from_definition(&definition) {
-        Ok(provider) => provider,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
+        AppResult::ConversationShow { id } => {
+            println!(
+                "{}",
+                render_conversation(&ConversationStore::from_user_data()?.load(&id)?)
+            );
         }
-    };
+        AppResult::ConversationRename { id, title } => {
+            let metadata = ConversationStore::from_user_data()?.rename(&id, &title)?;
+            println!("Renamed conversation: {} | {}", metadata.id, metadata.title);
+        }
+        AppResult::ConversationDelete { id } => {
+            let path = ConversationStore::from_user_data()?.delete(&id)?;
+            println!(
+                "Deleted conversation: {id}\nHistory recoverable at: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
+    let history_limit = history_limit_from_env()?;
+    let store = ConversationStore::from_user_data()?;
+    let runtime = build_runtime()?;
+    let service = ConversationService::new(&runtime, &store, history_limit);
+    let mut stdout = std::io::stdout();
+    let result = service.ask(prompt, id, &mut |delta| {
+        print!("{delta}");
+        let _ = stdout.flush();
+    })?;
+    println!("\n{}", render_conversation_metadata(&result.metadata));
+    Ok(())
+}
+
+fn build_runtime() -> Result<Runtime, String> {
+    let definition = LocalAgentDefinition::from_file("agents/atlas.toml")?;
+    let provider = provider_from_definition(&definition)?;
     let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(".")),
         Box::new(ListDirTool::new(".")),
@@ -50,33 +94,12 @@ fn main() {
         tools.register(Box::new(ExecCommandTool::new(".")));
         tools
     };
-    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition, provider,
-    ))]))
-    .with_tools(tools);
-
-    match handle_command(args) {
-        Ok(AppResult::Stream { prompt }) => {
-            let mut stdout = std::io::stdout();
-            let result = runtime.ask_stream(&prompt, &mut |delta| {
-                print!("{delta}");
-                let _ = stdout.flush();
-            });
-
-            match result {
-                Ok(_) => println!(),
-                Err(error) => {
-                    eprintln!("Error: {error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Ok(result) => println!("{}", render(result)),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
-        }
-    }
+    Ok(
+        Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition, provider,
+        ))]))
+        .with_tools(tools),
+    )
 }
 
 fn load_dotenv() {

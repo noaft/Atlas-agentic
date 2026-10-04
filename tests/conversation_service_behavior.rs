@@ -217,9 +217,7 @@ fn tool_failure_saves_no_new_conversation() {
         ])],
         Ok("unused"),
     );
-    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
-        temp.path().to_path_buf(),
-    ))]));
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(temp.path()))]));
 
     let error = ConversationService::new(&runtime, &store, 40)
         .ask("first input", None, &mut |_| {})
@@ -332,9 +330,7 @@ fn continuation_selects_recent_roles_and_appends_only_final_tool_answer() {
         ],
         Ok("must not title continuation"),
     );
-    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
-        temp.path().to_path_buf(),
-    ))]));
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(temp.path()))]));
     let mut streamed = String::new();
 
     let result = ConversationService::new(&runtime, &store, 3)

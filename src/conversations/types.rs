@@ -10,6 +10,12 @@ pub const DEFAULT_HISTORY_MESSAGES: usize = 40;
 #[serde(transparent)]
 pub struct ConversationId(Uuid);
 
+impl Default for ConversationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConversationId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
