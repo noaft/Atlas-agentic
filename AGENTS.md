@@ -4,7 +4,11 @@
 
 Atlas Agentic is a Rust project for a desktop-first AI agent system.
 
-The current product is a command-line runtime that loads the default Atlas agent from `agents/atlas.toml`, sends requests through a configured model provider, and lets the runtime execute registered tools. It persists multiple conversations in the current user's OS-local data directory, with explicit continuation by ID and local management commands.
+The current product includes a Rust CLI and a Tauri desktop app. Both load the
+default Atlas agent from `agents/atlas.toml`, share model/settings/runtime code,
+and persist multiple local conversations. The desktop app adds native workspace
+selection, per-conversation workspace persistence, grouped history, and local
+Settings.
 
 The planned direction is a multi-agent system with a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
 
@@ -24,15 +28,17 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   ├── agent_output.rs     Final-answer and tool-call parsing
 │   ├── agents/             Agent traits and local agent implementation
 │   ├── conversations/      Local conversation types, storage, and orchestration
-│   │   ├── types.rs        UUIDs, messages, metadata, and context-window policy
-│   │   ├── store.rs        Locked JSONL history and atomic metadata updates
-│   │   ├── service.rs      Ask, successful-turn persistence, and one-time titles
+│   │   ├── types.rs        UUIDs, messages, workspace metadata, and context policy
+│   │   ├── store.rs        Locked JSONL history and atomic workspace/metadata updates
+│   │   ├── service.rs      Ask, workspace persistence, successful turns, and titles
 │   │   └── title.rs        Title sanitization
+│   ├── settings.rs         Versioned private settings and environment precedence
 │   ├── models/             Model-provider trait and DeepSeek provider
 │   └── tools/              Tool trait, registry, and built-in tools
 ├── desktop/
-│   ├── src/                Vanilla TypeScript chat state, adapter, and UI
-│   └── src-tauri/          Tauri commands, resources, and desktop config
+│   ├── public/             Atlas Compass browser assets
+│   ├── src/                Workspace chat state, adapter, chat and Settings UI
+│   └── src-tauri/          Workspace/settings bridge, permissions, icons, and config
 ├── tests/                  Integration and behavior tests
 ├── Cargo.toml              Rust package configuration
 ├── README.md               User-facing project documentation
@@ -70,6 +76,11 @@ Optional model configuration:
 export DEEPSEEK_BASE_URL="https://api.deepseek.com"
 export DEEPSEEK_MODEL="deepseek-flash"
 ```
+
+The same fields can be saved from the desktop Settings screen. User-local
+`settings.json` is plaintext with private filesystem permissions, not keychain
+storage. Environment variables override saved fields without being copied into
+the file. `ATLAS_CONFIG_DIR` overrides the settings directory for tests.
 
 Run a request. Responses stream by default:
 
@@ -131,8 +142,10 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path desktop/src-tauri/Cargo.toml
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 npm --prefix desktop test
 npm --prefix desktop run build
+npm --prefix desktop run tauri -- build --debug --no-bundle
 ```
 
 Install desktop dependencies and launch the Tauri app from the repository root:
@@ -144,7 +157,14 @@ npm --prefix desktop run tauri dev
 
 The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
 chat** as an unsaved frontend draft; only a successful first `ask` may create
-local conversation data.
+local conversation data or persist its validated workspace. Saved continuations
+derive workspace authority from conversation metadata and must ignore a
+conflicting frontend path. Legacy unassigned conversations stay readable but
+must be assigned a folder before sending.
+
+Keep native platform access narrow. Folder selection uses
+`@tauri-apps/plugin-dialog` with only `dialog:allow-open`; do not add shell,
+process, or unrestricted filesystem permissions to the frontend.
 
 CLI binary tests isolate their workspace and `ATLAS_DATA_DIR`, use child-only
 environment configuration, and serve fake DeepSeek responses over loopback TCP.

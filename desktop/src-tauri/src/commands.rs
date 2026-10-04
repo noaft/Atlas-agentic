@@ -527,7 +527,7 @@ mod tests {
 
     use atlas_agentic::{
         agents::{Agent, AgentRegistry, LocalAgent, LocalAgentDefinition},
-        conversations::{ConversationMessage, ConversationStore},
+        conversations::{ConversationId, ConversationMessage, ConversationStore},
         models::deepseek::{DeepSeekConfig, DeepSeekProvider},
         settings::{AtlasSettings, SettingsStore},
         tools::ToolDefinition,
@@ -1110,5 +1110,125 @@ conversation_title_prompt = "Return a short title."
         assert!(error.contains("workspace"), "{error}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn workspace_settings_flow_reconfigures_next_ask_and_never_leaks_the_key() {
+        let _guard = environment_lock();
+        let previous_key = std::env::var_os("DEEPSEEK_API_KEY");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        let root = TempDir::new().unwrap();
+        let data_path = root.path().join("data");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let store = ConversationStore::at(data_path.clone());
+        let settings_store = SettingsStore::at(root.path().join("config/settings.json"));
+        let responses = Arc::new(Mutex::new(
+            vec![
+                FakeResponse {
+                    chunks: vec!["first answer"],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec!["second answer"],
+                    error: None,
+                },
+            ]
+            .into_iter()
+            .collect::<VecDeque<_>>(),
+        ));
+        let histories = Arc::new(Mutex::new(Vec::new()));
+        let runtime_calls = Arc::new(Mutex::new(Vec::<(PathBuf, Option<String>)>::new()));
+        let state = DesktopState::with_runtime_factory_and_settings(
+            store.clone(),
+            settings_store.clone(),
+            PathBuf::from("agents/atlas.toml"),
+            {
+                let responses = Arc::clone(&responses);
+                let histories = Arc::clone(&histories);
+                let runtime_calls = Arc::clone(&runtime_calls);
+                Arc::new(move |workspace, effective| {
+                    runtime_calls
+                        .lock()
+                        .unwrap()
+                        .push((workspace.to_path_buf(), effective.api_key.clone()));
+                    Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                        FakeAgent {
+                            responses: Arc::clone(&responses),
+                            histories: Arc::clone(&histories),
+                        },
+                    )])))
+                })
+            },
+        );
+        let secret = "desktop-e2e-secret";
+
+        save_settings_impl(
+            SaveSettingsInput {
+                api_key: Some(secret.to_string()),
+                clear_api_key: false,
+                base_url: "https://api.deepseek.com".to_string(),
+                model: "deepseek-flash".to_string(),
+                history_limit: 40,
+                default_workspace_path: None,
+            },
+            &state,
+        )
+        .unwrap();
+        let first = state
+            .ask_with_sink("first question", None, Some(&workspace), &mut |_| {})
+            .unwrap();
+        let id = ConversationId::parse(&first.metadata.id).unwrap();
+        assert_eq!(
+            first
+                .metadata
+                .workspace
+                .as_ref()
+                .map(|item| item.path.as_str()),
+            workspace.canonicalize().unwrap().to_str()
+        );
+
+        let loaded = load_impl(&first.metadata.id, &state).unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        state
+            .ask_with_sink(
+                "second question",
+                Some(&id),
+                Some(Path::new("/frontend/path/is/not/authoritative")),
+                &mut |_| {},
+            )
+            .unwrap();
+        let calls = runtime_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|(path, key)| {
+            path == &workspace.canonicalize().unwrap() && key.as_deref() == Some(secret)
+        }));
+
+        let before_removal = store.load(&id).unwrap();
+        std::fs::remove_dir(&workspace).unwrap();
+        let error = state
+            .ask_with_sink("must not run", Some(&id), None, &mut |_| {})
+            .unwrap_err();
+        assert!(error.contains("workspace"), "{error}");
+        assert!(!error.contains(secret), "{error}");
+        assert_eq!(runtime_calls.lock().unwrap().len(), 2);
+        assert_eq!(store.load(&id).unwrap(), before_removal);
+
+        let metadata_json = serde_json::to_string(&store.list().unwrap()).unwrap();
+        let dto_json = serde_json::to_string(&first.metadata).unwrap();
+        let history = std::fs::read_to_string(
+            data_path
+                .join("conversations")
+                .join(format!("{}.jsonl", first.metadata.id)),
+        )
+        .unwrap();
+        assert!(!metadata_json.contains(secret), "{metadata_json}");
+        assert!(!dto_json.contains(secret), "{dto_json}");
+        assert!(!history.contains(secret), "{history}");
+
+        match previous_key {
+            Some(value) => std::env::set_var("DEEPSEEK_API_KEY", value),
+            None => std::env::remove_var("DEEPSEEK_API_KEY"),
+        }
     }
 }

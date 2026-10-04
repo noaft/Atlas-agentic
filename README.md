@@ -23,31 +23,39 @@ install the frontend dependencies:
 npm ci --prefix desktop
 ```
 
-Set `DEEPSEEK_API_KEY` in the environment or the repo's local `.env` file and
-launch the development app from the repository root:
+Launch the development app from the repository root:
 
 ```bash
 npm --prefix desktop run tauri dev
 ```
 
 The app opens on a blank, unsaved draft and never automatically resumes the
-latest conversation. Clicking **New chat** only clears the UI. Atlas creates the
-conversation ID and local history after the first model response completes
-successfully; a failed first request remains an unsaved, retryable draft.
+latest conversation. Choose a workspace folder before sending the first
+message. Cancelling the native picker leaves the draft unassigned. Atlas creates
+the conversation ID, workspace assignment, and local history only after the
+first model response completes successfully; a failed first request remains an
+unsaved, retryable draft.
 
-The sidebar lists saved conversations. Select one to continue it, or use the
-conversation menu to rename or delete it. Conversation management works without
-a model API key; only sending a message requires provider configuration.
+The sidebar groups saved conversations by workspace. Reopening a conversation
+restores its folder, and changing the folder updates only its metadata—not its
+history. Older conversations without workspace metadata remain readable and ask
+you to choose a folder before continuing. Runtime tools always use the validated
+conversation workspace, not the desktop process directory.
 
-This first UI milestone uses the desktop process's current working directory for
-coding tools. It does not yet include a workspace picker, settings screen,
-research/news agents, or background tasks.
+Use **Settings** to configure the DeepSeek API key, base URL, model, history
+limit, and default workspace. Settings affect the next request without restarting
+Atlas. Conversation management and Settings remain available without a
+configured provider; only sending requires an API key.
 
 Build a local debug executable without creating an installer:
 
 ```bash
 npm --prefix desktop run tauri -- build --debug --no-bundle
 ```
+
+The folder picker uses Tauri's native dialog plugin. Development therefore needs
+the operating-system packages listed in the official Tauri prerequisites guide;
+the frontend receives only the narrow dialog-open permission.
 
 ## CLI Runtime
 
@@ -142,7 +150,24 @@ export DEEPSEEK_MODEL="deepseek-flash"
 export ATLAS_HISTORY_MESSAGES="40"
 ```
 
-Secrets must come from environment variables. Do not hard-code API keys.
+The desktop Settings screen may store the API key in the user-local
+`settings.json` file. This is a plaintext credential file protected by private
+user filesystem permissions where supported; it is not an OS keychain. Use an
+environment variable instead if that storage model is not appropriate. Never
+commit `.env`, `settings.json`, or API keys.
+
+Settings locations:
+
+- Linux and WSL: `$XDG_CONFIG_HOME/atlas/settings.json`, normally `~/.config/atlas/settings.json`.
+- macOS: `~/Library/Application Support/atlas/settings.json`.
+- Windows: `%APPDATA%\atlas\settings.json`.
+
+`ATLAS_CONFIG_DIR` overrides the containing directory for development and tests.
+Environment variables take precedence field-by-field over saved Settings:
+`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, and
+`ATLAS_HISTORY_MESSAGES`. Environment values are shown as authoritative in the
+UI but are never copied back into the settings file. Saved values come next,
+followed by Atlas defaults and the local agent model configuration.
 
 Agent files choose the provider:
 
@@ -179,16 +204,21 @@ contains provider-independent types
 and history-window selection (`types.rs`), local persistence (`store.rs`), ask/save
 orchestration (`service.rs`), and title sanitization (`title.rs`). `src/runtime.rs`
 coordinates agents and tools; agents and model providers pass typed user/assistant
-history without owning persistence. `desktop/` contains the TypeScript chat UI
-and the nested `desktop/src-tauri/` Rust command bridge.
+history without owning persistence. `src/settings.rs` owns versioned private
+settings and environment precedence. `desktop/` contains the TypeScript
+workspace-aware chat/Settings UI and native dialog adapter; nested
+`desktop/src-tauri/` contains the Rust bridge and packaging.
 
 ```bash
 cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path desktop/src-tauri/Cargo.toml
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 npm --prefix desktop test
 npm --prefix desktop run build
+npm --prefix desktop run tauri -- build --debug --no-bundle
 ```
 
 Binary conversation tests use temporary data directories and a local fake model
