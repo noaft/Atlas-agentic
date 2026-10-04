@@ -19,6 +19,7 @@ The first successful turn also triggers one separate LLM request that creates a 
 - Keep tool protocol and tool results out of saved chat history.
 - Generate a useful title once from the first user input.
 - Keep conversation storage local, readable, recoverable, and provider-agnostic.
+- Improve the default Atlas agent's coding behavior without duplicating runtime-injected tool definitions in its prompt.
 
 ## Non-Goals
 
@@ -77,6 +78,7 @@ Atlas resolves the operating system's per-user application data directory rather
 - Windows: the user's local application data directory.
 
 The implementation should use a platform directory library instead of hard-coding these paths.
+For deterministic development and tests, `ATLAS_DATA_DIR` may override the resolved root. Normal users do not need to set it.
 
 ```text
 <atlas-data>/
@@ -194,6 +196,18 @@ Atlas trims whitespace, collapses line breaks, removes surrounding quote charact
 
 The title request occurs only when `title_attempted` is false. Manual rename updates the title but does not trigger or re-enable automatic title generation.
 
+## Default Agent Prompt
+
+`agents/atlas.toml` will be enhanced so the default Atlas agent:
+
+- inspects the workspace before making repository-specific claims;
+- uses runtime-provided tools when they are needed to complete the task;
+- executes relevant commands for coding, debugging, testing, and verification;
+- preserves unrelated user changes and never invents command results;
+- reports completed work, verification evidence, and remaining blockers clearly.
+
+The prompt must not list tool names, schemas, or tool-call protocol details. Those remain injected automatically from `ToolRegistry` through `ModelRequest.tools`.
+
 ## Components and Boundaries
 
 ### Conversation domain module
@@ -250,6 +264,7 @@ Tests will use temporary data directories and fake model providers. Coverage inc
 - Atomic metadata replacement and reconciliation after a partial metadata failure.
 - CLI parsing for every new command and option.
 - Existing default streaming and tool-loop behavior remains intact.
+- The enhanced default-agent prompt contains the approved command-oriented guidance without hard-coding runtime tool definitions.
 
 Before completion, the implementation must pass:
 
