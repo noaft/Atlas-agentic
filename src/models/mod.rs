@@ -1,6 +1,7 @@
 pub mod deepseek;
 
 use crate::agents::LocalAgentDefinition;
+use crate::conversations::ConversationMessage;
 use crate::tools::ToolDefinition;
 
 use deepseek::{DeepSeekConfig, DeepSeekProvider};
@@ -22,6 +23,7 @@ pub trait ModelProvider {
 pub struct ModelRequest<'a> {
     pub system_prompt: &'a str,
     pub user_prompt: &'a str,
+    pub history: &'a [ConversationMessage],
     pub tools: &'a [ToolDefinition],
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,

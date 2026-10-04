@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-use crate::{agent_output::AgentOutput, agents::AgentRegistry, tools::ToolRegistry};
+use crate::{
+    agent_output::AgentOutput, agents::AgentRegistry, conversations::ConversationMessage,
+    tools::ToolRegistry,
+};
 
 const MAX_TOOL_CALLS: usize = 8;
 
@@ -43,6 +46,15 @@ impl Runtime {
         prompt: &str,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
+        self.ask_stream_with_history(prompt, &[], on_delta)
+    }
+
+    pub fn ask_stream_with_history(
+        &self,
+        prompt: &str,
+        history: &[ConversationMessage],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
         let agent = self
             .agents
             .default_agent()
@@ -50,7 +62,7 @@ impl Runtime {
         let tool_definitions = self.tools.definitions();
 
         if tool_definitions.is_empty() {
-            let response = agent.process_stream(prompt, &tool_definitions, on_delta)?;
+            let response = agent.process_stream(prompt, history, &tool_definitions, on_delta)?;
             let output = AgentOutput::parse(&response)?;
             return self.tools.execute(&output).map(|result| result.message);
         }
@@ -60,9 +72,10 @@ impl Runtime {
 
         loop {
             let mut final_stream = FinalContentStream::default();
-            let response = agent.process_stream(&input, &tool_definitions, &mut |delta| {
-                final_stream.push(delta, on_delta);
-            })?;
+            let response =
+                agent.process_stream(&input, history, &tool_definitions, &mut |delta| {
+                    final_stream.push(delta, on_delta);
+                })?;
             let output = AgentOutput::parse_tool_protocol(&response)?;
 
             match output {

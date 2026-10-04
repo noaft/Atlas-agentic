@@ -3,6 +3,8 @@ use std::io::Read;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::conversations::MessageRole;
+
 use super::{ModelProvider, ModelRequest};
 
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
@@ -129,18 +131,26 @@ impl DeepSeekProvider {
 
     fn chat_request(&self, request: &ModelRequest, stream: bool) -> ChatRequest {
         let system_prompt = render_model_instructions(request);
+        let mut messages = Vec::with_capacity(request.history.len() + 2);
+        messages.push(ChatMessage {
+            role: "system",
+            content: system_prompt,
+        });
+        messages.extend(request.history.iter().map(|message| ChatMessage {
+            role: match message.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+            },
+            content: message.content.clone(),
+        }));
+        messages.push(ChatMessage {
+            role: "user",
+            content: request.user_prompt.to_string(),
+        });
+
         ChatRequest {
             model: self.config.model.clone(),
-            messages: vec![
-                ChatMessage {
-                    role: "system",
-                    content: system_prompt,
-                },
-                ChatMessage {
-                    role: "user",
-                    content: request.user_prompt.to_string(),
-                },
-            ],
+            messages,
             stream,
             temperature: request.temperature,
             top_p: request.top_p,
@@ -242,11 +252,15 @@ fn parse_stream_delta(line: &str) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     use crate::{
+        conversations::{ConversationMessage, MessageRole},
         models::{
-            deepseek::{parse_stream_delta, render_model_instructions},
+            deepseek::{
+                parse_stream_delta, render_model_instructions, DeepSeekConfig, DeepSeekProvider,
+            },
             ModelRequest,
         },
         tools::ToolDefinition,
@@ -265,6 +279,7 @@ mod tests {
         let request = ModelRequest {
             system_prompt: "You are Atlas.",
             user_prompt: "Create a file.",
+            history: &[],
             tools: &tools,
             temperature: Some(0.2),
             top_p: Some(0.9),
@@ -278,6 +293,52 @@ mod tests {
         assert!(prompt.contains(r#"{"type":"tool_call","tool":"tool_name","args":{}}"#));
         assert!(prompt.contains("Use a tool name exactly as listed below"));
         assert!(prompt.contains("create_file"));
+    }
+
+    #[test]
+    fn chat_request_orders_system_history_and_current_user_input() {
+        let history = vec![
+            ConversationMessage {
+                role: MessageRole::User,
+                content: "Earlier question".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
+            },
+            ConversationMessage {
+                role: MessageRole::Assistant,
+                content: "Earlier answer".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 1).unwrap(),
+            },
+        ];
+        let provider = DeepSeekProvider::new(DeepSeekConfig {
+            api_key: "test-key".to_string(),
+            base_url: "http://localhost".to_string(),
+            model: "test-model".to_string(),
+        });
+        let request = ModelRequest {
+            system_prompt: "You are Atlas.",
+            user_prompt: "Newest question",
+            history: &history,
+            tools: &[],
+            temperature: None,
+            top_p: None,
+        };
+
+        let request = provider.chat_request(&request, false);
+        let messages = request
+            .messages
+            .iter()
+            .map(|message| (message.role, message.content.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            messages,
+            vec![
+                ("system", "You are Atlas."),
+                ("user", "Earlier question"),
+                ("assistant", "Earlier answer"),
+                ("user", "Newest question"),
+            ]
+        );
     }
 
     #[test]

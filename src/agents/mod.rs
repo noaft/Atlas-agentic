@@ -2,17 +2,21 @@ mod local;
 
 pub use local::{LocalAgent, LocalAgentDefinition};
 
+use crate::conversations::ConversationMessage;
+
 pub trait Agent {
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;
     fn process(
         &self,
         input: &str,
+        history: &[ConversationMessage],
         tools: &[crate::tools::ToolDefinition],
     ) -> Result<String, String>;
     fn process_stream(
         &self,
         input: &str,
+        history: &[ConversationMessage],
         tools: &[crate::tools::ToolDefinition],
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String>;

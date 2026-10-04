@@ -38,7 +38,7 @@ system_prompt = "You are Atlas, the default local agent."
         "You are Atlas, the default local agent."
     );
     assert_eq!(
-        agent.process("hello", &[]).unwrap(),
+        agent.process("hello", &[], &[]).unwrap(),
         "You are Atlas, the default local agent. | hello"
     );
 }

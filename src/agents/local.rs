@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::{
+    conversations::ConversationMessage,
     models::{ModelProvider, ModelRequest},
     tools::ToolDefinition,
 };
@@ -31,10 +32,16 @@ impl Agent for LocalAgent {
         &self.definition.system_prompt
     }
 
-    fn process(&self, input: &str, tools: &[ToolDefinition]) -> Result<String, String> {
+    fn process(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<String, String> {
         self.model.complete(&ModelRequest {
             system_prompt: self.system_prompt(),
             user_prompt: input,
+            history,
             tools,
             temperature: self.definition.temperature,
             top_p: self.definition.top_p,
@@ -44,6 +51,7 @@ impl Agent for LocalAgent {
     fn process_stream(
         &self,
         input: &str,
+        history: &[ConversationMessage],
         tools: &[ToolDefinition],
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
@@ -51,6 +59,7 @@ impl Agent for LocalAgent {
             &ModelRequest {
                 system_prompt: self.system_prompt(),
                 user_prompt: input,
+                history,
                 tools,
                 temperature: self.definition.temperature,
                 top_p: self.definition.top_p,

@@ -8,10 +8,12 @@ use std::{
 use atlas_agentic::{
     agent_output::AgentOutput,
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
+    conversations::{ConversationMessage, MessageRole},
     models::{ModelProvider, ModelRequest},
     tools::{CreateFileTool, ListDirTool, PwdTool, Tool, ToolDefinition, ToolRegistry, ToolResult},
     Runtime,
 };
+use chrono::{TimeZone, Utc};
 
 #[cfg(unix)]
 use atlas_agentic::tools::ExecCommandTool;
@@ -76,6 +78,57 @@ impl ModelProvider for StreamingModel {
 
 struct ToolProtocolStreamingModel {
     responses: RefCell<VecDeque<Vec<&'static str>>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CapturedHistoryRequest {
+    history: Vec<ConversationMessage>,
+    user_prompt: String,
+}
+
+struct HistoryCapturingStreamingModel {
+    responses: RefCell<VecDeque<Vec<&'static str>>>,
+    requests: Rc<RefCell<Vec<CapturedHistoryRequest>>>,
+}
+
+impl HistoryCapturingStreamingModel {
+    fn new(
+        responses: impl IntoIterator<Item = Vec<&'static str>>,
+        requests: Rc<RefCell<Vec<CapturedHistoryRequest>>>,
+    ) -> Self {
+        Self {
+            responses: RefCell::new(responses.into_iter().collect()),
+            requests,
+        }
+    }
+}
+
+impl ModelProvider for HistoryCapturingStreamingModel {
+    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
+        Err("history capturing model requires stream".to_string())
+    }
+
+    fn stream(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.requests.borrow_mut().push(CapturedHistoryRequest {
+            history: request.history.to_vec(),
+            user_prompt: request.user_prompt.to_string(),
+        });
+        let chunks = self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| "no fake streaming response queued".to_string())?;
+        let mut response = String::new();
+        for chunk in chunks {
+            on_delta(chunk);
+            response.push_str(chunk);
+        }
+        Ok(response)
+    }
 }
 
 impl ToolProtocolStreamingModel {
@@ -547,6 +600,65 @@ fn runtime_streams_final_content_incrementally_after_a_tool_call() {
 
     assert_eq!(deltas, vec!["Atlas ", "streams ", "now."]);
     assert_eq!(result, "Atlas streams now.");
+}
+
+#[test]
+fn runtime_reuses_saved_history_across_tool_calls_and_streams_the_final_answer() {
+    let workspace = tempfile::tempdir().unwrap();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+            vec![
+                r#"{"type":"final","content":"Atlas "#,
+                "streams ",
+                r#"with history."}"#,
+            ],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
+        workspace.path(),
+    ))]));
+    let history = vec![
+        ConversationMessage {
+            role: MessageRole::User,
+            content: "Earlier question".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
+        },
+        ConversationMessage {
+            role: MessageRole::Assistant,
+            content: "Earlier answer".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 1).unwrap(),
+        },
+    ];
+    let mut deltas = Vec::new();
+
+    let result = runtime
+        .ask_stream_with_history("where am I?", &history, &mut |delta| {
+            deltas.push(delta.to_string())
+        })
+        .unwrap();
+
+    assert_eq!(result, "Atlas streams with history.");
+    assert_eq!(deltas, vec!["Atlas ", "streams ", "with history."]);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].history, history);
+    assert_eq!(requests[1].history, history);
+    assert_eq!(requests[0].user_prompt, "where am I?");
+    assert!(requests[1]
+        .user_prompt
+        .contains(r#""type": "tool_results""#));
+    assert!(requests[1]
+        .user_prompt
+        .contains(r#""original_user_request": "where am I?""#));
+    assert!(!requests[1].user_prompt.contains("Earlier question"));
+    assert!(!requests[1].user_prompt.contains("Earlier answer"));
 }
 
 #[test]
