@@ -134,7 +134,7 @@ fn default_atlas_prompt_guides_repository_work_without_embedding_tool_protocol()
     let prompt_tokens = prompt
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .collect::<Vec<_>>();
-    for tool_name in ["pwd", "ls", "create_file", "exec_command"] {
+    for tool_name in ["pwd", "ls", "read_file", "create_file", "exec_command"] {
         assert!(
             !prompt_tokens.contains(&tool_name),
             "default Atlas prompt must not name runtime tool `{tool_name}`"

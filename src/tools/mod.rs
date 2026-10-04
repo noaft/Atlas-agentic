@@ -3,12 +3,14 @@ mod create_file;
 mod exec_command;
 mod list_dir;
 mod pwd;
+mod read_file;
 
 pub use create_file::CreateFileTool;
 #[cfg(unix)]
 pub use exec_command::ExecCommandTool;
 pub use list_dir::ListDirTool;
 pub use pwd::PwdTool;
+pub use read_file::ReadFileTool;
 
 use std::collections::HashMap;
 

@@ -239,6 +239,10 @@ fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer()
     let answer_request = server.request();
     assert_eq!(answer_request["stream"], true);
     assert_eq!(answer_request["messages"].as_array().unwrap().len(), 2);
+    assert!(answer_request["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("read_file"));
     assert_eq!(
         answer_request["messages"][1],
         json!({"role":"user","content":"hello atlas"})

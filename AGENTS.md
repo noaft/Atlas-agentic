@@ -40,6 +40,7 @@ The built-in runtime tools are:
 
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
+- `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
 - `create_file`: safely create a new file inside the workspace
 - `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
 

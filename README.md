@@ -125,6 +125,7 @@ Default runtime tools:
 
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
+- `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
 - `create_file`: create a new file with a relative path
 - `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
 

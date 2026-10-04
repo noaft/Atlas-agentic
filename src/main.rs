@@ -8,7 +8,7 @@ use atlas_agentic::{
     handle_command,
     models::provider_from_definition,
     render_conversation, render_conversation_metadata, render_conversation_summary, render_help,
-    tools::{CreateFileTool, ListDirTool, PwdTool, ToolRegistry},
+    tools::{CreateFileTool, ListDirTool, PwdTool, ReadFileTool, ToolRegistry},
     AppResult, Runtime,
 };
 
@@ -86,6 +86,7 @@ fn build_runtime() -> Result<Runtime, String> {
     let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(".")),
         Box::new(ListDirTool::new(".")),
+        Box::new(ReadFileTool::new(".")),
         Box::new(CreateFileTool::new(".")),
     ]);
     #[cfg(unix)]
