@@ -1,240 +1,99 @@
-# Agents Guide
+# Atlas Agentic Repository Guide
 
-This file tells coding agents what this repo is and how to work in it.
-
-## Project
+## What This Repository Is
 
 Atlas Agentic is a Rust project for a desktop-first AI agent system.
 
-Read `RULE.md` before changing agent, provider, runtime, or tool architecture.
+The current product is a command-line runtime that loads the default Atlas agent from `agents/atlas.toml`, sends requests through a configured model provider, and lets the runtime execute registered tools.
 
-The first product idea is a Jev-like router that chooses which agent should process a user task. The router is not the worker. It only selects the agent name.
+The planned direction is a multi-agent system with a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
 
-Current state: minimal Rust CLI skeleton.
-Current runtime: CLI `ask` calls a `Runtime`, which sends the prompt to the default local Atlas agent loaded from `agents/atlas.toml`. `LocalAgent` calls a `ModelProvider`. The provider is selected from the local agent definition.
+Read `RULE.md` before changing agent, provider, runtime, router, or tool architecture.
 
-## Current Repo Structure
+## General Repository Structure
 
 ```text
 .
-├── Cargo.toml
-├── Cargo.lock
-├── README.md
-├── VISION.md
-├── AGENTS.md
-├── agents
-│   └── atlas.toml
-├── src
-│   ├── main.rs
-│   ├── lib.rs
-│   ├── runtime.rs
-│   ├── agent_output.rs
-│   ├── agents
-│   │   ├── mod.rs
-│   │   └── local.rs
-│   ├── models
-│       ├── mod.rs
-│       └── deepseek.rs
-│   └── tools
-│       ├── mod.rs
-│       ├── create_file.rs
-│       ├── list_dir.rs
-│       └── pwd.rs
-└── tests
-    ├── agents_behavior.rs
-    ├── cli_behavior.rs
-    ├── cli_binary.rs
-    ├── models_behavior.rs
-    └── tool_call_behavior.rs
+├── agents/                 Local agent definitions
+│   └── atlas.toml          Default Atlas agent configuration
+├── src/
+│   ├── main.rs             CLI entrypoint and runtime setup
+│   ├── lib.rs              CLI command parsing and rendering
+│   ├── runtime.rs          Agent and tool orchestration
+│   ├── agent_output.rs     Final-answer and tool-call parsing
+│   ├── agents/             Agent traits and local agent implementation
+│   ├── models/             Model-provider trait and DeepSeek provider
+│   └── tools/              Tool trait, registry, and built-in tools
+├── tests/                  Integration and behavior tests
+├── Cargo.toml              Rust package configuration
+├── README.md               User-facing project documentation
+├── VISION.md               Product direction
+└── RULE.md                 Coding and architecture rules
 ```
 
-## Current Code
+The built-in runtime tools are:
 
-`src/main.rs` is the CLI entrypoint. It reads command line args and prints the rendered result.
+- `pwd`: show the current workspace path
+- `ls`: list files and directories inside the workspace
+- `create_file`: safely create a new file inside the workspace
 
-`src/lib.rs` currently contains:
+## Configure and Run
 
-- `AppResult`: output type for CLI behavior
-- `handle_command`: parses CLI commands
-- `render`: converts app result into display text
+Show CLI help without configuring a model:
 
-`src/runtime.rs` contains the first runtime boundary.
+```bash
+cargo run -- help
+```
 
-`src/agent_output.rs` parses raw model text into internal Atlas output types.
+Set the DeepSeek API key in the environment or a local `.env` file:
 
-`src/agents/mod.rs` contains:
+```bash
+export DEEPSEEK_API_KEY="your_api_key_here"
+```
 
-- `Agent`
-- `AgentRegistry`
+Optional model configuration:
 
-Concrete local agent definitions live in `agents/*.toml`.
+```bash
+export DEEPSEEK_BASE_URL="https://api.deepseek.com"
+export DEEPSEEK_MODEL="deepseek-flash"
+```
 
-The default agent is:
+Run a request:
 
-- `agents/atlas.toml`: Atlas, the default local agent
+```bash
+cargo run -- ask "hello atlas"
+```
 
-Rust agent runtime:
+Run with streaming output:
 
-- `src/agents/local.rs`: `LocalAgent` and `LocalAgentDefinition`
+```bash
+cargo run -- ask --stream "hello atlas"
+```
 
-Planned future agents should start as new local TOML definitions. Add new Rust agent types only when they need behavior beyond a different prompt/config.
-
-`src/models/mod.rs` contains the `ModelProvider` trait.
-
-`src/models/mod.rs` also contains the provider factory. `src/models/deepseek.rs` contains the DeepSeek chat-completions provider.
-
-`src/tools/mod.rs` contains the `Tool` trait and registry.
-
-`src/tools/create_file.rs` contains the first safe file creation tool.
-`src/tools/list_dir.rs` contains the safe `ls` workspace listing tool.
-`src/tools/pwd.rs` contains the `pwd` workspace path tool.
-
-Tool definitions are passed to model providers through `ModelRequest.tools`. Do not hard-code tool protocol instructions in `agents/*.toml`.
-
-`tests/cli_behavior.rs` covers the current CLI behavior.
-
-## Commands
-
-Use these before finishing changes:
+Format and test the repository:
 
 ```bash
 cargo fmt --check
 cargo test
 ```
 
-Use this to run the current CLI:
+## Commit Traceability Rule
 
-```bash
-cargo run -- ask "hello atlas"
-```
-
-Use streaming output:
-
-```bash
-cargo run -- ask --stream "hello atlas"
-```
-
-The CLI loads `agents/atlas.toml` by default.
-
-The real CLI needs `DEEPSEEK_API_KEY` for `ask`. It can come from the process environment or a local `.env` file:
-
-```bash
-export DEEPSEEK_API_KEY="your_api_key_here"
-```
-
-Optional env vars:
-
-```bash
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-flash
-```
-
-Local agent files choose their provider:
-
-```toml
-model_provider = "deepseek"
-model = "deepseek-flash"
-temperature = 0.3
-top_p = 0.9
-```
-
-## Near-Term Architecture
-
-The next code phase should introduce explicit agent routing.
-
-Target structure:
-
-```text
-src/
-  main.rs
-  lib.rs
-  agents/
-    mod.rs
-    local.rs
-  models/
-    mod.rs
-    deepseek.rs
-```
-
-Local agent definitions can grow like:
-
-```text
-agents/
-  atlas.toml
-  coder.toml
-  planner.toml
-```
-
-Keep this simple at first. Do not build a large framework before the router and agent contracts are clear.
-
-## Agent Selection Design
-
-The router should choose one agent name for a task.
-
-Planned local agent names:
-
-- `chat_agent`
-- `code_agent`
-- `planner_agent`
-- `research_agent`
-- `memory_agent`
-
-Expected routing flow:
-
-```text
-user input
-  -> router
-  -> route decision
-  -> agent registry
-  -> selected agent
-  -> model provider
-  -> response
-```
-
-The first implementation can use rules. Later implementation can call a Jev-compatible decision model.
-
-## Model Direction
-
-DeepSeek AI is the first planned worker model provider.
-
-Do not make every agent call DeepSeek directly from random places. Add a provider boundary so agents can share model calling code.
-
-Preferred idea:
-
-```text
-Agent
-  -> ModelProvider trait
-  -> DeepSeekProvider
-```
-
-## Development Guidelines
-
-- Keep Rust modules small and readable.
-- Add tests for routing behavior before changing routing code.
-- Avoid adding async, HTTP clients, databases, or desktop dependencies until they are needed.
-- Keep routing separate from agent execution.
-- Keep model provider code separate from agent logic.
-- Do not commit API keys or secrets.
-
-## Commit Help
-
-When a coding agent changes files, it should help prepare the commit.
+After completing a requested code or documentation change, create one focused Git commit so the work can be traced, unless the user explicitly asks not to commit.
 
 Before committing:
 
-- run `cargo fmt --check`
-- run `cargo test`
-- check `git status --short`
-- summarize the important changed files
-- suggest a clear commit message
+- Run `cargo fmt --check`.
+- Run `cargo test`.
+- Check `git status --short`.
+- Review the staged diff.
+- Commit only files that belong to the current task.
+- Never commit `.env`, API keys, secrets, `target/`, or unrelated changes.
 
-If the user asks to commit, create one focused commit for the current task. Do not include `.env`, secrets, `target/`, or unrelated local changes.
+Use a short commit message that describes the completed change, such as:
 
-## GitHub CI
-
-The repo has GitHub Actions at `.github/workflows/ci.yml`.
-
-CI checks:
-
-- `cargo fmt --check`
-- `cargo test`
+```text
+feat: send tool results back to agents
+fix: handle streamed tool responses
+docs: simplify agent repository guide
+```
