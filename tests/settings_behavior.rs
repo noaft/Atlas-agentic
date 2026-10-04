@@ -1,4 +1,6 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs, io,
     path::PathBuf,
     sync::{
@@ -8,7 +10,7 @@ use std::{
     thread,
 };
 
-use atlas_agentic::settings::{AtlasSettings, SettingsStore, SETTINGS_VERSION};
+use atlas_agentic::settings::{AtlasSettings, SettingField, SettingsStore, SETTINGS_VERSION};
 use tempfile::tempdir;
 
 #[test]
@@ -171,4 +173,83 @@ fn from_user_config_uses_atlas_config_dir_override() {
     }
     result.unwrap();
     assert!(PathBuf::from(data.path()).join("settings.json").is_file());
+}
+
+#[test]
+fn environment_overrides_only_supported_fields_and_records_their_sources() {
+    let workspace = PathBuf::from("/saved/workspace");
+    let mut saved = AtlasSettings::default();
+    saved.deepseek.api_key = Some("saved-key".to_string());
+    saved.deepseek.base_url = "https://saved.example.test".to_string();
+    saved.deepseek.model = "saved-model".to_string();
+    saved.conversation.history_limit = 17;
+    saved.workspace.default_path = Some(workspace.clone());
+    let environment = BTreeMap::from([
+        ("DEEPSEEK_API_KEY", OsString::from("environment-key")),
+        (
+            "DEEPSEEK_BASE_URL",
+            OsString::from("https://environment.example.test"),
+        ),
+        ("DEEPSEEK_MODEL", OsString::from("environment-model")),
+        ("ATLAS_HISTORY_MESSAGES", OsString::from("9")),
+    ]);
+
+    let effective = saved
+        .resolve_with(|name| environment.get(name).cloned())
+        .unwrap();
+
+    assert_eq!(effective.api_key.as_deref(), Some("environment-key"));
+    assert_eq!(effective.base_url, "https://environment.example.test");
+    assert_eq!(effective.model, "environment-model");
+    assert_eq!(effective.history_limit, 9);
+    assert_eq!(effective.default_workspace, Some(workspace));
+    assert_eq!(
+        effective.environment_overrides,
+        BTreeSet::from([
+            SettingField::ApiKey,
+            SettingField::BaseUrl,
+            SettingField::Model,
+            SettingField::HistoryLimit,
+        ])
+    );
+}
+
+#[test]
+fn invalid_environment_history_limit_keeps_existing_error_message() {
+    let error = AtlasSettings::default()
+        .resolve_with(|name| (name == "ATLAS_HISTORY_MESSAGES").then(|| OsString::from("0")))
+        .unwrap_err();
+
+    assert_eq!(error, "ATLAS_HISTORY_MESSAGES must be a positive integer");
+}
+
+#[test]
+fn resolving_environment_overrides_never_persists_them() {
+    let data = tempdir().unwrap();
+    let store = SettingsStore::at(data.path().join("settings.json"));
+    let mut saved = AtlasSettings::default();
+    saved.deepseek.api_key = Some("saved-key".to_string());
+    store.save(&saved).unwrap();
+
+    let effective = store
+        .load()
+        .unwrap()
+        .resolve_with(|name| {
+            (name == "DEEPSEEK_API_KEY").then(|| OsString::from("environment-key"))
+        })
+        .unwrap();
+
+    assert_eq!(effective.api_key.as_deref(), Some("environment-key"));
+    assert_eq!(store.load().unwrap(), saved);
+}
+
+#[test]
+fn effective_settings_debug_output_redacts_the_api_key() {
+    let mut saved = AtlasSettings::default();
+    saved.deepseek.api_key = Some("never-print-this-secret".to_string());
+
+    let debug = format!("{:?}", saved.resolve_with(|_| None).unwrap());
+
+    assert!(debug.contains("api_key_configured: true"), "{debug}");
+    assert!(!debug.contains("never-print-this-secret"), "{debug}");
 }

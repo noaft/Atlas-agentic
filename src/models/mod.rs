@@ -2,6 +2,7 @@ pub mod deepseek;
 
 use crate::agents::LocalAgentDefinition;
 use crate::conversations::ConversationMessage;
+use crate::settings::{AtlasSettings, EffectiveSettings, SettingField, DEFAULT_DEEPSEEK_MODEL};
 use crate::tools::ToolDefinition;
 
 use deepseek::{DeepSeekConfig, DeepSeekProvider};
@@ -32,10 +33,38 @@ pub struct ModelRequest<'a> {
 pub fn provider_from_definition(
     definition: &LocalAgentDefinition,
 ) -> Result<Box<dyn ModelProvider>, String> {
+    let mut settings = AtlasSettings::default();
+    settings.deepseek.model = definition.model.clone();
+    let effective = settings.resolve_from_env()?;
+    provider_from_definition_with_settings(definition, &effective)
+}
+
+pub fn provider_from_definition_with_settings(
+    definition: &LocalAgentDefinition,
+    settings: &EffectiveSettings,
+) -> Result<Box<dyn ModelProvider>, String> {
     match definition.model_provider.as_str() {
-        "deepseek" => Ok(Box::new(DeepSeekProvider::new(DeepSeekConfig::from_env(
-            &definition.model,
-        )?))),
+        "deepseek" => {
+            let api_key = settings
+                .api_key
+                .clone()
+                .filter(|key| !key.trim().is_empty())
+                .ok_or_else(|| "DEEPSEEK_API_KEY is required".to_string())?;
+            let model = if settings.model == DEFAULT_DEEPSEEK_MODEL
+                && !settings
+                    .environment_overrides
+                    .contains(&SettingField::Model)
+            {
+                definition.model.clone()
+            } else {
+                settings.model.clone()
+            };
+            Ok(Box::new(DeepSeekProvider::new(DeepSeekConfig {
+                api_key,
+                base_url: settings.base_url.clone(),
+                model,
+            })))
+        }
         provider => Err(format!("unknown model provider: {provider}")),
     }
 }

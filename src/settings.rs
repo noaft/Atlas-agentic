@@ -1,5 +1,8 @@
 use std::{
-    env, fmt, fs,
+    collections::BTreeSet,
+    env,
+    ffi::OsString,
+    fmt, fs,
     fs::{File, OpenOptions},
     io,
     io::{Read, Write},
@@ -57,6 +60,126 @@ impl AtlasSettings {
         }
         Ok(())
     }
+
+    pub fn resolve_with(
+        &self,
+        environment: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<EffectiveSettings, String> {
+        self.validate()?;
+        let mut effective = EffectiveSettings {
+            api_key: self.deepseek.api_key.clone(),
+            base_url: self.deepseek.base_url.clone(),
+            model: self.deepseek.model.clone(),
+            history_limit: self.conversation.history_limit,
+            default_workspace: self.workspace.default_path.clone(),
+            environment_overrides: BTreeSet::new(),
+        };
+
+        if let Some(value) = environment_string(&environment, "DEEPSEEK_API_KEY")? {
+            effective.api_key = Some(value);
+            effective.environment_overrides.insert(SettingField::ApiKey);
+        }
+        if let Some(value) = environment_string(&environment, "DEEPSEEK_BASE_URL")? {
+            effective.base_url = value;
+            effective
+                .environment_overrides
+                .insert(SettingField::BaseUrl);
+        }
+        if let Some(value) = environment_string(&environment, "DEEPSEEK_MODEL")? {
+            effective.model = value;
+            effective.environment_overrides.insert(SettingField::Model);
+        }
+        if let Some(value) = environment("ATLAS_HISTORY_MESSAGES") {
+            let value = value.into_string().map_err(|_| history_limit_error())?;
+            effective.history_limit = value
+                .parse::<usize>()
+                .ok()
+                .filter(|limit| *limit > 0)
+                .ok_or_else(history_limit_error)?;
+            effective
+                .environment_overrides
+                .insert(SettingField::HistoryLimit);
+        }
+
+        effective.validate()?;
+        Ok(effective)
+    }
+
+    pub fn resolve_from_env(&self) -> Result<EffectiveSettings, String> {
+        self.resolve_with(|name| env::var_os(name))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SettingField {
+    ApiKey,
+    BaseUrl,
+    Model,
+    HistoryLimit,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EffectiveSettings {
+    pub api_key: Option<String>,
+    pub base_url: String,
+    pub model: String,
+    pub history_limit: usize,
+    pub default_workspace: Option<PathBuf>,
+    pub environment_overrides: BTreeSet<SettingField>,
+}
+
+impl Default for EffectiveSettings {
+    fn default() -> Self {
+        AtlasSettings::default()
+            .resolve_with(|_| None)
+            .expect("default Atlas settings must be valid")
+    }
+}
+
+impl fmt::Debug for EffectiveSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EffectiveSettings")
+            .field("api_key_configured", &self.api_key.is_some())
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("history_limit", &self.history_limit)
+            .field("default_workspace", &self.default_workspace)
+            .field("environment_overrides", &self.environment_overrides)
+            .finish()
+    }
+}
+
+impl EffectiveSettings {
+    fn validate(&self) -> Result<(), String> {
+        if self.base_url.trim().is_empty() {
+            return Err("DeepSeek base URL cannot be blank".to_string());
+        }
+        if self.model.trim().is_empty() {
+            return Err("DeepSeek model cannot be blank".to_string());
+        }
+        if self.history_limit == 0 {
+            return Err("conversation history limit must be a positive integer".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn environment_string(
+    environment: &impl Fn(&str) -> Option<OsString>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    environment(name)
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| format!("{name} must contain valid Unicode"))
+        })
+        .transpose()
+}
+
+fn history_limit_error() -> String {
+    "ATLAS_HISTORY_MESSAGES must be a positive integer".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

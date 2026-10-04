@@ -7,27 +7,10 @@ use crate::conversations::MessageRole;
 
 use super::{ModelProvider, ModelRequest};
 
-const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
 pub struct DeepSeekConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-}
-
-impl DeepSeekConfig {
-    pub fn from_env(default_model: &str) -> Result<Self, String> {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .map_err(|_| "DEEPSEEK_API_KEY is required".to_string())?;
-        let base_url =
-            std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        let model = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| default_model.to_string());
-
-        Ok(Self {
-            api_key,
-            base_url,
-            model,
-        })
-    }
 }
 
 pub struct DeepSeekProvider {

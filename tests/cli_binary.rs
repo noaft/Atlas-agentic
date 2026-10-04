@@ -11,13 +11,17 @@ use std::{
     time::Duration,
 };
 
-use atlas_agentic::conversations::{ConversationStore, MessageRole};
+use atlas_agentic::{
+    conversations::{ConversationStore, MessageRole},
+    settings::{AtlasSettings, SettingsStore},
+};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
 struct CliFixture {
     workspace: TempDir,
     data: TempDir,
+    config: TempDir,
 }
 
 impl CliFixture {
@@ -25,6 +29,7 @@ impl CliFixture {
         Self {
             workspace: tempfile::tempdir().unwrap(),
             data: tempfile::tempdir().unwrap(),
+            config: tempfile::tempdir().unwrap(),
         }
     }
 
@@ -38,7 +43,8 @@ impl CliFixture {
             .current_dir(self.workspace.path())
             .env_clear()
             .env("ATLAS_SKIP_DOTENV", "1")
-            .env("ATLAS_DATA_DIR", self.data.path());
+            .env("ATLAS_DATA_DIR", self.data.path())
+            .env("ATLAS_CONFIG_DIR", self.config.path());
         command
     }
 
@@ -58,6 +64,10 @@ impl CliFixture {
             .env("DEEPSEEK_API_KEY", "fake_key_for_test")
             .env("DEEPSEEK_BASE_URL", &server.url);
         command
+    }
+
+    fn settings_store(&self) -> SettingsStore {
+        SettingsStore::at(self.config.path().join("settings.json"))
     }
 }
 
@@ -318,6 +328,64 @@ fn continuation_uses_supplied_id_and_configured_recent_history_without_retitle()
 }
 
 #[test]
+fn ask_uses_saved_provider_history_settings_and_current_directory_workspace() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let mut settings = AtlasSettings::default();
+    settings.deepseek.api_key = Some("fake_key_for_test".to_string());
+    settings.deepseek.base_url = server.url.clone();
+    settings.conversation.history_limit = 2;
+    fixture.settings_store().save(&settings).unwrap();
+    let saved = fixture
+        .store()
+        .create_turn("Old question", "Old answer")
+        .unwrap();
+    fixture
+        .store()
+        .append_turn(&saved.id, "Recent question", "Recent answer")
+        .unwrap();
+    fixture.store().rename(&saved.id, "Existing title").unwrap();
+
+    let stdout = successful_stdout(
+        fixture
+            .command()
+            .args([
+                "ask",
+                "--conversation",
+                &saved.id.to_string(),
+                "report workspace",
+            ])
+            .output()
+            .unwrap(),
+    );
+
+    assert!(
+        stdout.contains(&format!(
+            "Workspace: {}",
+            fixture.workspace.path().display()
+        )),
+        "{stdout}"
+    );
+    let first_request = server.request();
+    assert_eq!(
+        &first_request["messages"].as_array().unwrap()[1..],
+        &[
+            json!({"role":"user","content":"Recent question"}),
+            json!({"role":"assistant","content":"Recent answer"}),
+            json!({"role":"user","content":"report workspace"}),
+        ]
+    );
+    let continuation = server.request();
+    assert!(
+        continuation["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains(&fixture.workspace.path().display().to_string())
+    );
+}
+
+#[test]
 fn invalid_history_limit_is_reported_without_sending_a_request() {
     let fixture = CliFixture::new();
     fixture.install_agent();
@@ -393,8 +461,25 @@ impl FakeDeepSeek {
                     .set_write_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
                 let request = read_request(&mut socket);
+                let last_user_content = request["messages"]
+                    .as_array()
+                    .and_then(|messages| messages.last())
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or_default();
+                let streamed_content = if last_user_content == "report workspace" {
+                    r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
+                } else if last_user_content.contains("\"type\": \"tool_results\"") {
+                    let continuation: Value = serde_json::from_str(last_user_content).unwrap();
+                    let workspace = continuation["tool_results"][0]["output"].as_str().unwrap();
+                    format!(
+                        r#"{{"type":"final","content":{}}}"#,
+                        serde_json::to_string(workspace).unwrap()
+                    )
+                } else {
+                    r#"{"type":"final","content":"Hello from Atlas"}"#.to_string()
+                };
                 let (content_type, body) = if request["stream"] == true {
-                    let delta = json!({"choices":[{"delta":{"content":"{\"type\":\"final\",\"content\":\"Hello from Atlas\"}"}}]});
+                    let delta = json!({"choices":[{"delta":{"content":streamed_content}}]});
                     (
                         "text/event-stream",
                         format!("data: {delta}\n\ndata: [DONE]\n\n"),

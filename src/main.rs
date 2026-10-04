@@ -1,12 +1,12 @@
 use std::{io::Write, path::Path};
 
 use atlas_agentic::{
-    app::{build_runtime, load_dotenv},
-    conversations::{
-        history_limit_from_env, ConversationId, ConversationService, ConversationStore,
-    },
+    app::{build_runtime_with_settings, load_dotenv},
+    conversations::{ConversationId, ConversationService, ConversationStore},
     handle_command, render_conversation, render_conversation_metadata, render_conversation_summary,
-    render_help, AppResult,
+    render_help,
+    settings::SettingsStore,
+    AppResult,
 };
 
 fn main() {
@@ -61,10 +61,15 @@ fn run_command(command: AppResult) -> Result<(), String> {
 }
 
 fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
-    let history_limit = history_limit_from_env()?;
+    let settings = SettingsStore::from_user_config()?
+        .load()?
+        .resolve_from_env()?;
     let store = ConversationStore::from_user_data()?;
-    let runtime = build_runtime(Path::new("."), Path::new("agents/atlas.toml"))?;
-    let service = ConversationService::new(&runtime, &store, history_limit);
+    let workspace = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+    let runtime =
+        build_runtime_with_settings(&workspace, Path::new("agents/atlas.toml"), &settings)?;
+    let service = ConversationService::new(&runtime, &store, settings.history_limit);
     let mut stdout = std::io::stdout();
     let result = service.ask(prompt, id, &mut |delta| {
         print!("{delta}");

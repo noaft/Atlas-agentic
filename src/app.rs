@@ -2,7 +2,8 @@ use std::path::Path;
 
 use crate::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
-    models::provider_from_definition,
+    models::{provider_from_definition_with_settings, ModelProvider},
+    settings::{EffectiveSettings, SettingsStore},
     tools::{CreateFileTool, ListDirTool, PwdTool, ReadFileTool, ToolRegistry},
     Runtime,
 };
@@ -11,8 +12,20 @@ use crate::{
 use crate::tools::ExecCommandTool;
 
 pub fn build_runtime(workspace_root: &Path, agent_file: &Path) -> Result<Runtime, String> {
+    let settings = SettingsStore::from_user_config()?
+        .load()?
+        .resolve_from_env()?;
+    build_runtime_with_settings(workspace_root, agent_file, &settings)
+}
+
+pub fn build_runtime_with_settings(
+    workspace_root: &Path,
+    agent_file: &Path,
+    settings: &EffectiveSettings,
+) -> Result<Runtime, String> {
     let definition = LocalAgentDefinition::from_file(agent_file)?;
-    let provider = provider_from_definition(&definition)?;
+    let provider: Box<dyn ModelProvider> =
+        provider_from_definition_with_settings(&definition, settings)?;
     let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(workspace_root)),
         Box::new(ListDirTool::new(workspace_root)),
