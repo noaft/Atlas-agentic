@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::Runtime;
 
 use super::{
@@ -32,7 +34,17 @@ impl<'a> ConversationService<'a> {
         id: Option<&ConversationId>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ConversationAskResult, String> {
-        self.ask_with_fallible_sink(prompt, id, &mut |delta| {
+        self.ask_with_workspace(prompt, id, None, on_delta)
+    }
+
+    pub fn ask_with_workspace(
+        &self,
+        prompt: &str,
+        id: Option<&ConversationId>,
+        new_workspace: Option<&Path>,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ConversationAskResult, String> {
+        self.ask_with_workspace_and_fallible_sink(prompt, id, new_workspace, &mut |delta| {
             on_delta(delta);
             Ok(())
         })
@@ -42,6 +54,16 @@ impl<'a> ConversationService<'a> {
         &self,
         prompt: &str,
         id: Option<&ConversationId>,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+    ) -> Result<ConversationAskResult, String> {
+        self.ask_with_workspace_and_fallible_sink(prompt, id, None, on_delta)
+    }
+
+    pub fn ask_with_workspace_and_fallible_sink(
+        &self,
+        prompt: &str,
+        id: Option<&ConversationId>,
+        new_workspace: Option<&Path>,
         on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
     ) -> Result<ConversationAskResult, String> {
         let history = match id {
@@ -67,7 +89,9 @@ impl<'a> ConversationService<'a> {
         let metadata = match id {
             Some(id) => self.store.append_turn(id, prompt, &answer)?,
             None => {
-                let metadata = self.store.create_turn(prompt, &answer)?;
+                let metadata =
+                    self.store
+                        .create_turn_with_workspace(prompt, &answer, new_workspace)?;
                 let title = self
                     .runtime
                     .generate_conversation_title(prompt)

@@ -1,6 +1,7 @@
 use std::{
     env, fs, io,
     io::Write,
+    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex, OnceLock,
@@ -69,6 +70,7 @@ fn create_turn_writes_versioned_index_and_two_jsonl_messages() {
     assert!(!metadata.title_attempted);
     assert_eq!(metadata.message_count, 2);
     assert_eq!(metadata.created_at, metadata.updated_at);
+    assert_eq!(metadata.workspace_path, None);
 
     let index = read_index(data.path());
     assert_eq!(index["version"], 1);
@@ -93,6 +95,132 @@ fn create_turn_writes_versioned_index_and_two_jsonl_messages() {
     );
     assert_eq!(conversation.messages[1].role, MessageRole::Assistant);
     assert_eq!(conversation.messages[1].content, "reply\n日本語");
+}
+
+#[test]
+fn version_one_index_without_workspace_path_loads_as_unassigned() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("user", "assistant").unwrap();
+    let path = data.path().join("conversations.json");
+    let mut index = read_index(data.path());
+    index["conversations"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("workspacePath");
+    fs::write(path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
+
+    assert_eq!(
+        store.load(&metadata.id).unwrap().metadata.workspace_path,
+        None
+    );
+}
+
+#[test]
+fn creation_stores_a_canonical_absolute_workspace_directory() {
+    let data = tempdir().unwrap();
+    let workspace = data.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = ConversationStore::at(data.path().join("data"));
+
+    let metadata = store
+        .create_turn_with_workspace("user", "assistant", Some(&workspace))
+        .unwrap();
+
+    assert_eq!(
+        metadata.workspace_path,
+        Some(workspace.canonicalize().unwrap())
+    );
+    assert!(metadata.workspace_path.unwrap().is_absolute());
+}
+
+#[test]
+fn assigning_workspace_preserves_conversation_except_for_workspace_and_update_time() {
+    let data = tempdir().unwrap();
+    let first_workspace = data.path().join("first");
+    let second_workspace = data.path().join("second");
+    fs::create_dir(&first_workspace).unwrap();
+    fs::create_dir(&second_workspace).unwrap();
+    let store = ConversationStore::at(data.path().join("data"));
+    let created = store
+        .create_turn_with_workspace("user", "assistant", Some(&first_workspace))
+        .unwrap();
+    let titled = store.rename(&created.id, "Chosen title").unwrap();
+    let before = store.load(&created.id).unwrap();
+    thread::sleep(Duration::from_millis(2));
+
+    let assigned = store
+        .assign_workspace(&created.id, &second_workspace)
+        .unwrap();
+
+    assert_eq!(assigned.id, titled.id);
+    assert_eq!(assigned.title, titled.title);
+    assert_eq!(assigned.title_attempted, titled.title_attempted);
+    assert_eq!(assigned.created_at, titled.created_at);
+    assert_eq!(assigned.message_count, titled.message_count);
+    assert!(assigned.updated_at > titled.updated_at);
+    assert_eq!(
+        assigned.workspace_path,
+        Some(second_workspace.canonicalize().unwrap())
+    );
+    let after = store.load(&created.id).unwrap();
+    assert_eq!(after.messages, before.messages);
+    assert_eq!(after.metadata, assigned);
+}
+
+#[test]
+fn workspace_validation_rejects_missing_paths_and_regular_files_without_mutation() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().join("data"));
+    let metadata = store.create_turn("user", "assistant").unwrap();
+    let before = store.load(&metadata.id).unwrap();
+    let missing = data.path().join("missing");
+    let file = data.path().join("file.txt");
+    fs::write(&file, "not a directory").unwrap();
+
+    assert!(store.assign_workspace(&metadata.id, &missing).is_err());
+    assert!(store.assign_workspace(&metadata.id, &file).is_err());
+    assert_eq!(store.load(&metadata.id).unwrap(), before);
+}
+
+#[test]
+fn workspace_removed_after_selection_fails_creation_without_metadata() {
+    let data = tempdir().unwrap();
+    let workspace = data.path().join("selected");
+    fs::create_dir(&workspace).unwrap();
+    let selected = workspace.clone();
+    fs::remove_dir(&workspace).unwrap();
+    let store = ConversationStore::at(data.path().join("data"));
+
+    let error = store
+        .create_turn_with_workspace("user", "assistant", Some(&selected))
+        .unwrap_err();
+
+    assert!(error.contains("workspace"), "{error}");
+    assert!(store.list().unwrap().is_empty());
+    assert!(!data.path().join("data/conversations").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn workspace_validation_rejects_non_utf8_paths() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let data = tempdir().unwrap();
+    let path = data
+        .path()
+        .join(PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'w', 0xff,
+        ])));
+    fs::create_dir(&path).unwrap();
+    let store = ConversationStore::at(data.path().join("data"));
+
+    let error = store
+        .create_turn_with_workspace("user", "assistant", Some(&path))
+        .unwrap_err();
+
+    assert!(error.contains("valid Unicode"), "{error}");
+    assert!(store.list().unwrap().is_empty());
 }
 
 #[test]

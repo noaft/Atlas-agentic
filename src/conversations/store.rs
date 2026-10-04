@@ -80,8 +80,18 @@ impl ConversationStore {
     }
 
     pub fn create_turn(&self, user: &str, assistant: &str) -> Result<ConversationMetadata, String> {
+        self.create_turn_with_workspace(user, assistant, None)
+    }
+
+    pub fn create_turn_with_workspace(
+        &self,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+    ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
+            let workspace_path = workspace.map(validate_workspace).transpose()?;
             create_private_dir_all(&self.conversations_dir()).map_err(|error| {
                 format!(
                     "failed to create {}: {error}",
@@ -123,6 +133,7 @@ impl ConversationStore {
                 created_at: now,
                 updated_at: now,
                 message_count: messages.len(),
+                workspace_path,
             };
             index.conversations.push(metadata.clone());
             if let Err(error) = self.write_index(&index) {
@@ -131,6 +142,26 @@ impl ConversationStore {
                     history_path.display()
                 ));
             }
+            Ok(metadata)
+        })
+    }
+
+    pub fn assign_workspace(
+        &self,
+        id: &ConversationId,
+        workspace: &Path,
+    ) -> Result<ConversationMetadata, String> {
+        self.with_exclusive_lock(|| {
+            let workspace = validate_workspace(workspace)?;
+            let mut index = self.read_index()?;
+            let position = find_metadata_position(&index, id)?;
+            let messages = self.read_history(&self.history_path(id))?;
+            let metadata = &mut index.conversations[position];
+            reconcile_metadata(metadata, &messages);
+            metadata.workspace_path = Some(workspace);
+            metadata.updated_at = Utc::now();
+            let metadata = metadata.clone();
+            self.write_index(&index)?;
             Ok(metadata)
         })
     }
@@ -459,6 +490,25 @@ impl ConversationStore {
     }
 }
 
+pub fn validate_workspace(path: &Path) -> Result<PathBuf, String> {
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        format!(
+            "workspace does not exist or cannot be accessed ({}): {error}",
+            path.display()
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "workspace must be an existing directory: {}",
+            path.display()
+        ));
+    }
+    if canonical.to_str().is_none() {
+        return Err("workspace path must contain valid Unicode".to_string());
+    }
+    Ok(canonical)
+}
+
 fn create_private_dir_all(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -508,6 +558,6 @@ fn find_metadata_position(index: &ConversationIndex, id: &ConversationId) -> Res
 fn reconcile_metadata(metadata: &mut ConversationMetadata, messages: &[ConversationMessage]) {
     metadata.message_count = messages.len();
     if let Some(message) = messages.last() {
-        metadata.updated_at = message.created_at;
+        metadata.updated_at = metadata.updated_at.max(message.created_at);
     }
 }

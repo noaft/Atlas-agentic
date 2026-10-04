@@ -1,4 +1,4 @@
-use std::{env, fmt};
+use std::{env, fmt, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,8 @@ pub struct ConversationMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
+    #[serde(rename = "workspacePath", default)]
+    pub workspace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

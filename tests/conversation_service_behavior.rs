@@ -248,6 +248,58 @@ fn stream_sink_failure_saves_no_conversation() {
 }
 
 #[test]
+fn first_turn_model_and_sink_failures_do_not_persist_workspace_metadata() {
+    for sink_fails in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let store = ConversationStore::at(temp.path().join("data"));
+        let response = if sink_fails {
+            Response::success(vec!["answer"])
+        } else {
+            Response::failure()
+        };
+        let (runtime, _) = runtime(&store, vec![response], Ok("unused"));
+        let service = ConversationService::new(&runtime, &store, 40);
+
+        let result = service.ask_with_workspace_and_fallible_sink(
+            "first input",
+            None,
+            Some(&workspace),
+            &mut |_| {
+                if sink_fails {
+                    Err("stream receiver closed".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(store.list().unwrap().is_empty());
+        assert!(!temp.path().join("data/conversations").exists());
+    }
+}
+
+#[test]
+fn successful_first_turn_persists_the_selected_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let (runtime, _) = runtime(&store, vec![Response::success(vec!["answer"])], Ok("title"));
+
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask_with_workspace("first input", None, Some(&workspace), &mut |_| {})
+        .unwrap();
+
+    assert_eq!(
+        result.metadata.workspace_path,
+        Some(workspace.canonicalize().unwrap())
+    );
+}
+
+#[test]
 fn tool_failure_saves_no_new_conversation() {
     let temp = tempfile::tempdir().unwrap();
     let store = ConversationStore::at(temp.path().join("data"));
