@@ -9,6 +9,46 @@ Atlas is being shaped as a desktop-first agent system with a Jev-like router tha
 - See [AGENTS.md](AGENTS.md) for repo structure and coding-agent guidance.
 - See [RULE.md](RULE.md) for architecture rules.
 
+## Desktop Chat
+
+Atlas includes a Tauri v2 desktop chat application with a vanilla TypeScript
+frontend. It uses the same Rust runtime, local conversations, default tools,
+agent definition, and environment variables as the CLI.
+
+Install the platform packages from the official
+[Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/), then
+install the frontend dependencies:
+
+```bash
+npm ci --prefix desktop
+```
+
+Set `DEEPSEEK_API_KEY` in the environment or the repo's local `.env` file and
+launch the development app from the repository root:
+
+```bash
+npm --prefix desktop run tauri dev
+```
+
+The app opens on a blank, unsaved draft and never automatically resumes the
+latest conversation. Clicking **New chat** only clears the UI. Atlas creates the
+conversation ID and local history after the first model response completes
+successfully; a failed first request remains an unsaved, retryable draft.
+
+The sidebar lists saved conversations. Select one to continue it, or use the
+conversation menu to rename or delete it. Conversation management works without
+a model API key; only sending a message requires provider configuration.
+
+This first UI milestone uses the desktop process's current working directory for
+coding tools. It does not yet include a workspace picker, settings screen,
+research/news agents, or background tasks.
+
+Build a local debug executable without creating an installer:
+
+```bash
+npm --prefix desktop run tauri -- build --debug --no-bundle
+```
+
 ## CLI Runtime
 
 The default agent is loaded from:
@@ -133,17 +173,22 @@ Default runtime tools:
 
 ## Source layout and verification
 
-CLI parsing and rendering live in `src/lib.rs`, with command routing and runtime
-setup in `src/main.rs`. `src/conversations/` contains provider-independent types
+CLI parsing and rendering live in `src/lib.rs`, with command routing in
+`src/main.rs` and shared runtime setup in `src/app.rs`. `src/conversations/`
+contains provider-independent types
 and history-window selection (`types.rs`), local persistence (`store.rs`), ask/save
 orchestration (`service.rs`), and title sanitization (`title.rs`). `src/runtime.rs`
 coordinates agents and tools; agents and model providers pass typed user/assistant
-history without owning persistence.
+history without owning persistence. `desktop/` contains the TypeScript chat UI
+and the nested `desktop/src-tauri/` Rust command bridge.
 
 ```bash
 cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+npm --prefix desktop test
+npm --prefix desktop run build
 ```
 
 Binary conversation tests use temporary data directories and a local fake model

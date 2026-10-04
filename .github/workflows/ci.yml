@@ -21,3 +21,55 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  desktop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix desktop
+
+      - name: Check desktop Rust formatting
+        run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+
+      - name: Test desktop Rust bridge
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Lint desktop Rust bridge
+        run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test desktop frontend
+        run: npm --prefix desktop test
+
+      - name: Build desktop frontend
+        run: npm --prefix desktop run build
+
+      - name: Compile Tauri desktop application
+        run: npm --prefix desktop run tauri -- build --debug --no-bundle

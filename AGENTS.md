@@ -17,8 +17,9 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 ├── agents/                 Local agent definitions
 │   └── atlas.toml          Default Atlas agent configuration
 ├── src/
-│   ├── main.rs             CLI entrypoint and runtime setup
+│   ├── main.rs             CLI entrypoint and command execution
 │   ├── lib.rs              CLI command parsing and rendering
+│   ├── app.rs              Shared runtime and default-tool construction
 │   ├── runtime.rs          Agent and tool orchestration
 │   ├── agent_output.rs     Final-answer and tool-call parsing
 │   ├── agents/             Agent traits and local agent implementation
@@ -29,6 +30,9 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   └── title.rs        Title sanitization
 │   ├── models/             Model-provider trait and DeepSeek provider
 │   └── tools/              Tool trait, registry, and built-in tools
+├── desktop/
+│   ├── src/                Vanilla TypeScript chat state, adapter, and UI
+│   └── src-tauri/          Tauri commands, resources, and desktop config
 ├── tests/                  Integration and behavior tests
 ├── Cargo.toml              Rust package configuration
 ├── README.md               User-facing project documentation
@@ -125,7 +129,22 @@ Format and test the repository:
 cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml
+npm --prefix desktop test
+npm --prefix desktop run build
 ```
+
+Install desktop dependencies and launch the Tauri app from the repository root:
+
+```bash
+npm ci --prefix desktop
+npm --prefix desktop run tauri dev
+```
+
+The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
+chat** as an unsaved frontend draft; only a successful first `ask` may create
+local conversation data.
 
 CLI binary tests isolate their workspace and `ATLAS_DATA_DIR`, use child-only
 environment configuration, and serve fake DeepSeek responses over loopback TCP.

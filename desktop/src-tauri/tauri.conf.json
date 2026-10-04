@@ -25,6 +25,9 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "resources": {
+      "../../agents/atlas.toml": "agents/atlas.toml"
+    }
   }
 }
