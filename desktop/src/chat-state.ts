@@ -15,6 +15,8 @@ const initialState = (): ChatState => ({
   draftText: "",
   status: "idle",
   errorMessage: null,
+  listStatus: "idle",
+  listErrorMessage: null,
 });
 
 const displaySavedMessage = (message: ConversationMessage): DisplayMessage => ({
@@ -38,6 +40,7 @@ export class ChatStore {
   private readonly listeners = new Set<Listener>();
   private selectionToken = 0;
   private askToken = 0;
+  private mutationToken = 0;
 
   constructor(private readonly api: AtlasApi) {}
 
@@ -52,12 +55,20 @@ export class ChatStore {
   }
 
   async initialize(): Promise<void> {
-    this.update({ status: "loading", errorMessage: null });
+    this.update({ listStatus: "loading", listErrorMessage: null });
     try {
       const conversations = await this.api.listConversations();
-      this.update({ conversations, status: "idle", errorMessage: null });
+      const knownIds = new Set(this.state.conversations.map((conversation) => conversation.id));
+      this.update({
+        conversations: [
+          ...this.state.conversations,
+          ...conversations.filter((conversation) => !knownIds.has(conversation.id)),
+        ],
+        listStatus: "idle",
+        listErrorMessage: null,
+      });
     } catch (error) {
-      this.update({ status: "error", errorMessage: errorMessage(error) });
+      this.update({ listStatus: "error", listErrorMessage: errorMessage(error) });
     }
   }
 
@@ -65,6 +76,7 @@ export class ChatStore {
     if (this.state.status === "streaming") return;
     this.selectionToken += 1;
     this.askToken += 1;
+    this.mutationToken += 1;
     this.state = {
       ...this.state,
       activeConversationId: null,
@@ -79,6 +91,7 @@ export class ChatStore {
   async selectConversation(id: string): Promise<void> {
     if (this.state.status === "streaming") return;
     const token = ++this.selectionToken;
+    this.mutationToken += 1;
     this.update({ status: "loading", errorMessage: null });
     try {
       const conversation = await this.api.loadConversation(id);
@@ -98,7 +111,7 @@ export class ChatStore {
   }
 
   setDraft(text: string): void {
-    this.update({ draftText: text });
+    this.state = { ...this.state, draftText: text };
   }
 
   async send(): Promise<void> {
@@ -175,9 +188,11 @@ export class ChatStore {
     const id = this.state.activeConversationId;
     const normalized = title.trim();
     if (!id || !normalized || this.state.status === "streaming") return;
+    const token = ++this.mutationToken;
     this.update({ status: "loading", errorMessage: null });
     try {
       const metadata = await this.api.renameConversation(id, normalized);
+      if (token !== this.mutationToken) return;
       this.update({
         conversations: this.state.conversations.map((conversation) =>
           conversation.id === metadata.id ? metadata : conversation,
@@ -186,6 +201,7 @@ export class ChatStore {
         errorMessage: null,
       });
     } catch (error) {
+      if (token !== this.mutationToken) return;
       this.update({ status: "error", errorMessage: errorMessage(error) });
     }
   }
@@ -193,12 +209,22 @@ export class ChatStore {
   async deleteActive(): Promise<void> {
     const id = this.state.activeConversationId;
     if (!id || this.state.status === "streaming") return;
+    const token = ++this.mutationToken;
     this.update({ status: "loading", errorMessage: null });
     try {
       await this.api.deleteConversation(id);
+      if (token !== this.mutationToken) {
+        this.update({
+          conversations: this.state.conversations.filter(
+            (conversation) => conversation.id !== id,
+          ),
+        });
+        return;
+      }
       this.selectionToken += 1;
       this.askToken += 1;
       this.state = {
+        ...this.state,
         conversations: this.state.conversations.filter(
           (conversation) => conversation.id !== id,
         ),
@@ -210,6 +236,7 @@ export class ChatStore {
       };
       this.emit();
     } catch (error) {
+      if (token !== this.mutationToken) return;
       this.update({ status: "error", errorMessage: errorMessage(error) });
     }
   }

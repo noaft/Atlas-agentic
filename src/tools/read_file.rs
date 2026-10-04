@@ -1,9 +1,14 @@
 use std::{
-    fs::File,
     io::Read,
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt;
+use cap_std::{
+    ambient_authority,
+    fs::{Dir, OpenOptions},
+};
 use serde::Deserialize;
 
 use super::{Tool, ToolDefinition, ToolResult};
@@ -50,25 +55,25 @@ impl Tool for ReadFileTool {
             .map_err(|error| format!("invalid read_file args: {error}"))?;
         validate_relative_path(&args.path)?;
 
-        let workspace = self
-            .workspace
-            .canonicalize()
-            .map_err(|error| format!("failed to resolve read_file workspace: {error}"))?;
-        let path = workspace.join(&args.path);
-        let path = path
-            .canonicalize()
-            .map_err(|error| format!("failed to resolve read_file target: {error}"))?;
-        if !path.starts_with(&workspace) {
-            return Err("read_file target escapes the workspace".to_string());
-        }
-        if !path.is_file() {
+        let workspace = Dir::open_ambient_dir(&self.workspace, ambient_authority())
+            .map_err(|error| format!("failed to open read_file workspace: {error}"))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK);
+        let file = workspace
+            .open_with(&args.path, &options)
+            .map_err(|error| format!("failed to open read_file target: {error}"))?;
+        if !file
+            .metadata()
+            .map_err(|error| format!("failed to inspect read_file target: {error}"))?
+            .is_file()
+        {
             return Err(format!("read_file target is not a file: {}", args.path));
         }
 
         let mut bytes = Vec::with_capacity(MAX_OUTPUT_BYTES + 1);
-        File::open(&path)
-            .map_err(|error| format!("failed to open read_file target: {error}"))?
-            .take((MAX_OUTPUT_BYTES + 1) as u64)
+        file.take((MAX_OUTPUT_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|error| format!("failed to read file: {error}"))?;
 

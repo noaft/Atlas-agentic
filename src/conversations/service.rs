@@ -32,6 +32,18 @@ impl<'a> ConversationService<'a> {
         id: Option<&ConversationId>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ConversationAskResult, String> {
+        self.ask_with_fallible_sink(prompt, id, &mut |delta| {
+            on_delta(delta);
+            Ok(())
+        })
+    }
+
+    pub fn ask_with_fallible_sink(
+        &self,
+        prompt: &str,
+        id: Option<&ConversationId>,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+    ) -> Result<ConversationAskResult, String> {
         let history = match id {
             Some(id) => {
                 let conversation = self.store.load(id)?;
@@ -39,9 +51,18 @@ impl<'a> ConversationService<'a> {
             }
             None => Vec::new(),
         };
+        let mut sink_error = None;
         let answer = self
             .runtime
-            .ask_stream_with_history(prompt, &history, on_delta)?;
+            .ask_stream_with_history(prompt, &history, &mut |delta| {
+                if sink_error.is_none() {
+                    sink_error = on_delta(delta).err();
+                }
+            });
+        if let Some(error) = sink_error {
+            return Err(error);
+        }
+        let answer = answer?;
 
         let metadata = match id {
             Some(id) => self.store.append_turn(id, prompt, &answer)?,

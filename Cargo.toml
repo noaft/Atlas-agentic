@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+cap-std = "4.0.3"
 directories = "6"
 dotenvy = "0.15"
 fs2 = "0.4"

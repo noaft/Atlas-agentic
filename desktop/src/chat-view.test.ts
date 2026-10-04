@@ -9,6 +9,15 @@ import type {
   ConversationMetadata,
 } from "./types";
 
+if (!("showModal" in HTMLDialogElement.prototype)) {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    },
+  });
+}
+
 const metadata: ConversationMetadata = {
   id: "00000000-0000-4000-8000-000000000001",
   title: "Atlas runtime",
@@ -169,6 +178,33 @@ test("Enter sends while Shift Enter keeps a newline", async () => {
   expect(api.askCount).toBe(1);
 });
 
+test("Enter confirms IME composition without sending", async () => {
+  const { api, root } = setup();
+  const input = inputComposer(root, "編集中");
+
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }),
+  );
+  await flush();
+
+  expect(api.askCount).toBe(0);
+});
+
+test("typing preserves the composer's caret position", () => {
+  const { root } = setup();
+  const input = composer(root);
+  input.focus();
+  input.value = "hello";
+  input.setSelectionRange(3, 3);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+
+  const rendered = composer(root);
+  expect(rendered.value).toBe("hello");
+  expect(document.activeElement).toBe(rendered);
+  expect(rendered.selectionStart).toBe(3);
+  expect(rendered.selectionEnd).toBe(3);
+});
+
 test("streaming renders ordered assistant text and disables mutation controls", async () => {
   const api = new ViewApi();
   const pending = deferred<ConversationAskResult>();
@@ -199,12 +235,18 @@ test("rename keeps the dialog on failure and updates title on success", async ()
   const { root, store } = setup(api);
   await store.initialize();
   await store.selectConversation(metadata.id);
+  const showModal = vi
+    .spyOn(HTMLDialogElement.prototype, "showModal")
+    .mockImplementation(function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    });
   api.renameImpl = async () => {
     throw new Error("rename failed");
   };
 
   click(root, "[data-conversation-menu]");
   click(root, "[data-rename]");
+  expect(showModal).toHaveBeenCalledOnce();
   const title = root.querySelector<HTMLInputElement>("[data-rename-input]")!;
   title.value = "  Renamed  ";
   title.dispatchEvent(new Event("input", { bubbles: true }));
@@ -269,4 +311,18 @@ test("hostile titles and messages render only as literal text", async () => {
 
   expect(root.textContent).toContain(hostile);
   expect(root.querySelector("img")).toBeNull();
+});
+
+test("a failed conversation list can be retried from the sidebar", async () => {
+  const api = new ViewApi();
+  api.list = Promise.reject(new Error("list failed"));
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  expect(root.textContent).toContain("list failed");
+  api.list = Promise.resolve([metadata]);
+  click(root, "[data-retry-list]");
+  await flush();
+
+  expect(root.textContent).toContain("Atlas runtime");
 });

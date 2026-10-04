@@ -303,3 +303,51 @@ test("late delta after settlement is ignored", async () => {
 
   expect(store.getState().messages.at(-1)?.content).toBe("complete");
 });
+
+test("startup listing does not interrupt an ask that starts while it is pending", async () => {
+  const api = new FakeApi();
+  const listing = deferred<ConversationMetadata[]>();
+  api.listConversations = () => listing.promise;
+  const asking = deferred<ConversationAskResult>();
+  let emit!: (text: string) => void;
+  api.asks.push(async (_prompt, _id, onDelta) => {
+    emit = onDelta;
+    return asking.promise;
+  });
+  const store = new ChatStore(api);
+
+  const initializing = store.initialize();
+  store.setDraft("hello");
+  const sending = store.send();
+  expect(store.getState().status).toBe("streaming");
+
+  listing.resolve([second]);
+  await initializing;
+  expect(store.getState().status).toBe("streaming");
+  emit("still streaming");
+  expect(store.getState().messages.at(-1)?.content).toBe("still streaming");
+
+  asking.resolve(result(first, "still streaming", true));
+  await sending;
+});
+
+test("a completed delete cannot erase a newer draft", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  const deleting = deferred<void>();
+  api.remove = () => deleting.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+
+  const pendingDelete = store.deleteActive();
+  store.newChat();
+  store.setDraft("new work");
+  deleting.resolve();
+  await pendingDelete;
+
+  expect(store.getState().activeConversationId).toBeNull();
+  expect(store.getState().draftText).toBe("new work");
+  expect(store.getState().conversations).toEqual([]);
+});

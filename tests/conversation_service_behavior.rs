@@ -224,6 +224,30 @@ fn model_failure_saves_no_new_conversation_or_partial_answer() {
 }
 
 #[test]
+fn stream_sink_failure_saves_no_conversation() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let (runtime, requests) = runtime(
+        &store,
+        vec![Response::success(vec!["first", " second"])],
+        Ok("unused title"),
+    );
+    let mut deliveries = 0;
+
+    let error = ConversationService::new(&runtime, &store, 40)
+        .ask_with_fallible_sink("first input", None, &mut |_| {
+            deliveries += 1;
+            Err("stream receiver closed".to_string())
+        })
+        .unwrap_err();
+
+    assert_eq!(error, "stream receiver closed");
+    assert_eq!(deliveries, 1);
+    assert!(store.list().unwrap().is_empty());
+    assert_eq!(requests.borrow().len(), 1);
+}
+
+#[test]
 fn tool_failure_saves_no_new_conversation() {
     let temp = tempfile::tempdir().unwrap();
     let store = ConversationStore::at(temp.path().join("data"));

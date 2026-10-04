@@ -32,6 +32,7 @@ export type ChatEvent = {
 };
 
 export type ChatStatus = "idle" | "loading" | "streaming" | "error";
+export type ConversationListStatus = "idle" | "loading" | "error";
 export type MessageDelivery = "saved" | "pending" | "failed";
 
 export interface DisplayMessage {
@@ -48,4 +49,6 @@ export interface ChatState {
   draftText: string;
   status: ChatStatus;
   errorMessage: string | null;
+  listStatus: ConversationListStatus;
+  listErrorMessage: string | null;
 }

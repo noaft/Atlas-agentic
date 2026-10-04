@@ -52,7 +52,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   };
 
   const render = (state: Readonly<ChatState>) => {
-    const composerWasFocused = document.activeElement?.hasAttribute("data-composer") ?? false;
+    const focusedComposer =
+      document.activeElement instanceof HTMLTextAreaElement &&
+      document.activeElement.hasAttribute("data-composer")
+        ? document.activeElement
+        : null;
+    const composerSelection = focusedComposer
+      ? [focusedComposer.selectionStart, focusedComposer.selectionEnd]
+      : null;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = isStreaming || state.status === "loading";
@@ -120,11 +127,19 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
 
     const list = root.querySelector<HTMLElement>("[data-conversation-list]")!;
-    if (state.status === "loading" && state.conversations.length === 0) {
+    if (state.listStatus === "loading" && state.conversations.length === 0) {
       const loading = document.createElement("p");
       loading.className = "sidebar-status";
       loading.textContent = "Loading conversations…";
       list.append(loading);
+    } else if (state.listStatus === "error" && state.conversations.length === 0) {
+      const error = document.createElement("p");
+      error.className = "sidebar-status sidebar-error";
+      error.textContent = state.listErrorMessage ?? "Could not load conversations.";
+      const retry = button("Retry", "sidebar-retry");
+      retry.dataset.retryList = "";
+      retry.addEventListener("click", () => void store.initialize());
+      list.append(error, retry);
     } else if (state.conversations.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sidebar-status";
@@ -220,10 +235,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     textarea.addEventListener("input", () => {
       const value = textarea.value;
       store.setDraft(value);
-      focusComposer();
+      send.disabled = isBusy || !value.trim();
     });
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         root.querySelector<HTMLFormElement>("[data-composer-form]")?.requestSubmit();
       }
@@ -242,7 +257,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
     const dialog = root.querySelector<HTMLDialogElement>("dialog")!;
     if (renameOpen) {
-      dialog.setAttribute("open", "");
+      dialog.addEventListener("close", () => {
+        renameOpen = false;
+      });
+      dialog.showModal();
       const renameInput = root.querySelector<HTMLInputElement>("[data-rename-input]")!;
       renameInput.value = renameValue;
       renameInput.addEventListener("input", () => {
@@ -255,9 +273,16 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
           render(store.getState());
         },
       );
-      root.querySelector<HTMLButtonElement>("[data-save-rename]")!.addEventListener(
-        "click",
-        async () => {
+      const save = root.querySelector<HTMLButtonElement>("[data-save-rename]")!;
+      save.type = "submit";
+      root.querySelector<HTMLFormElement>(".dialog-card")!.addEventListener(
+        "submit",
+        async (event) => {
+          event.preventDefault();
+          if (!renameValue.trim()) {
+            renameInput.focus();
+            return;
+          }
           await store.renameActive(renameValue);
           if (store.getState().status !== "error") renameOpen = false;
           render(store.getState());
@@ -265,7 +290,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       );
     }
 
-    if (composerWasFocused && !textarea.disabled) focusComposer();
+    if (composerSelection && !textarea.disabled) {
+      textarea.focus();
+      const selectionStart = Math.min(composerSelection[0], textarea.value.length);
+      const selectionEnd = Math.min(composerSelection[1], textarea.value.length);
+      textarea.setSelectionRange(selectionStart, selectionEnd);
+    }
   };
 
   const unsubscribe = store.subscribe(render);

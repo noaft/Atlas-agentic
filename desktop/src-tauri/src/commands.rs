@@ -10,6 +10,7 @@ use tauri::{ipc::Channel, State};
 
 type RuntimeFactory = Arc<dyn Fn() -> Result<Runtime, String> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct DesktopState {
     store: ConversationStore,
     history_limit: usize,
@@ -51,6 +52,7 @@ impl DesktopState {
         }
     }
 
+    #[cfg(test)]
     fn ask_with_sink(
         &self,
         prompt: &str,
@@ -60,6 +62,18 @@ impl DesktopState {
         let runtime = (self.runtime_factory)()?;
         ConversationService::new(&runtime, &self.store, self.history_limit)
             .ask(prompt, conversation_id, on_delta)
+            .map(Into::into)
+    }
+
+    fn ask_with_fallible_sink(
+        &self,
+        prompt: &str,
+        conversation_id: Option<&ConversationId>,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+    ) -> Result<ConversationAskResultDto, String> {
+        let runtime = (self.runtime_factory)()?;
+        ConversationService::new(&runtime, &self.store, self.history_limit)
+            .ask_with_fallible_sink(prompt, conversation_id, on_delta)
             .map(Into::into)
     }
 }
@@ -219,28 +233,43 @@ pub fn delete_conversation(
     delete_impl(&id, &state)
 }
 
-#[tauri::command(async)]
-pub fn ask(
+async fn ask_in_background<F>(
+    prompt: String,
+    conversation_id: Option<String>,
+    state: DesktopState,
+    mut on_delta: F,
+) -> Result<ConversationAskResultDto, String>
+where
+    F: FnMut(&str) -> Result<(), String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
+        state.ask_with_fallible_sink(&prompt, conversation_id.as_ref(), &mut on_delta)
+    })
+    .await
+    .map_err(|error| format!("Atlas ask worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn ask(
     prompt: String,
     conversation_id: Option<String>,
     channel: Channel<ChatEvent>,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationAskResultDto, String> {
-    let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
-    let mut channel_error = None;
-    let result = state.ask_with_sink(&prompt, conversation_id.as_ref(), &mut |delta| {
-        if channel_error.is_none() {
-            if let Err(error) = channel.send(ChatEvent::Delta {
-                content: delta.to_string(),
-            }) {
-                channel_error = Some(format!("failed to stream response: {error}"));
-            }
-        }
-    });
-    if let Some(error) = channel_error {
-        return Err(error);
-    }
-    result
+    ask_in_background(
+        prompt,
+        conversation_id,
+        state.inner().clone(),
+        move |delta| {
+            channel
+                .send(ChatEvent::Delta {
+                    content: delta.to_string(),
+                })
+                .map_err(|error| format!("failed to stream response: {error}"))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -251,14 +280,15 @@ mod tests {
     };
 
     use atlas_agentic::{
-        agents::{Agent, AgentRegistry},
+        agents::{Agent, AgentRegistry, LocalAgent, LocalAgentDefinition},
         conversations::{ConversationMessage, ConversationStore},
+        models::deepseek::{DeepSeekConfig, DeepSeekProvider},
         tools::ToolDefinition,
         Runtime,
     };
     use tempfile::TempDir;
 
-    use super::{delete_impl, list_impl, load_impl, rename_impl, DesktopState};
+    use super::{ask_in_background, delete_impl, list_impl, load_impl, rename_impl, DesktopState};
 
     #[derive(Clone)]
     struct FakeResponse {
@@ -505,5 +535,43 @@ mod tests {
         let loaded = store.load(&saved.id).unwrap();
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.metadata.message_count, 2);
+    }
+
+    #[test]
+    fn configured_ask_constructs_the_blocking_provider_off_the_async_executor() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().to_path_buf());
+        let runtime_factory = Arc::new(|| {
+            let definition = LocalAgentDefinition::from_toml(
+                r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "deepseek"
+model = "deepseek-flash"
+system_prompt = "You are Atlas."
+conversation_title_prompt = "Return a short title."
+"#,
+            )?;
+            let provider = Box::new(DeepSeekProvider::new(DeepSeekConfig {
+                api_key: "test-key".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                model: "deepseek-flash".to_string(),
+            }));
+            Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                LocalAgent::new(definition, provider),
+            )])))
+        });
+        let state = DesktopState::with_runtime_factory(store.clone(), 40, runtime_factory);
+
+        let error = tauri::async_runtime::block_on(ask_in_background(
+            "hello".to_string(),
+            None,
+            state,
+            |_| Ok(()),
+        ))
+        .unwrap_err();
+
+        assert!(error.contains("DeepSeek request failed"), "{error}");
+        assert!(store.list().unwrap().is_empty());
     }
 }
