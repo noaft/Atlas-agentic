@@ -74,6 +74,42 @@ impl ModelProvider for StreamingModel {
     }
 }
 
+struct ToolProtocolStreamingModel {
+    responses: RefCell<VecDeque<Vec<&'static str>>>,
+}
+
+impl ToolProtocolStreamingModel {
+    fn new(responses: impl IntoIterator<Item = Vec<&'static str>>) -> Self {
+        Self {
+            responses: RefCell::new(responses.into_iter().collect()),
+        }
+    }
+}
+
+impl ModelProvider for ToolProtocolStreamingModel {
+    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
+        Err("tool protocol streaming model requires stream".to_string())
+    }
+
+    fn stream(
+        &self,
+        _request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        let chunks = self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| "no fake streaming response queued".to_string())?;
+        let mut response = String::new();
+        for chunk in chunks {
+            on_delta(chunk);
+            response.push_str(chunk);
+        }
+        Ok(response)
+    }
+}
+
 struct SamplingAwareModel;
 
 impl ModelProvider for SamplingAwareModel {
@@ -240,6 +276,17 @@ fn parses_final_agent_output() {
         AgentOutput::Final {
             content: "Hello.".to_string()
         }
+    );
+}
+
+#[test]
+fn tool_protocol_requires_type_as_the_first_field() {
+    let error =
+        AgentOutput::parse_tool_protocol(r#"{"content":"Hello.","type":"final"}"#).unwrap_err();
+
+    assert_eq!(
+        error,
+        "invalid agent tool protocol: type must be the first field"
     );
 }
 
@@ -475,10 +522,39 @@ fn runtime_stream_hides_tool_protocol_and_emits_agent_final_answer() {
 }
 
 #[test]
+fn runtime_streams_final_content_incrementally_after_a_tool_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let model = ToolProtocolStreamingModel::new([
+        vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+        vec![
+            r#"{"type":"final","content":"Atlas "#,
+            "streams ",
+            r#"now."}"#,
+        ],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
+        workspace.path(),
+    ))]));
+    let mut deltas = Vec::new();
+
+    let result = runtime
+        .ask_stream("where am I?", &mut |delta| deltas.push(delta.to_string()))
+        .unwrap();
+
+    assert_eq!(deltas, vec!["Atlas ", "streams ", "now."]);
+    assert_eq!(result, "Atlas streams now.");
+}
+
+#[test]
 fn runtime_stream_rejects_invalid_tool_protocol_without_emitting_it() {
     for response in [
         r#"{"type":"tool_call","tool":"pwd""#,
         r#"{"type":"tool_call","args":{}}"#,
+        r#"{"content":"must stay hidden","type":"final"}"#,
     ] {
         let workspace = tempfile::tempdir().unwrap();
         let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(

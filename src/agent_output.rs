@@ -34,11 +34,21 @@ impl AgentOutput {
             return Err("invalid agent tool protocol: response was empty".to_string());
         }
 
-        serde_json::from_str::<RawAgentOutput>(trimmed)
-            .map_err(|error| format!("invalid agent tool protocol: {error}"))?
-            .into_agent_output()
+        let raw = serde_json::from_str::<RawAgentOutput>(trimmed)
+            .map_err(|error| format!("invalid agent tool protocol: {error}"))?;
+        if first_object_key(trimmed).as_deref() != Some("type") {
+            return Err("invalid agent tool protocol: type must be the first field".to_string());
+        }
+
+        raw.into_agent_output()
             .map_err(|error| format!("invalid agent tool protocol: {error}"))
     }
+}
+
+fn first_object_key(input: &str) -> Option<String> {
+    let object = input.trim_start().strip_prefix('{')?.trim_start();
+    let mut deserializer = serde_json::Deserializer::from_str(object);
+    String::deserialize(&mut deserializer).ok()
 }
 
 #[derive(Deserialize)]
