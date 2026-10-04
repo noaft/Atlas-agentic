@@ -26,6 +26,7 @@ fn ask_command_loads_deepseek_key_from_dotenv() {
             "model_provider = \"deepseek\"",
             "model = \"deepseek-flash\"",
             "system_prompt = \"You are Atlas.\"",
+            "conversation_title_prompt = \"Write a short conversation title.\"",
         ]
         .join("\n"),
     )

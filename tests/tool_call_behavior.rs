@@ -303,6 +303,7 @@ display_name = "Atlas"
 model_provider = "fake"
 model = "fake"
 system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     )
     .unwrap()
@@ -483,6 +484,7 @@ model = "fake"
 temperature = 0.2
 top_p = 0.7
 system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     )
     .unwrap();

@@ -46,6 +46,7 @@ display_name = "Atlas"
 model_provider = "fake"
 model = "fake"
 system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
 "#,
         )
         .unwrap(),
@@ -79,6 +80,7 @@ display_name = "Atlas"
 model_provider = "unknown"
 model = "some-model"
 system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     )
     .unwrap();
@@ -100,6 +102,7 @@ display_name = "Atlas"
 model_provider = "deepseek"
 model = "deepseek-flash"
 system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     )
     .unwrap();

@@ -20,6 +20,7 @@ pub trait Agent {
         tools: &[crate::tools::ToolDefinition],
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String>;
+    fn generate_conversation_title(&self, first_input: &str) -> Result<String, String>;
 }
 
 pub struct AgentRegistry {

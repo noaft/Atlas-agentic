@@ -25,6 +25,7 @@ model = "deepseek-flash"
 temperature = 0.3
 top_p = 0.8
 system_prompt = "You are Atlas, the default local agent."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     )
     .unwrap();
@@ -53,6 +54,7 @@ model_provider = "fake"
 model = "fake"
 temperature = 3.0
 system_prompt = "Invalid temperature."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     );
 
@@ -67,6 +69,7 @@ display_name = "Broken"
 model_provider = "fake"
 model = "deepseek-flash"
 system_prompt = "Missing name."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     );
 
@@ -81,8 +84,64 @@ name = "atlas"
 display_name = "Atlas"
 model = "deepseek-flash"
 system_prompt = "Missing provider."
+conversation_title_prompt = "Write a short conversation title."
 "#,
     );
 
     assert_eq!(result.unwrap_err(), "agent definition needs model_provider");
+}
+
+#[test]
+fn rejects_agent_definition_without_conversation_title_prompt() {
+    let result = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "deepseek-flash"
+system_prompt = "Missing title prompt."
+"#,
+    );
+
+    assert_eq!(
+        result.unwrap_err(),
+        "agent definition needs conversation_title_prompt"
+    );
+}
+
+#[test]
+fn default_atlas_prompt_guides_repository_work_without_embedding_tool_protocol() {
+    let definition = LocalAgentDefinition::from_file("agents/atlas.toml").unwrap();
+    let prompt = definition.system_prompt.to_lowercase();
+
+    for required in [
+        "inspect",
+        "runtime-provided tools",
+        "commands",
+        "coding",
+        "debugging",
+        "testing",
+        "preserve unrelated",
+        "verify",
+        "blockers",
+    ] {
+        assert!(
+            prompt.contains(required),
+            "default Atlas prompt is missing `{required}` guidance"
+        );
+    }
+
+    let prompt_tokens = prompt
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .collect::<Vec<_>>();
+    for tool_name in ["pwd", "ls", "create_file", "exec_command"] {
+        assert!(
+            !prompt_tokens.contains(&tool_name),
+            "default Atlas prompt must not name runtime tool `{tool_name}`"
+        );
+    }
+    assert!(
+        !prompt.contains('{') && !prompt.contains('}'),
+        "default Atlas prompt must not embed tool protocol JSON"
+    );
 }

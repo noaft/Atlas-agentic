@@ -67,6 +67,17 @@ impl Agent for LocalAgent {
             on_delta,
         )
     }
+
+    fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
+        self.model.complete(&ModelRequest {
+            system_prompt: &self.definition.conversation_title_prompt,
+            user_prompt: first_input,
+            history: &[],
+            tools: &[],
+            temperature: self.definition.temperature,
+            top_p: self.definition.top_p,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +89,7 @@ pub struct LocalAgentDefinition {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub system_prompt: String,
+    pub conversation_title_prompt: String,
 }
 
 impl LocalAgentDefinition {
@@ -104,6 +116,7 @@ struct RawLocalAgentDefinition {
     temperature: Option<f32>,
     top_p: Option<f32>,
     system_prompt: Option<String>,
+    conversation_title_prompt: Option<String>,
 }
 
 impl RawLocalAgentDefinition {
@@ -116,6 +129,10 @@ impl RawLocalAgentDefinition {
             temperature: validate_range(self.temperature, "temperature", 0.0, 2.0)?,
             top_p: validate_range(self.top_p, "top_p", 0.0, 1.0)?,
             system_prompt: required_field(self.system_prompt, "system_prompt")?,
+            conversation_title_prompt: required_field(
+                self.conversation_title_prompt,
+                "conversation_title_prompt",
+            )?,
         })
     }
 }
