@@ -9,6 +9,9 @@ use atlas_agentic::{
     AppResult, Runtime,
 };
 
+#[cfg(unix)]
+use atlas_agentic::tools::ExecCommandTool;
+
 fn main() {
     load_dotenv();
 
@@ -36,14 +39,21 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition, provider,
-    ))]))
-    .with_tools(ToolRegistry::new(vec![
+    let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(".")),
         Box::new(ListDirTool::new(".")),
         Box::new(CreateFileTool::new(".")),
-    ]));
+    ]);
+    #[cfg(unix)]
+    let tools = {
+        let mut tools = tools;
+        tools.register(Box::new(ExecCommandTool::new(".")));
+        tools
+    };
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition, provider,
+    ))]))
+    .with_tools(tools);
 
     match handle_command(args) {
         Ok(AppResult::Stream { prompt }) => {

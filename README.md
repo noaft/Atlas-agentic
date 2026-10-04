@@ -63,3 +63,6 @@ Default runtime tools:
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `create_file`: create a new file with a relative path
+- `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
+
+`exec_command` is available on Linux, WSL, and macOS. It supports shell operators, pipes, redirects, and commands that access paths outside the workspace. It runs with the same permissions as the Atlas process. Commands and inherited output capture time out after 30 seconds, and stdout and stderr are each limited to 64 KiB before truncation.

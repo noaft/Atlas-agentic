@@ -13,6 +13,9 @@ use atlas_agentic::{
     Runtime,
 };
 
+#[cfg(unix)]
+use atlas_agentic::tools::ExecCommandTool;
+
 struct QueueModel {
     responses: RefCell<VecDeque<String>>,
 }
@@ -285,6 +288,33 @@ fn runtime_executes_create_file_tool_call() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn runtime_executes_command_tool_call_and_returns_agent_answer() {
+    let workspace = tempfile::tempdir().unwrap();
+    let model = QueueModel::new([
+        r#"{"type":"tool_call","tool":"exec_command","args":{"command":"echo executed > exec-output.txt"}}"#,
+        r#"{"type":"final","content":"The command completed."}"#,
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(ExecCommandTool::new(
+        workspace.path(),
+    ))]));
+
+    let result = ask(&runtime, "run a command").unwrap();
+
+    assert_eq!(result, "The command completed.");
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("exec-output.txt"))
+            .unwrap()
+            .trim(),
+        "executed"
+    );
+}
+
 #[test]
 fn create_file_rejects_parent_directory_paths() {
     let workspace = tempfile::tempdir().unwrap();
@@ -317,18 +347,28 @@ fn create_file_rejects_parent_directory_paths() {
 #[test]
 fn runtime_passes_registered_tools_to_model_request() {
     let workspace = tempfile::tempdir().unwrap();
+    let tools = ToolRegistry::new(vec![
+        Box::new(CreateFileTool::new(workspace.path())),
+        Box::new(PwdTool::new(workspace.path())),
+        Box::new(ListDirTool::new(workspace.path())),
+    ]);
+    #[cfg(unix)]
+    let tools = {
+        let mut tools = tools;
+        tools.register(Box::new(ExecCommandTool::new(workspace.path())));
+        tools
+    };
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
         definition(),
         Box::new(ToolAwareModel),
     ))]))
-    .with_tools(ToolRegistry::new(vec![
-        Box::new(CreateFileTool::new(workspace.path())),
-        Box::new(PwdTool::new(workspace.path())),
-        Box::new(ListDirTool::new(workspace.path())),
-    ]));
+    .with_tools(tools);
 
     let result = ask(&runtime, "what tools exist?").unwrap();
 
+    #[cfg(unix)]
+    assert_eq!(result, "create_file,exec_command,ls,pwd tools available");
+    #[cfg(not(unix))]
     assert_eq!(result, "create_file,ls,pwd tools available");
 }
 

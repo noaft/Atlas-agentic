@@ -1,8 +1,12 @@
 mod create_file;
+#[cfg(unix)]
+mod exec_command;
 mod list_dir;
 mod pwd;
 
 pub use create_file::CreateFileTool;
+#[cfg(unix)]
+pub use exec_command::ExecCommandTool;
 pub use list_dir::ListDirTool;
 pub use pwd::PwdTool;
 
