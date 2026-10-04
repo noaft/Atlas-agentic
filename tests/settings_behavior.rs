@@ -248,8 +248,23 @@ fn effective_settings_debug_output_redacts_the_api_key() {
     let mut saved = AtlasSettings::default();
     saved.deepseek.api_key = Some("never-print-this-secret".to_string());
 
-    let debug = format!("{:?}", saved.resolve_with(|_| None).unwrap());
+    let saved_debug = format!("{saved:?}");
+    let effective_debug = format!("{:?}", saved.resolve_with(|_| None).unwrap());
 
-    assert!(debug.contains("api_key_configured: true"), "{debug}");
-    assert!(!debug.contains("never-print-this-secret"), "{debug}");
+    assert!(
+        saved_debug.contains("api_key_configured: true"),
+        "{saved_debug}"
+    );
+    assert!(
+        effective_debug.contains("api_key_configured: true"),
+        "{effective_debug}"
+    );
+    assert!(
+        !saved_debug.contains("never-print-this-secret"),
+        "{saved_debug}"
+    );
+    assert!(
+        !effective_debug.contains("never-print-this-secret"),
+        "{effective_debug}"
+    );
 }

@@ -75,6 +75,7 @@ class ViewApi implements AtlasApi {
   askCount = 0;
   loadCount = 0;
   settings = settings;
+  loadSettingsImpl = async () => this.settings;
   chosenWorkspace: string | null = workspace.path;
 
   listConversations() {
@@ -105,7 +106,7 @@ class ViewApi implements AtlasApi {
   }
 
   async loadSettings() {
-    return this.settings;
+    return this.loadSettingsImpl();
   }
 
   async saveSettings(_input: SaveSettingsInput) {
@@ -371,6 +372,25 @@ test("a failed conversation list can be retried from the sidebar", async () => {
   await flush();
 
   expect(root.textContent).toContain("Atlas runtime");
+});
+
+test("a failed settings load is visible and can be retried", async () => {
+  const api = new ViewApi();
+  api.loadSettingsImpl = async () => {
+    throw new Error("settings failed");
+  };
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  expect(root.querySelector("[role='alert']")?.textContent).toContain("settings failed");
+  expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")?.disabled).toBe(true);
+
+  api.loadSettingsImpl = async () => settings;
+  click(root, "[data-retry-settings]");
+  await flush();
+
+  expect(root.querySelector("[data-retry-settings]")).toBeNull();
+  expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")?.disabled).toBe(false);
 });
 
 test("renders workspace groups, active path, Settings, and folder-first action accessibly", async () => {

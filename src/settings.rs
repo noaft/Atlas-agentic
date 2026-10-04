@@ -24,13 +24,25 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 40;
 
 type SettingsPublisher = dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AtlasSettings {
     pub version: u32,
     pub deepseek: DeepSeekSettings,
     pub conversation: ConversationSettings,
     pub workspace: WorkspaceSettings,
+}
+
+impl fmt::Debug for AtlasSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AtlasSettings")
+            .field("version", &self.version)
+            .field("deepseek", &self.deepseek)
+            .field("conversation", &self.conversation)
+            .field("workspace", &self.workspace)
+            .finish()
+    }
 }
 
 impl Default for AtlasSettings {
@@ -182,12 +194,23 @@ fn history_limit_error() -> String {
     "ATLAS_HISTORY_MESSAGES must be a positive integer".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepSeekSettings {
     pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
+}
+
+impl fmt::Debug for DeepSeekSettings {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeepSeekSettings")
+            .field("api_key_configured", &self.api_key.is_some())
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl Default for DeepSeekSettings {

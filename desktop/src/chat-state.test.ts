@@ -486,6 +486,29 @@ test("legacy conversation is readable and assignment commits only after backend 
   expect(store.getState().activeWorkspace).toEqual(workspace);
 });
 
+test("send stays blocked for the full workspace assignment", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  api.chosenWorkspace = second.workspace!.path;
+  const assignment = deferred<ConversationMetadata>();
+  api.assign = () => assignment.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  store.setDraft("run in the selected folder");
+
+  const changing = store.changeActiveWorkspace();
+  expect(store.getState().workspaceBusy).toBe(true);
+  await store.send();
+
+  expect(api.askCalls).toEqual([]);
+  assignment.resolve({ ...first, workspace: second.workspace });
+  await changing;
+  expect(store.getState().workspaceBusy).toBe(false);
+  expect(store.getState().activeWorkspace).toEqual(second.workspace);
+});
+
 test("workspace groups and members are ordered by their newest conversation", () => {
   const newestFirstWorkspace = {
     ...first,

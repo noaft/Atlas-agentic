@@ -322,10 +322,10 @@ fn settings_view(saved: &AtlasSettings, effective: EffectiveSettings) -> Setting
         .collect();
     SettingsViewDto {
         api_key_source,
-        base_url: effective.base_url,
-        model: effective.model,
-        history_limit: effective.history_limit,
-        default_workspace: effective.default_workspace.as_deref().map(workspace_dto),
+        base_url: saved.deepseek.base_url.clone(),
+        model: saved.deepseek.model.clone(),
+        history_limit: saved.conversation.history_limit,
+        default_workspace: saved.workspace.default_path.as_deref().map(workspace_dto),
         environment_overrides,
     }
 }
@@ -895,6 +895,32 @@ conversation_title_prompt = "Return a short title."
         assert_eq!(view.environment_overrides, vec!["apiKey"]);
         assert!(!json.contains("saved-secret"), "{json}");
         assert!(!json.contains("environment-secret"), "{json}");
+    }
+
+    #[test]
+    fn settings_view_keeps_saved_values_editable_when_environment_overrides_runtime() {
+        let mut saved = AtlasSettings::default();
+        saved.deepseek.base_url = "https://saved.example.test".to_string();
+        saved.deepseek.model = "saved-model".to_string();
+        saved.conversation.history_limit = 17;
+        let effective = saved
+            .resolve_with(|name| match name {
+                "DEEPSEEK_BASE_URL" => Some(OsString::from("https://environment.example.test")),
+                "DEEPSEEK_MODEL" => Some(OsString::from("environment-model")),
+                "ATLAS_HISTORY_MESSAGES" => Some(OsString::from("9")),
+                _ => None,
+            })
+            .unwrap();
+
+        let view = settings_view(&saved, effective);
+
+        assert_eq!(view.base_url, "https://saved.example.test");
+        assert_eq!(view.model, "saved-model");
+        assert_eq!(view.history_limit, 17);
+        assert_eq!(
+            view.environment_overrides,
+            vec!["baseUrl", "model", "historyLimit"]
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ const initialState = (): ChatState => ({
   conversationGroups: [],
   activeConversationId: null,
   activeWorkspace: null,
+  workspaceBusy: false,
   messages: [],
   draftText: "",
   status: "idle",
@@ -162,7 +163,7 @@ export class ChatStore {
   }
 
   async newChat(): Promise<void> {
-    if (this.state.status === "streaming") return;
+    if (this.state.status === "streaming" || this.state.workspaceBusy) return;
     this.selectionToken += 1;
     this.askToken += 1;
     this.mutationToken += 1;
@@ -194,7 +195,7 @@ export class ChatStore {
   }
 
   async selectConversation(id: string): Promise<void> {
-    if (this.state.status === "streaming") return;
+    if (this.state.status === "streaming" || this.state.workspaceBusy) return;
     const token = ++this.selectionToken;
     this.workspaceToken += 1;
     this.mutationToken += 1;
@@ -221,8 +222,14 @@ export class ChatStore {
   }
 
   async chooseWorkspaceForDraft(): Promise<void> {
-    if (this.state.status === "streaming" || this.state.activeConversationId) return;
+    if (
+      this.state.status === "streaming" ||
+      this.state.activeConversationId ||
+      this.state.workspaceBusy
+    )
+      return;
     const token = ++this.workspaceToken;
+    this.update({ workspaceBusy: true, errorMessage: null });
     try {
       const selected = await this.api.chooseWorkspace();
       if (!selected || token !== this.workspaceToken || this.state.activeConversationId) return;
@@ -232,12 +239,15 @@ export class ChatStore {
     } catch (error) {
       if (token !== this.workspaceToken) return;
       this.update({ errorMessage: errorMessage(error) });
+    } finally {
+      if (token === this.workspaceToken) this.update({ workspaceBusy: false });
     }
   }
 
   async changeActiveWorkspace(): Promise<void> {
-    if (this.state.status === "streaming") return;
+    if (this.state.status === "streaming" || this.state.workspaceBusy) return;
     const token = ++this.workspaceToken;
+    this.update({ workspaceBusy: true, errorMessage: null });
     try {
       const selected = await this.api.chooseWorkspace();
       if (!selected || token !== this.workspaceToken) return;
@@ -258,11 +268,18 @@ export class ChatStore {
     } catch (error) {
       if (token !== this.workspaceToken) return;
       this.update({ errorMessage: errorMessage(error) });
+    } finally {
+      if (token === this.workspaceToken) this.update({ workspaceBusy: false });
     }
   }
 
   async send(): Promise<void> {
-    if (this.state.status === "streaming" || this.state.status === "loading") return;
+    if (
+      this.state.status === "streaming" ||
+      this.state.status === "loading" ||
+      this.state.workspaceBusy
+    )
+      return;
     const prompt = this.state.draftText.trim();
     if (!prompt) return;
     const workspace = this.state.activeWorkspace;
@@ -336,7 +353,8 @@ export class ChatStore {
   }
 
   openSettings(): void {
-    if (this.state.status === "streaming" || !this.state.settings) return;
+    if (this.state.status === "streaming" || this.state.workspaceBusy || !this.state.settings)
+      return;
     this.settingsToken += 1;
     this.update({
       screen: "settings",
@@ -344,6 +362,18 @@ export class ChatStore {
       settingsStatus: "idle",
       settingsErrorMessage: null,
     });
+  }
+
+  async retrySettings(): Promise<void> {
+    if (
+      this.state.status === "streaming" ||
+      this.state.workspaceBusy ||
+      this.state.settingsStatus === "loading" ||
+      this.state.settingsStatus === "saving"
+    )
+      return;
+    this.update({ settingsStatus: "loading", settingsErrorMessage: null });
+    await this.loadInitialSettings();
   }
 
   cancelSettings(): void {

@@ -64,7 +64,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       : undefined;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
-    const isBusy = isStreaming || state.status === "loading";
+    const isBusy = isStreaming || state.status === "loading" || state.workspaceBusy;
 
     root.innerHTML = `
       <div class="atlas-shell">
@@ -94,7 +94,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     workspacePath.textContent = state.activeWorkspace?.path ?? "Choose a folder to begin";
 
     const workspaceAction = root.querySelector<HTMLButtonElement>("[data-workspace-action]")!;
-    workspaceAction.disabled = isStreaming;
+    workspaceAction.disabled = isBusy;
     workspaceAction.addEventListener("click", async () => {
       if (state.activeConversationId) await store.changeActiveWorkspace();
       else await store.chooseWorkspaceForDraft();
@@ -102,7 +102,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
 
     const newChat = root.querySelector<HTMLButtonElement>("[data-new-chat]")!;
-    newChat.disabled = isStreaming;
+    newChat.disabled = isBusy;
     newChat.addEventListener("click", async () => {
       actionsOpen = false;
       renameOpen = false;
@@ -112,11 +112,23 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
 
     const openSettings = root.querySelector<HTMLButtonElement>("[data-open-settings]")!;
-    openSettings.disabled = isStreaming || !state.settings;
+    openSettings.disabled = isBusy || !state.settings;
     openSettings.addEventListener("click", () => {
       sidebarOpen = false;
       store.openSettings();
     });
+    if (state.settingsErrorMessage && !state.settings) {
+      const settingsError = document.createElement("p");
+      settingsError.className = "sidebar-status sidebar-error";
+      settingsError.setAttribute("role", "alert");
+      settingsError.textContent = state.settingsErrorMessage;
+      const retry = button("Retry settings", "sidebar-retry");
+      retry.dataset.retrySettings = "";
+      retry.disabled = isBusy || state.settingsStatus === "loading";
+      retry.addEventListener("click", () => void store.retrySettings());
+      openSettings.insertAdjacentElement("afterend", settingsError);
+      settingsError.insertAdjacentElement("afterend", retry);
+    }
 
     const list = root.querySelector<HTMLElement>("[data-conversation-list]")!;
     if (state.listStatus === "loading" && state.conversations.length === 0) {
@@ -146,7 +158,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         for (const conversation of group.conversations) {
           const item = button(conversation.title, "conversation-item");
           item.dataset.conversationId = conversation.id;
-          item.disabled = isStreaming;
+          item.disabled = isBusy;
           item.classList.toggle("active", conversation.id === state.activeConversationId);
           item.addEventListener("click", async () => {
             actionsOpen = false;
@@ -205,7 +217,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     headerWorkspace.textContent = state.activeWorkspace
       ? `${state.activeWorkspace.name} · Change folder`
       : "Choose folder";
-    headerWorkspace.disabled = isStreaming;
+    headerWorkspace.disabled = isBusy;
     headerWorkspace.addEventListener("click", async () => {
       if (state.activeConversationId) await store.changeActiveWorkspace();
       else await store.chooseWorkspaceForDraft();

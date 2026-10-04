@@ -59,6 +59,7 @@ export interface ChatState {
   listStatus: ConversationListStatus;
   listErrorMessage: string | null;
   activeWorkspace: Workspace | null;
+  workspaceBusy: boolean;
   screen: "chat" | "settings";
   settings: SettingsView | null;
   settingsDraft: SettingsDraft | null;
