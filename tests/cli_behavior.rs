@@ -1,61 +1,28 @@
-use atlas_agentic::{
-    agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
-    handle_command, AppResult, Runtime,
-};
-
-struct FakeModel;
-
-impl atlas_agentic::models::ModelProvider for FakeModel {
-    fn complete(&self, request: &atlas_agentic::models::ModelRequest) -> Result<String, String> {
-        Ok(format!(
-            "{} | {}",
-            request.system_prompt, request.user_prompt
-        ))
-    }
-}
-
-fn test_runtime() -> Runtime {
-    let definition = LocalAgentDefinition::from_toml(
-        r#"
-name = "atlas"
-display_name = "Atlas"
-model_provider = "fake"
-model = "deepseek-flash"
-system_prompt = "You are Atlas, the default local agent."
-"#,
-    )
-    .unwrap();
-
-    Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition,
-        Box::new(FakeModel),
-    ))]))
-}
+use atlas_agentic::{handle_command, AppResult};
 
 #[test]
 fn shows_help_when_no_command_is_given() {
     let args: Vec<&str> = vec![];
-    let runtime = test_runtime();
-    let result = handle_command(args, &runtime);
+    let result = handle_command(args);
 
     assert_eq!(result.unwrap(), AppResult::Help);
 }
 
 #[test]
-fn ask_command_returns_agent_response() {
-    let runtime = test_runtime();
-    let result = handle_command(["ask", "hello atlas"], &runtime);
+fn ask_command_uses_streaming_by_default() {
+    let result = handle_command(["ask", "hello atlas"]);
 
     assert_eq!(
         result.unwrap(),
-        AppResult::Message("You are Atlas, the default local agent. | hello atlas".to_string())
+        AppResult::Stream {
+            prompt: "hello atlas".to_string()
+        }
     );
 }
 
 #[test]
 fn ask_stream_command_returns_stream_request() {
-    let runtime = test_runtime();
-    let result = handle_command(["ask", "--stream", "hello atlas"], &runtime);
+    let result = handle_command(["ask", "--stream", "hello atlas"]);
 
     assert_eq!(
         result.unwrap(),

@@ -27,6 +27,18 @@ impl AgentOutput {
             }),
         }
     }
+
+    pub fn parse_tool_protocol(input: &str) -> Result<Self, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("invalid agent tool protocol: response was empty".to_string());
+        }
+
+        serde_json::from_str::<RawAgentOutput>(trimmed)
+            .map_err(|error| format!("invalid agent tool protocol: {error}"))?
+            .into_agent_output()
+            .map_err(|error| format!("invalid agent tool protocol: {error}"))
+    }
 }
 
 #[derive(Deserialize)]

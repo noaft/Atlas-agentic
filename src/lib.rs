@@ -9,11 +9,10 @@ pub use runtime::Runtime;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppResult {
     Help,
-    Message(String),
     Stream { prompt: String },
 }
 
-pub fn handle_command<I, S>(args: I, runtime: &Runtime) -> Result<AppResult, String>
+pub fn handle_command<I, S>(args: I) -> Result<AppResult, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -33,10 +32,8 @@ where
 
             if prompt.trim().is_empty() {
                 Err("ask needs a prompt".to_string())
-            } else if stream {
-                Ok(AppResult::Stream { prompt })
             } else {
-                runtime.ask(&prompt).map(AppResult::Message)
+                Ok(AppResult::Stream { prompt })
             }
         }
         Some(command) => Err(format!("unknown command: {command}")),
@@ -49,12 +46,12 @@ pub fn render(result: AppResult) -> String {
             "Atlas Agentic",
             "",
             "Usage:",
-            "  atlas ask <prompt>",
-            "  atlas ask --stream <prompt>",
+            "  atlas ask [--stream] <prompt>",
             "  atlas help",
+            "",
+            "Responses stream by default. --stream remains available as an alias.",
         ]
         .join("\n"),
-        AppResult::Message(message) => message,
         AppResult::Stream { prompt } => prompt,
     }
 }

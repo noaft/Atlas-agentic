@@ -58,13 +58,13 @@ export DEEPSEEK_BASE_URL="https://api.deepseek.com"
 export DEEPSEEK_MODEL="deepseek-flash"
 ```
 
-Run a request:
+Run a request. Responses stream by default:
 
 ```bash
 cargo run -- ask "hello atlas"
 ```
 
-Run with streaming output:
+The existing `--stream` form remains available as an alias:
 
 ```bash
 cargo run -- ask --stream "hello atlas"

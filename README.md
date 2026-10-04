@@ -30,7 +30,7 @@ export DEEPSEEK_API_KEY="your_api_key_here"
 cargo run -- ask "hello atlas"
 ```
 
-Stream the model response as chunks arrive:
+Responses stream by default. The existing `--stream` form remains available as an alias:
 
 ```bash
 cargo run -- ask --stream "hello atlas"

@@ -45,7 +45,7 @@ fn main() {
         Box::new(CreateFileTool::new(".")),
     ]));
 
-    match handle_command(args, &runtime) {
+    match handle_command(args) {
         Ok(AppResult::Stream { prompt }) => {
             let mut stdout = std::io::stdout();
             let result = runtime.ask_stream(&prompt, &mut |delta| {
