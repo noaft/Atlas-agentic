@@ -1,5 +1,6 @@
 pub mod agent_output;
 pub mod agents;
+pub mod app;
 pub mod conversations;
 pub mod models;
 pub mod runtime;

@@ -1,19 +1,13 @@
-use std::io::Write;
+use std::{io::Write, path::Path};
 
 use atlas_agentic::{
-    agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
+    app::{build_runtime, load_dotenv},
     conversations::{
         history_limit_from_env, ConversationId, ConversationService, ConversationStore,
     },
-    handle_command,
-    models::provider_from_definition,
-    render_conversation, render_conversation_metadata, render_conversation_summary, render_help,
-    tools::{CreateFileTool, ListDirTool, PwdTool, ReadFileTool, ToolRegistry},
-    AppResult, Runtime,
+    handle_command, render_conversation, render_conversation_metadata, render_conversation_summary,
+    render_help, AppResult,
 };
-
-#[cfg(unix)]
-use atlas_agentic::tools::ExecCommandTool;
 
 fn main() {
     load_dotenv();
@@ -69,7 +63,7 @@ fn run_command(command: AppResult) -> Result<(), String> {
 fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
     let history_limit = history_limit_from_env()?;
     let store = ConversationStore::from_user_data()?;
-    let runtime = build_runtime()?;
+    let runtime = build_runtime(Path::new("."), Path::new("agents/atlas.toml"))?;
     let service = ConversationService::new(&runtime, &store, history_limit);
     let mut stdout = std::io::stdout();
     let result = service.ask(prompt, id, &mut |delta| {
@@ -78,33 +72,4 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
     })?;
     println!("\n{}", render_conversation_metadata(&result.metadata));
     Ok(())
-}
-
-fn build_runtime() -> Result<Runtime, String> {
-    let definition = LocalAgentDefinition::from_file("agents/atlas.toml")?;
-    let provider = provider_from_definition(&definition)?;
-    let tools = ToolRegistry::new(vec![
-        Box::new(PwdTool::new(".")),
-        Box::new(ListDirTool::new(".")),
-        Box::new(ReadFileTool::new(".")),
-        Box::new(CreateFileTool::new(".")),
-    ]);
-    #[cfg(unix)]
-    let tools = {
-        let mut tools = tools;
-        tools.register(Box::new(ExecCommandTool::new(".")));
-        tools
-    };
-    Ok(
-        Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-            definition, provider,
-        ))]))
-        .with_tools(tools),
-    )
-}
-
-fn load_dotenv() {
-    if std::env::var_os("ATLAS_SKIP_DOTENV").is_none() {
-        let _ = dotenvy::dotenv();
-    }
 }
