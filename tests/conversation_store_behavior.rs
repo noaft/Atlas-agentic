@@ -1,6 +1,10 @@
 use std::{
-    env, fs,
-    sync::{Arc, Mutex, OnceLock},
+    env, fs, io,
+    io::Write,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex, OnceLock,
+    },
     thread,
     time::Duration,
 };
@@ -9,6 +13,7 @@ use atlas_agentic::conversations::{
     ConversationId, ConversationMessage, ConversationStore, MessageRole,
 };
 use chrono::{Duration as ChronoDuration, Utc};
+use fs2::FileExt;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -21,6 +26,34 @@ fn read_index(root: &std::path::Path) -> Value {
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+fn lock_store_exclusively(root: &std::path::Path) -> fs::File {
+    fs::create_dir_all(root).unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(root.join("conversations.lock"))
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+    lock
+}
+
+fn store_failing_index_publication(
+    root: &std::path::Path,
+    failure_call: usize,
+) -> ConversationStore {
+    let publication_count = Arc::new(AtomicUsize::new(0));
+    ConversationStore::at_with_index_publisher(root.to_path_buf(), move |source, destination| {
+        let call = publication_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if call == failure_call {
+            Err(io::Error::other("injected index publication failure"))
+        } else {
+            fs::rename(source, destination)
+        }
+    })
 }
 
 #[test]
@@ -218,6 +251,193 @@ fn concurrent_appends_write_complete_non_interleaved_lines() {
             pair[1].content.strip_prefix("assistant ")
         );
     }
+}
+
+#[test]
+fn append_preserves_a_complete_final_record_without_a_newline() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("first user", "first assistant").unwrap();
+    let history_path = data
+        .path()
+        .join("conversations")
+        .join(format!("{}.jsonl", metadata.id));
+    let mut history = fs::read(&history_path).unwrap();
+    assert_eq!(history.pop(), Some(b'\n'));
+    fs::write(&history_path, history).unwrap();
+
+    store
+        .append_turn(&metadata.id, "second user", "second assistant")
+        .unwrap();
+
+    let loaded = store.load(&metadata.id).unwrap();
+    assert_eq!(loaded.messages.len(), 4);
+    assert_eq!(loaded.messages[1].content, "first assistant");
+    assert_eq!(loaded.messages[2].content, "second user");
+    assert_eq!(loaded.messages[3].content, "second assistant");
+}
+
+#[test]
+fn load_waits_for_a_partial_append_to_finish_under_the_store_lock() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("first user", "first assistant").unwrap();
+    let history_path = data
+        .path()
+        .join("conversations")
+        .join(format!("{}.jsonl", metadata.id));
+    let lock = lock_store_exclusively(data.path());
+    let message = serde_json::to_string(&ConversationMessage {
+        role: MessageRole::User,
+        content: "completed after load starts".to_string(),
+        created_at: Utc::now(),
+    })
+    .unwrap();
+    let split = message.len() / 2;
+    let mut history = fs::OpenOptions::new()
+        .append(true)
+        .open(&history_path)
+        .unwrap();
+    history.write_all(&message.as_bytes()[..split]).unwrap();
+    history.flush().unwrap();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let load_store = store.clone();
+    let id = metadata.id.clone();
+    let handle = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        result_tx.send(load_store.load(&id)).unwrap();
+    });
+    started_rx.recv().unwrap();
+
+    assert!(matches!(
+        result_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    history.write_all(&message.as_bytes()[split..]).unwrap();
+    history.write_all(b"\n").unwrap();
+    history.flush().unwrap();
+    drop(history);
+    FileExt::unlock(&lock).unwrap();
+
+    let loaded = result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(loaded.messages.len(), 3);
+    assert_eq!(loaded.messages[2].content, "completed after load starts");
+}
+
+#[test]
+fn load_waits_for_an_in_flight_delete_to_restore_or_publish() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("user", "assistant").unwrap();
+    let history_path = data
+        .path()
+        .join("conversations")
+        .join(format!("{}.jsonl", metadata.id));
+    let trash_dir = data.path().join("trash");
+    fs::create_dir(&trash_dir).unwrap();
+    let trash_path = trash_dir.join(format!("{}.jsonl", metadata.id));
+    let lock = lock_store_exclusively(data.path());
+    fs::rename(&history_path, &trash_path).unwrap();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let load_store = store.clone();
+    let id = metadata.id.clone();
+    let handle = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        result_tx.send(load_store.load(&id)).unwrap();
+    });
+    started_rx.recv().unwrap();
+
+    assert!(matches!(
+        result_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    fs::rename(&trash_path, &history_path).unwrap();
+    FileExt::unlock(&lock).unwrap();
+
+    let loaded = result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(loaded.metadata.id, metadata.id);
+    assert_eq!(loaded.messages.len(), 2);
+}
+
+#[test]
+fn failed_delete_publication_rolls_back_for_load_and_retry() {
+    let data = tempdir().unwrap();
+    let store = store_failing_index_publication(data.path(), 2);
+    let metadata = store.create_turn("user", "assistant").unwrap();
+    let history_path = data
+        .path()
+        .join("conversations")
+        .join(format!("{}.jsonl", metadata.id));
+    let trash_path = data
+        .path()
+        .join("trash")
+        .join(format!("{}.jsonl", metadata.id));
+
+    let error = store.delete(&metadata.id).unwrap_err();
+
+    assert!(
+        error.contains("injected index publication failure"),
+        "{error}"
+    );
+    assert!(error.contains("deletion rolled back"), "{error}");
+    assert!(history_path.is_file());
+    assert!(!trash_path.exists());
+    assert_eq!(store.load(&metadata.id).unwrap().messages.len(), 2);
+
+    let retried_path = store.delete(&metadata.id).unwrap();
+    assert_eq!(retried_path, trash_path);
+    assert!(retried_path.is_file());
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn failed_create_publication_preserves_completed_history_with_actionable_error() {
+    let data = tempdir().unwrap();
+    let store = store_failing_index_publication(data.path(), 1);
+
+    let error = store
+        .create_turn("saved user", "saved assistant")
+        .unwrap_err();
+
+    assert!(
+        error.contains("injected index publication failure"),
+        "{error}"
+    );
+    assert!(
+        error.contains("conversation history preserved at"),
+        "{error}"
+    );
+    let history_paths = fs::read_dir(data.path().join("conversations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(history_paths.len(), 1);
+    assert!(
+        error.contains(&history_paths[0].display().to_string()),
+        "{error}"
+    );
+    let messages = fs::read_to_string(&history_paths[0])
+        .unwrap()
+        .lines()
+        .map(serde_json::from_str::<ConversationMessage>)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].content, "saved user");
+    assert_eq!(messages[1].content, "saved assistant");
+    assert!(store.list().unwrap().is_empty());
 }
 
 #[test]

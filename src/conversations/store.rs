@@ -1,8 +1,9 @@
 use std::{
-    env,
+    env, fmt,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use chrono::Utc;
@@ -15,6 +16,7 @@ use super::{Conversation, ConversationId, ConversationMessage, ConversationMetad
 
 const INDEX_VERSION: u32 = 1;
 const FALLBACK_TITLE: &str = "Untitled conversation";
+type IndexPublisher = dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConversationIndex {
@@ -31,9 +33,19 @@ impl Default for ConversationIndex {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConversationStore {
     root: PathBuf,
+    index_publisher: Arc<IndexPublisher>,
+}
+
+impl fmt::Debug for ConversationStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConversationStore")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConversationStore {
@@ -50,7 +62,18 @@ impl ConversationStore {
     }
 
     pub fn at(root: PathBuf) -> Self {
-        Self { root }
+        Self::at_with_index_publisher(root, |source, destination| fs::rename(source, destination))
+    }
+
+    #[doc(hidden)]
+    pub fn at_with_index_publisher(
+        root: PathBuf,
+        index_publisher: impl Fn(&Path, &Path) -> io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            root,
+            index_publisher: Arc::new(index_publisher),
+        }
     }
 
     pub fn create_turn(&self, user: &str, assistant: &str) -> Result<ConversationMetadata, String> {
@@ -100,8 +123,10 @@ impl ConversationStore {
             };
             index.conversations.push(metadata.clone());
             if let Err(error) = self.write_index(&index) {
-                let _ = fs::remove_file(&history_path);
-                return Err(error);
+                return Err(format!(
+                    "{error}; conversation history preserved at {}",
+                    history_path.display()
+                ));
             }
             Ok(metadata)
         })
@@ -145,12 +170,14 @@ impl ConversationStore {
     }
 
     pub fn load(&self, id: &ConversationId) -> Result<Conversation, String> {
-        let index = self.read_index()?;
-        let position = find_metadata_position(&index, id)?;
-        let messages = self.read_history(&self.history_path(id))?;
-        let mut metadata = index.conversations[position].clone();
-        reconcile_metadata(&mut metadata, &messages);
-        Ok(Conversation { metadata, messages })
+        self.with_shared_lock(|| {
+            let index = self.read_index()?;
+            let position = find_metadata_position(&index, id)?;
+            let messages = self.read_history(&self.history_path(id))?;
+            let mut metadata = index.conversations[position].clone();
+            reconcile_metadata(&mut metadata, &messages);
+            Ok(Conversation { metadata, messages })
+        })
     }
 
     pub fn list(&self) -> Result<Vec<ConversationMetadata>, String> {
@@ -200,7 +227,21 @@ impl ConversationStore {
             })?;
 
             index.conversations.remove(position);
-            self.write_index(&index)?;
+            if let Err(publication_error) = self.write_index(&index) {
+                return match fs::rename(&trash_path, &history_path) {
+                    Ok(()) => Err(format!(
+                        "{publication_error}; deletion rolled back to {}",
+                        history_path.display()
+                    )),
+                    Err(rollback_error) => Err(format!(
+                        "{publication_error}; failed to roll back deletion from {} to {}: \
+                         {rollback_error}; conversation history remains recoverable at {}",
+                        trash_path.display(),
+                        history_path.display(),
+                        trash_path.display()
+                    )),
+                };
+            }
             Ok(trash_path)
         })
     }
@@ -227,20 +268,34 @@ impl ConversationStore {
         &self,
         operation: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
+        let lock_file = self.open_lock()?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
+        operation()
+    }
+
+    fn with_shared_lock<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let lock_file = self.open_lock()?;
+        FileExt::lock_shared(&lock_file)
+            .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
+        operation()
+    }
+
+    fn open_lock(&self) -> Result<File, String> {
         fs::create_dir_all(&self.root)
             .map_err(|error| format!("failed to create {}: {error}", self.root.display()))?;
-        let lock_path = self.root.join("conversations.lock");
-        let lock_file = OpenOptions::new()
+        let lock_path = self.lock_path();
+        OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|error| format!("failed to open {}: {error}", lock_path.display()))?;
-        lock_file
-            .lock_exclusive()
-            .map_err(|error| format!("failed to lock {}: {error}", lock_path.display()))?;
-        operation()
+            .map_err(|error| format!("failed to open {}: {error}", lock_path.display()))
     }
 
     fn read_index(&self) -> Result<ConversationIndex, String> {
@@ -287,7 +342,8 @@ impl ConversationStore {
             writer.flush().map_err(|error| {
                 format!("failed to flush {}: {error}", temporary_path.display())
             })?;
-            fs::rename(&temporary_path, &index_path).map_err(|error| {
+            drop(writer);
+            (self.index_publisher)(&temporary_path, &index_path).map_err(|error| {
                 format!(
                     "failed to replace {} with {}: {error}",
                     index_path.display(),
@@ -315,10 +371,27 @@ impl ConversationStore {
     }
 
     fn append_history(&self, path: &Path, messages: &[ConversationMessage]) -> Result<(), String> {
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
+            .read(true)
             .append(true)
             .open(path)
             .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        if file
+            .metadata()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
+            .len()
+            > 0
+        {
+            file.seek(SeekFrom::End(-1))
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+            let mut last_byte = [0];
+            file.read_exact(&mut last_byte)
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+            if last_byte[0] != b'\n' {
+                file.write_all(b"\n")
+                    .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+            }
+        }
         write_messages(file, path, messages)
     }
 
@@ -349,6 +422,10 @@ impl ConversationStore {
 
     fn index_path(&self) -> PathBuf {
         self.root.join("conversations.json")
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.root.join("conversations.lock")
     }
 
     fn conversations_dir(&self) -> PathBuf {
