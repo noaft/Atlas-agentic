@@ -74,6 +74,8 @@ class ViewApi implements AtlasApi {
   deleteImpl = async (_id: string) => {};
   askCount = 0;
   loadCount = 0;
+  settings = settings;
+  chosenWorkspace: string | null = workspace.path;
 
   listConversations() {
     return this.list;
@@ -103,15 +105,15 @@ class ViewApi implements AtlasApi {
   }
 
   async loadSettings() {
-    return settings;
+    return this.settings;
   }
 
   async saveSettings(_input: SaveSettingsInput) {
-    return settings;
+    return this.settings;
   }
 
   async chooseWorkspace() {
-    return workspace.path;
+    return this.chosenWorkspace;
   }
 
   async validateWorkspace(path: string) {
@@ -230,8 +232,9 @@ test("Enter confirms IME composition without sending", async () => {
   expect(api.askCount).toBe(0);
 });
 
-test("typing preserves the composer's caret position", () => {
-  const { root } = setup();
+test("typing preserves the composer's caret position", async () => {
+  const { root, store } = setup();
+  await store.chooseWorkspaceForDraft();
   const input = composer(root);
   input.focus();
   input.value = "hello";
@@ -331,6 +334,7 @@ test("mobile sidebar toggle and composer focus remain keyboard accessible", asyn
   expect(root.querySelector("[data-sidebar-toggle]")?.getAttribute("aria-expanded")).toBe("true");
 
   click(root, "[data-new-chat]");
+  await flush();
   expect(document.activeElement).toBe(composer(root));
 });
 
@@ -351,7 +355,8 @@ test("hostile titles and messages render only as literal text", async () => {
   await store.selectConversation(metadata.id);
 
   expect(root.textContent).toContain(hostile);
-  expect(root.querySelector("img")).toBeNull();
+  expect(root.querySelectorAll("img")).toHaveLength(1);
+  expect(root.querySelector("img:not(.brand-mark)")).toBeNull();
 });
 
 test("a failed conversation list can be retried from the sidebar", async () => {
@@ -366,4 +371,97 @@ test("a failed conversation list can be retried from the sidebar", async () => {
   await flush();
 
   expect(root.textContent).toContain("Atlas runtime");
+});
+
+test("renders workspace groups, active path, Settings, and folder-first action accessibly", async () => {
+  const api = new ViewApi();
+  const other = {
+    ...metadata,
+    id: "00000000-0000-4000-8000-000000000002",
+    title: "Other workspace",
+    workspace: { path: "/work/other", name: "other" },
+  };
+  api.list = Promise.resolve([metadata, other]);
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  expect(root.querySelector("[aria-label='Active workspace']")).not.toBeNull();
+  expect(root.querySelector("[data-open-settings]")?.textContent).toContain("Settings");
+  expect(root.textContent).toContain("atlas");
+  expect(root.textContent).toContain("other");
+  expect(root.querySelector("[data-choose-workspace]")?.textContent).toContain("Choose folder");
+
+  await store.selectConversation(metadata.id);
+  expect(root.textContent).toContain("/work/atlas");
+});
+
+test("cancelled and successful folder choices preserve composer focus", async () => {
+  const api = new ViewApi();
+  api.chosenWorkspace = null;
+  const { root } = setup(api);
+  click(root, "[data-choose-workspace]");
+  await flush();
+  expect(document.activeElement).toBe(composer(root));
+
+  api.chosenWorkspace = workspace.path;
+  click(root, "[data-choose-workspace]");
+  await flush();
+  expect(document.activeElement).toBe(composer(root));
+  expect(root.textContent).toContain("/work/atlas");
+});
+
+test("mobile sidebar contains workspace and Settings controls", () => {
+  const { root } = setup();
+  click(root, "[data-sidebar-toggle]");
+
+  const sidebar = root.querySelector("[data-sidebar]")!;
+  expect(sidebar.classList.contains("open")).toBe(true);
+  expect(sidebar.querySelector("[data-workspace-action]")).not.toBeNull();
+  expect(sidebar.querySelector("[data-open-settings]")).not.toBeNull();
+});
+
+test("composition defers async renders and preserves Vietnamese text and caret", async () => {
+  const api = new ViewApi();
+  const listing = deferred<ConversationMetadata[]>();
+  api.list = listing.promise;
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
+  const original = composer(root);
+  original.focus();
+  original.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  original.value = "tiếng Việt";
+  original.setSelectionRange(5, 5);
+  original.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
+
+  const initializing = store.initialize();
+  listing.resolve([metadata]);
+  await initializing;
+  expect(composer(root)).toBe(original);
+  expect(original.value).toBe("tiếng Việt");
+
+  original.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  const rendered = composer(root);
+  expect(rendered).not.toBe(original);
+  expect(rendered.value).toBe("tiếng Việt");
+  expect(store.getState().draftText).toBe("tiếng Việt");
+  expect(rendered.selectionStart).toBe(5);
+  expect(document.activeElement).toBe(rendered);
+  expect(root.textContent).toContain("Atlas runtime");
+});
+
+test("Enter and key code 229 never send during composition", async () => {
+  const { api, root, store } = setup();
+  await store.chooseWorkspaceForDraft();
+  const input = inputComposer(root, "đang gõ");
+  input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      isComposing: true,
+      keyCode: 229,
+      bubbles: true,
+    }),
+  );
+  await flush();
+  expect(api.askCount).toBe(0);
 });

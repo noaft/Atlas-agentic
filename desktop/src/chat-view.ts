@@ -1,4 +1,5 @@
 import type { ChatStore } from "./chat-state";
+import { renderSettings } from "./settings-view";
 import type { ChatState, ConversationMetadata, DisplayMessage } from "./types";
 
 function activeMetadata(state: Readonly<ChatState>): ConversationMetadata | undefined {
@@ -19,17 +20,13 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   const article = document.createElement("article");
   article.className = `message message-${message.role} delivery-${message.delivery}`;
   article.dataset.messageRole = message.role;
-
   const label = document.createElement("div");
   label.className = "message-label";
   label.textContent = message.role === "assistant" ? "Atlas" : "You";
-  article.append(label);
-
   const content = document.createElement("div");
   content.className = "message-content";
   content.textContent = message.content || (message.delivery === "pending" ? "Thinking…" : "");
-  article.append(content);
-
+  article.append(label, content);
   if (message.delivery === "failed") {
     const failed = document.createElement("div");
     failed.className = "message-failed";
@@ -44,22 +41,27 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let actionsOpen = false;
   let renameOpen = false;
   let renameValue = "";
+  let composing = false;
+  let pendingState: Readonly<ChatState> | null = null;
 
-  const focusComposer = () => {
+  const focusComposer = (selection?: [number, number]) => {
     const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
-    composer?.focus();
-    composer?.setSelectionRange(composer.value.length, composer.value.length);
+    if (!composer || composer.disabled) return;
+    composer.focus();
+    const start = Math.min(selection?.[0] ?? composer.value.length, composer.value.length);
+    const end = Math.min(selection?.[1] ?? start, composer.value.length);
+    composer.setSelectionRange(start, end);
   };
 
-  const render = (state: Readonly<ChatState>) => {
+  const renderNow = (state: Readonly<ChatState>) => {
     const focusedComposer =
       document.activeElement instanceof HTMLTextAreaElement &&
       document.activeElement.hasAttribute("data-composer")
         ? document.activeElement
         : null;
-    const composerSelection = focusedComposer
+    const composerSelection: [number, number] | undefined = focusedComposer
       ? [focusedComposer.selectionStart, focusedComposer.selectionEnd]
-      : null;
+      : undefined;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = isStreaming || state.status === "loading";
@@ -67,63 +69,53 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     root.innerHTML = `
       <div class="atlas-shell">
         <aside class="sidebar${sidebarOpen ? " open" : ""}" data-sidebar>
-          <div class="brand"><span class="brand-mark" aria-hidden="true">A</span><span>Atlas</span></div>
-          <button type="button" class="new-chat" data-new-chat>+ New chat</button>
-          <div class="section-label">Recent</div>
+          <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Code companion</small></span></div>
+          <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
+          <section class="workspace-card" aria-label="Active workspace" data-workspace-card>
+            <div class="workspace-card-icon" aria-hidden="true">⌘</div>
+            <div class="workspace-card-copy"><span>Workspace</span><strong data-workspace-name></strong><small data-workspace-path></small></div>
+            <button type="button" class="workspace-card-action" data-workspace-action aria-label="Choose workspace folder">⌄</button>
+          </section>
+          <div class="section-label">Conversations</div>
           <nav class="conversation-list" aria-label="Saved conversations" data-conversation-list></nav>
-          <p class="local-note">Conversations are stored locally on this device.</p>
-        </aside>
-        <main class="chat-main">
-          <header class="chat-header">
-            <button type="button" class="sidebar-toggle" aria-label="Toggle conversations" aria-expanded="${sidebarOpen}" data-sidebar-toggle>☰</button>
-            <h1 data-active-title></h1>
-            <div class="conversation-actions">
-              <button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button>
-              <div class="action-menu" data-action-menu></div>
-            </div>
-          </header>
-          <div class="notice-area" data-notices></div>
-          <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
-          <form class="composer-wrap" data-composer-form>
-            <div class="composer-box">
-              <textarea rows="1" aria-label="Message Atlas" placeholder="Message Atlas…" data-composer></textarea>
-              <button type="submit" class="send-button" aria-label="Send message" data-send>↑</button>
-            </div>
-            <p class="composer-note">A new chat is saved after its first successful response.</p>
-          </form>
-        </main>
-      </div>
-      <dialog class="rename-dialog" role="dialog" aria-labelledby="rename-title">
-        <form method="dialog" class="dialog-card">
-          <h2 id="rename-title">Rename conversation</h2>
-          <label for="rename-input">Title</label>
-          <input id="rename-input" autocomplete="off" data-rename-input />
-          <div class="dialog-actions">
-            <button type="button" class="secondary-button" data-cancel-rename>Cancel</button>
-            <button type="button" class="primary-button" data-save-rename>Save</button>
+          <div class="sidebar-footer">
+            <button type="button" class="settings-nav" data-open-settings><span aria-hidden="true">⚙</span> Settings</button>
+            <p class="local-note">Private and stored locally on this device.</p>
           </div>
-        </form>
-      </dialog>
-    `;
+        </aside>
+        <main class="chat-main" data-main></main>
+      </div>`;
 
     const sidebar = root.querySelector<HTMLElement>("[data-sidebar]")!;
-    const toggle = root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
-    toggle.addEventListener("click", () => {
-      sidebarOpen = !sidebarOpen;
-      render(store.getState());
-    });
+    const main = root.querySelector<HTMLElement>("[data-main]")!;
+    const workspaceName = root.querySelector<HTMLElement>("[data-workspace-name]")!;
+    const workspacePath = root.querySelector<HTMLElement>("[data-workspace-path]")!;
+    workspaceName.textContent = state.activeWorkspace?.name ?? "No folder selected";
+    workspacePath.textContent = state.activeWorkspace?.path ?? "Choose a folder to begin";
 
-    const title = root.querySelector<HTMLElement>("[data-active-title]")!;
-    title.textContent = metadata?.title ?? "New chat";
+    const workspaceAction = root.querySelector<HTMLButtonElement>("[data-workspace-action]")!;
+    workspaceAction.disabled = isStreaming;
+    workspaceAction.addEventListener("click", async () => {
+      if (state.activeConversationId) await store.changeActiveWorkspace();
+      else await store.chooseWorkspaceForDraft();
+      focusComposer();
+    });
 
     const newChat = root.querySelector<HTMLButtonElement>("[data-new-chat]")!;
     newChat.disabled = isStreaming;
-    newChat.addEventListener("click", () => {
+    newChat.addEventListener("click", async () => {
       actionsOpen = false;
       renameOpen = false;
       sidebarOpen = false;
-      store.newChat();
+      await store.newChat();
       focusComposer();
+    });
+
+    const openSettings = root.querySelector<HTMLButtonElement>("[data-open-settings]")!;
+    openSettings.disabled = isStreaming || !state.settings;
+    openSettings.addEventListener("click", () => {
+      sidebarOpen = false;
+      store.openSettings();
     });
 
     const list = root.querySelector<HTMLElement>("[data-conversation-list]")!;
@@ -140,57 +132,115 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       retry.dataset.retryList = "";
       retry.addEventListener("click", () => void store.initialize());
       list.append(error, retry);
-    } else if (state.conversations.length === 0) {
+    } else if (state.conversationGroups.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sidebar-status";
       empty.textContent = "No saved conversations yet.";
       list.append(empty);
     } else {
-      for (const conversation of state.conversations) {
-        const item = button(conversation.title, "conversation-item");
-        item.dataset.conversationId = conversation.id;
-        item.disabled = isStreaming;
-        item.classList.toggle("active", conversation.id === state.activeConversationId);
-        item.addEventListener("click", async () => {
-          actionsOpen = false;
-          renameOpen = false;
-          sidebarOpen = false;
-          await store.selectConversation(conversation.id);
-          focusComposer();
-        });
-        list.append(item);
+      for (const group of state.conversationGroups) {
+        const heading = document.createElement("h2");
+        heading.className = "workspace-group-title";
+        heading.textContent = group.workspace?.name ?? "Unassigned";
+        list.append(heading);
+        for (const conversation of group.conversations) {
+          const item = button(conversation.title, "conversation-item");
+          item.dataset.conversationId = conversation.id;
+          item.disabled = isStreaming;
+          item.classList.toggle("active", conversation.id === state.activeConversationId);
+          item.addEventListener("click", async () => {
+            actionsOpen = false;
+            renameOpen = false;
+            sidebarOpen = false;
+            await store.selectConversation(conversation.id);
+            focusComposer();
+          });
+          list.append(item);
+        }
       }
     }
+
+    if (state.screen === "settings") {
+      main.classList.add("settings-main");
+      const mobileHeader = document.createElement("header");
+      mobileHeader.className = "settings-mobile-header";
+      const toggle = button("☰", "sidebar-toggle");
+      toggle.dataset.sidebarToggle = "";
+      toggle.setAttribute("aria-label", "Toggle conversations");
+      toggle.setAttribute("aria-expanded", String(sidebarOpen));
+      toggle.addEventListener("click", () => {
+        sidebarOpen = !sidebarOpen;
+        renderNow(store.getState());
+      });
+      mobileHeader.append(toggle);
+      const settingsHost = document.createElement("div");
+      settingsHost.className = "settings-scroll";
+      main.append(mobileHeader, settingsHost);
+      renderSettings(settingsHost, state, store);
+      return;
+    }
+
+    main.innerHTML = `
+      <header class="chat-header">
+        <button type="button" class="sidebar-toggle" aria-label="Toggle conversations" aria-expanded="${sidebarOpen}" data-sidebar-toggle>☰</button>
+        <div class="header-title"><h1 data-active-title></h1><button type="button" data-header-workspace></button></div>
+        <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>
+      </header>
+      <div class="notice-area" data-notices></div>
+      <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
+      <form class="composer-wrap" data-composer-form>
+        <div class="composer-box"><textarea rows="1" aria-label="Message Atlas" data-composer></textarea><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
+        <p class="composer-note" data-composer-note></p>
+      </form>
+      <dialog class="rename-dialog" role="dialog" aria-labelledby="rename-title"><form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form></dialog>`;
+
+    const toggle = root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
+    toggle.addEventListener("click", () => {
+      sidebarOpen = !sidebarOpen;
+      renderNow(store.getState());
+    });
+    const title = root.querySelector<HTMLElement>("[data-active-title]")!;
+    title.textContent = metadata?.title ?? "New chat";
+    const headerWorkspace = root.querySelector<HTMLButtonElement>("[data-header-workspace]")!;
+    headerWorkspace.textContent = state.activeWorkspace
+      ? `${state.activeWorkspace.name} · Change folder`
+      : "Choose folder";
+    headerWorkspace.disabled = isStreaming;
+    headerWorkspace.addEventListener("click", async () => {
+      if (state.activeConversationId) await store.changeActiveWorkspace();
+      else await store.chooseWorkspaceForDraft();
+      focusComposer();
+    });
 
     const menuButton = root.querySelector<HTMLButtonElement>("[data-conversation-menu]")!;
     menuButton.disabled = !metadata || isBusy;
     menuButton.addEventListener("click", () => {
       actionsOpen = !actionsOpen;
-      render(store.getState());
+      renderNow(store.getState());
     });
     const menu = root.querySelector<HTMLElement>("[data-action-menu]")!;
     if (actionsOpen && metadata) {
       menu.classList.add("open");
+      const change = button("Change folder", "menu-item");
+      change.addEventListener("click", () => void store.changeActiveWorkspace());
       const rename = button("Rename", "menu-item");
       rename.dataset.rename = "";
       rename.addEventListener("click", () => {
         renameValue = metadata.title;
         renameOpen = true;
         actionsOpen = false;
-        render(store.getState());
+        renderNow(store.getState());
         root.querySelector<HTMLInputElement>("[data-rename-input]")?.focus();
       });
       const remove = button("Delete", "menu-item danger");
       remove.dataset.delete = "";
       remove.addEventListener("click", async () => {
-        if (!window.confirm("Delete this conversation? Its history will be moved to Atlas trash.")) {
-          return;
-        }
+        if (!window.confirm("Delete this conversation? Its history will be moved to Atlas trash.")) return;
         actionsOpen = false;
         await store.deleteActive();
         focusComposer();
       });
-      menu.append(rename, remove);
+      menu.append(change, rename, remove);
     }
 
     const notices = root.querySelector<HTMLElement>("[data-notices]")!;
@@ -200,29 +250,38 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       error.setAttribute("role", "alert");
       error.textContent = state.errorMessage;
       notices.append(error);
-    } else if (state.status === "loading") {
-      const loading = document.createElement("div");
-      loading.className = "status-notice";
-      loading.setAttribute("role", "status");
-      loading.textContent = "Loading conversation…";
-      notices.append(loading);
-    } else if (isStreaming) {
-      const streaming = document.createElement("div");
-      streaming.className = "status-notice";
-      streaming.setAttribute("role", "status");
-      streaming.textContent = "Atlas is responding…";
-      notices.append(streaming);
+    } else if (state.status === "loading" || isStreaming) {
+      const status = document.createElement("div");
+      status.className = "status-notice";
+      status.setAttribute("role", "status");
+      status.textContent = isStreaming ? "Atlas is responding…" : "Loading conversation…";
+      notices.append(status);
     }
 
     const messages = root.querySelector<HTMLElement>("[data-messages]")!;
     if (state.messages.length === 0) {
       const welcome = document.createElement("div");
       welcome.className = "welcome";
+      const eyebrow = document.createElement("span");
+      eyebrow.textContent = state.activeWorkspace ? "Workspace ready" : "Start with a folder";
       const heading = document.createElement("h2");
-      heading.textContent = "What are we building?";
+      heading.textContent = state.activeWorkspace
+        ? "What are we building?"
+        : "Choose a workspace to begin";
       const copy = document.createElement("p");
-      copy.textContent = "Ask Atlas to inspect, explain, debug, or change your code.";
-      welcome.append(heading, copy);
+      copy.textContent = state.activeWorkspace
+        ? `Atlas can inspect, explain, debug, and change code in ${state.activeWorkspace.name}.`
+        : "Atlas keeps coding tools inside the folder you select.";
+      welcome.append(eyebrow, heading, copy);
+      if (!state.activeWorkspace) {
+        const choose = button("Choose folder", "primary-button folder-first-action");
+        choose.dataset.chooseWorkspace = "";
+        choose.addEventListener("click", async () => {
+          await store.chooseWorkspaceForDraft();
+          focusComposer();
+        });
+        welcome.append(choose);
+      }
       messages.append(welcome);
     } else {
       for (const message of state.messages) messages.append(renderMessage(message));
@@ -230,22 +289,46 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+    const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
     textarea.value = state.draftText;
+    textarea.placeholder = state.activeWorkspace
+      ? `Message Atlas about ${state.activeWorkspace.name}…`
+      : "Choose a folder to continue";
     textarea.disabled = isBusy;
-    textarea.addEventListener("input", () => {
+    send.disabled = isBusy || !state.activeWorkspace || !state.draftText.trim();
+    root.querySelector<HTMLElement>("[data-composer-note]")!.textContent = state.activeWorkspace
+      ? `Tools are limited to ${state.activeWorkspace.path}`
+      : "A workspace is required before Atlas can run coding tools.";
+    textarea.addEventListener("compositionstart", () => {
+      composing = true;
+      pendingState = null;
+    });
+    textarea.addEventListener("compositionend", () => {
       const value = textarea.value;
+      const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
       store.setDraft(value);
-      send.disabled = isBusy || !value.trim();
+      composing = false;
+      pendingState = null;
+      renderNow(store.getState());
+      focusComposer(selection);
+    });
+    textarea.addEventListener("input", () => {
+      if (composing) return;
+      store.setDraft(textarea.value);
+      send.disabled = isBusy || !state.activeWorkspace || !textarea.value.trim();
     });
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      if (
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        !composing &&
+        event.keyCode !== 229
+      ) {
         event.preventDefault();
         root.querySelector<HTMLFormElement>("[data-composer-form]")?.requestSubmit();
       }
     });
-
-    const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
-    send.disabled = isBusy || !state.draftText.trim();
     root.querySelector<HTMLFormElement>("[data-composer-form]")!.addEventListener(
       "submit",
       async (event) => {
@@ -270,34 +353,31 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         "click",
         () => {
           renameOpen = false;
-          render(store.getState());
+          renderNow(store.getState());
         },
       );
-      const save = root.querySelector<HTMLButtonElement>("[data-save-rename]")!;
-      save.type = "submit";
       root.querySelector<HTMLFormElement>(".dialog-card")!.addEventListener(
         "submit",
         async (event) => {
           event.preventDefault();
-          if (!renameValue.trim()) {
-            renameInput.focus();
-            return;
-          }
+          if (!renameValue.trim()) return renameInput.focus();
           await store.renameActive(renameValue);
           if (store.getState().status !== "error") renameOpen = false;
-          render(store.getState());
+          renderNow(store.getState());
         },
       );
     }
-
-    if (composerSelection && !textarea.disabled) {
-      textarea.focus();
-      const selectionStart = Math.min(composerSelection[0], textarea.value.length);
-      const selectionEnd = Math.min(composerSelection[1], textarea.value.length);
-      textarea.setSelectionRange(selectionStart, selectionEnd);
-    }
+    if (composerSelection && !textarea.disabled) focusComposer(composerSelection);
   };
 
+  const render = (state: Readonly<ChatState>) => {
+    if (composing) {
+      pendingState = state;
+      return;
+    }
+    pendingState = null;
+    renderNow(state);
+  };
   const unsubscribe = store.subscribe(render);
   return () => {
     unsubscribe();
