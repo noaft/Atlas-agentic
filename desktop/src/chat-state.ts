@@ -1,22 +1,58 @@
 import type { AtlasApi } from "./atlas-api";
 import type {
   ChatState,
+  ConversationGroup,
   ConversationMessage,
   ConversationMetadata,
   DisplayMessage,
+  SettingsDraft,
+  SettingsView,
+  Workspace,
 } from "./types";
 
 type Listener = (state: Readonly<ChatState>) => void;
 
+const newestFirst = (left: ConversationMetadata, right: ConversationMetadata): number =>
+  right.updatedAt.localeCompare(left.updatedAt);
+
+export function groupConversations(
+  conversations: ConversationMetadata[],
+): ConversationGroup[] {
+  const grouped = new Map<string, ConversationGroup>();
+  for (const conversation of [...conversations].sort(newestFirst)) {
+    const key = conversation.workspace?.path ?? "__unassigned__";
+    const existing = grouped.get(key);
+    if (existing) existing.conversations.push(conversation);
+    else {
+      grouped.set(key, {
+        key,
+        workspace: conversation.workspace,
+        conversations: [conversation],
+        updatedAt: conversation.updatedAt,
+      });
+    }
+  }
+  return [...grouped.values()].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
+  );
+}
+
 const initialState = (): ChatState => ({
   conversations: [],
+  conversationGroups: [],
   activeConversationId: null,
+  activeWorkspace: null,
   messages: [],
   draftText: "",
   status: "idle",
   errorMessage: null,
   listStatus: "idle",
   listErrorMessage: null,
+  screen: "chat",
+  settings: null,
+  settingsDraft: null,
+  settingsStatus: "idle",
+  settingsErrorMessage: null,
 });
 
 const displaySavedMessage = (message: ConversationMessage): DisplayMessage => ({
@@ -35,12 +71,23 @@ const moveToTop = (
   ...conversations.filter((conversation) => conversation.id !== metadata.id),
 ];
 
+const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
+  apiKey: "",
+  clearApiKey: false,
+  baseUrl: settings.baseUrl,
+  model: settings.model,
+  historyLimit: settings.historyLimit,
+  defaultWorkspace: settings.defaultWorkspace,
+});
+
 export class ChatStore {
   private state: ChatState = initialState();
   private readonly listeners = new Set<Listener>();
   private selectionToken = 0;
   private askToken = 0;
   private mutationToken = 0;
+  private workspaceToken = 0;
+  private settingsToken = 0;
 
   constructor(private readonly api: AtlasApi) {}
 
@@ -55,10 +102,21 @@ export class ChatStore {
   }
 
   async initialize(): Promise<void> {
-    this.update({ listStatus: "loading", listErrorMessage: null });
+    this.update({
+      listStatus: "loading",
+      listErrorMessage: null,
+      settingsStatus: "loading",
+      settingsErrorMessage: null,
+    });
+    await Promise.all([this.loadConversationList(), this.loadInitialSettings()]);
+  }
+
+  private async loadConversationList(): Promise<void> {
     try {
       const conversations = await this.api.listConversations();
-      const knownIds = new Set(this.state.conversations.map((conversation) => conversation.id));
+      const knownIds = new Set(
+        this.state.conversations.map((conversation) => conversation.id),
+      );
       this.update({
         conversations: [
           ...this.state.conversations,
@@ -72,38 +130,86 @@ export class ChatStore {
     }
   }
 
-  newChat(): void {
+  private async loadInitialSettings(): Promise<void> {
+    const token = ++this.settingsToken;
+    try {
+      const settings = await this.api.loadSettings();
+      if (token !== this.settingsToken) return;
+      this.update({ settings, settingsStatus: "idle", settingsErrorMessage: null });
+      if (
+        settings.defaultWorkspace &&
+        !this.state.activeConversationId &&
+        !this.state.activeWorkspace
+      ) {
+        try {
+          const workspace = await this.api.validateWorkspace(
+            settings.defaultWorkspace.path,
+          );
+          if (token === this.settingsToken && !this.state.activeConversationId) {
+            this.update({ activeWorkspace: workspace });
+          }
+        } catch {
+          // Stale defaults stay visible in Settings but are never used by tools.
+        }
+      }
+    } catch (error) {
+      if (token !== this.settingsToken) return;
+      this.update({
+        settingsStatus: "error",
+        settingsErrorMessage: errorMessage(error),
+      });
+    }
+  }
+
+  async newChat(): Promise<void> {
     if (this.state.status === "streaming") return;
     this.selectionToken += 1;
     this.askToken += 1;
     this.mutationToken += 1;
-    this.state = {
+    this.workspaceToken += 1;
+    this.replace({
       ...this.state,
+      screen: "chat",
       activeConversationId: null,
+      activeWorkspace: null,
       messages: [],
       draftText: "",
       status: "idle",
       errorMessage: null,
-    };
-    this.emit();
+    });
+    const defaultWorkspace = this.state.settings?.defaultWorkspace;
+    if (defaultWorkspace) {
+      const token = ++this.workspaceToken;
+      try {
+        const workspace = await this.api.validateWorkspace(defaultWorkspace.path);
+        if (token === this.workspaceToken && !this.state.activeConversationId) {
+          this.update({ activeWorkspace: workspace });
+          return;
+        }
+      } catch {
+        // Fall through to the native folder picker.
+      }
+    }
+    await this.chooseWorkspaceForDraft();
   }
 
   async selectConversation(id: string): Promise<void> {
     if (this.state.status === "streaming") return;
     const token = ++this.selectionToken;
+    this.workspaceToken += 1;
     this.mutationToken += 1;
-    this.update({ status: "loading", errorMessage: null });
+    this.update({ screen: "chat", status: "loading", errorMessage: null });
     try {
       const conversation = await this.api.loadConversation(id);
       if (token !== this.selectionToken) return;
-      this.state = {
+      this.replace({
         ...this.state,
         activeConversationId: conversation.metadata.id,
+        activeWorkspace: conversation.metadata.workspace,
         messages: conversation.messages.map(displaySavedMessage),
         status: "idle",
         errorMessage: null,
-      };
-      this.emit();
+      });
     } catch (error) {
       if (token !== this.selectionToken) return;
       this.update({ status: "error", errorMessage: errorMessage(error) });
@@ -114,12 +220,58 @@ export class ChatStore {
     this.state = { ...this.state, draftText: text };
   }
 
+  async chooseWorkspaceForDraft(): Promise<void> {
+    if (this.state.status === "streaming" || this.state.activeConversationId) return;
+    const token = ++this.workspaceToken;
+    try {
+      const selected = await this.api.chooseWorkspace();
+      if (!selected || token !== this.workspaceToken || this.state.activeConversationId) return;
+      const workspace = await this.api.validateWorkspace(selected);
+      if (token !== this.workspaceToken || this.state.activeConversationId) return;
+      this.update({ activeWorkspace: workspace, errorMessage: null });
+    } catch (error) {
+      if (token !== this.workspaceToken) return;
+      this.update({ errorMessage: errorMessage(error) });
+    }
+  }
+
+  async changeActiveWorkspace(): Promise<void> {
+    if (this.state.status === "streaming") return;
+    const token = ++this.workspaceToken;
+    try {
+      const selected = await this.api.chooseWorkspace();
+      if (!selected || token !== this.workspaceToken) return;
+      const workspace = await this.api.validateWorkspace(selected);
+      if (token !== this.workspaceToken) return;
+      const id = this.state.activeConversationId;
+      if (!id) {
+        this.update({ activeWorkspace: workspace, errorMessage: null });
+        return;
+      }
+      const metadata = await this.api.assignConversationWorkspace(id, workspace.path);
+      if (token !== this.workspaceToken || id !== this.state.activeConversationId) return;
+      this.update({
+        activeWorkspace: metadata.workspace,
+        conversations: moveToTop(this.state.conversations, metadata),
+        errorMessage: null,
+      });
+    } catch (error) {
+      if (token !== this.workspaceToken) return;
+      this.update({ errorMessage: errorMessage(error) });
+    }
+  }
+
   async send(): Promise<void> {
     if (this.state.status === "streaming" || this.state.status === "loading") return;
     const prompt = this.state.draftText.trim();
     if (!prompt) return;
-
+    const workspace = this.state.activeWorkspace;
+    if (!workspace) {
+      this.update({ errorMessage: "Choose a workspace folder before sending." });
+      return;
+    }
     const token = ++this.askToken;
+    const conversationId = this.state.activeConversationId;
     const stableMessages = this.state.messages.filter(
       (message) => message.delivery !== "failed",
     );
@@ -135,19 +287,18 @@ export class ChatStore {
       createdAt: null,
       delivery: "pending",
     };
-    this.state = {
+    this.replace({
       ...this.state,
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: "",
       status: "streaming",
       errorMessage: null,
-    };
-    this.emit();
-
+    });
     try {
       const completed = await this.api.ask(
         prompt,
-        this.state.activeConversationId,
+        conversationId,
+        conversationId ? null : workspace.path,
         (delta) => this.appendDelta(token, delta),
       );
       if (token !== this.askToken) return;
@@ -157,20 +308,21 @@ export class ChatStore {
           index === all.length - 1 && message.role === "assistant"
             ? completed.answer
             : message.content,
-        delivery: message.delivery === "pending" ? ("saved" as const) : message.delivery,
+        delivery:
+          message.delivery === "pending" ? ("saved" as const) : message.delivery,
       }));
-      this.state = {
+      this.replace({
         ...this.state,
         conversations: moveToTop(this.state.conversations, completed.metadata),
         activeConversationId: completed.metadata.id,
+        activeWorkspace: completed.metadata.workspace ?? workspace,
         messages,
         status: "idle",
         errorMessage: null,
-      };
-      this.emit();
+      });
     } catch (error) {
       if (token !== this.askToken) return;
-      this.state = {
+      this.replace({
         ...this.state,
         messages: this.state.messages.map((message) => ({
           ...message,
@@ -179,8 +331,82 @@ export class ChatStore {
         draftText: prompt,
         status: "error",
         errorMessage: errorMessage(error),
-      };
-      this.emit();
+      });
+    }
+  }
+
+  openSettings(): void {
+    if (this.state.status === "streaming" || !this.state.settings) return;
+    this.settingsToken += 1;
+    this.update({
+      screen: "settings",
+      settingsDraft: draftFromSettings(this.state.settings),
+      settingsStatus: "idle",
+      settingsErrorMessage: null,
+    });
+  }
+
+  cancelSettings(): void {
+    if (this.state.status === "streaming" || this.state.settingsStatus === "saving") return;
+    this.settingsToken += 1;
+    this.update({
+      screen: "chat",
+      settingsDraft: null,
+      settingsStatus: "idle",
+      settingsErrorMessage: null,
+    });
+  }
+
+  updateSettingsDraft(patch: Partial<SettingsDraft>): void {
+    if (!this.state.settingsDraft || this.state.settingsStatus === "saving") return;
+    this.update({ settingsDraft: { ...this.state.settingsDraft, ...patch } });
+  }
+
+  async chooseDefaultWorkspace(): Promise<void> {
+    if (!this.state.settingsDraft || this.state.settingsStatus === "saving") return;
+    const token = ++this.settingsToken;
+    try {
+      const selected = await this.api.chooseWorkspace();
+      if (!selected || token !== this.settingsToken || !this.state.settingsDraft) return;
+      const workspace = await this.api.validateWorkspace(selected);
+      if (token !== this.settingsToken || !this.state.settingsDraft) return;
+      this.updateSettingsDraft({ defaultWorkspace: workspace });
+    } catch (error) {
+      if (token !== this.settingsToken) return;
+      this.update({ settingsStatus: "error", settingsErrorMessage: errorMessage(error) });
+    }
+  }
+
+  async saveSettings(): Promise<void> {
+    const draft = this.state.settingsDraft;
+    if (!draft || this.state.status === "streaming" || this.state.settingsStatus === "saving") {
+      return;
+    }
+    const token = ++this.settingsToken;
+    this.update({ settingsStatus: "saving", settingsErrorMessage: null });
+    try {
+      const settings = await this.api.saveSettings({
+        apiKey: draft.apiKey.trim() || null,
+        clearApiKey: draft.clearApiKey,
+        baseUrl: draft.baseUrl,
+        model: draft.model,
+        historyLimit: draft.historyLimit,
+        defaultWorkspacePath: draft.defaultWorkspace?.path ?? null,
+      });
+      if (token !== this.settingsToken) return;
+      this.update({
+        screen: "chat",
+        settings,
+        settingsDraft: null,
+        settingsStatus: "idle",
+        settingsErrorMessage: null,
+      });
+    } catch (error) {
+      if (token !== this.settingsToken) return;
+      this.update({
+        settingsStatus: "error",
+        settingsErrorMessage: errorMessage(error),
+      });
     }
   }
 
@@ -197,6 +423,7 @@ export class ChatStore {
         conversations: this.state.conversations.map((conversation) =>
           conversation.id === metadata.id ? metadata : conversation,
         ),
+        activeWorkspace: metadata.workspace,
         status: "idle",
         errorMessage: null,
       });
@@ -223,18 +450,18 @@ export class ChatStore {
       }
       this.selectionToken += 1;
       this.askToken += 1;
-      this.state = {
+      this.replace({
         ...this.state,
         conversations: this.state.conversations.filter(
           (conversation) => conversation.id !== id,
         ),
         activeConversationId: null,
+        activeWorkspace: null,
         messages: [],
         draftText: "",
         status: "idle",
         errorMessage: null,
-      };
-      this.emit();
+      });
     } catch (error) {
       if (token !== this.mutationToken) return;
       this.update({ status: "error", errorMessage: errorMessage(error) });
@@ -251,7 +478,14 @@ export class ChatStore {
   }
 
   private update(patch: Partial<ChatState>): void {
-    this.state = { ...this.state, ...patch };
+    this.replace({ ...this.state, ...patch });
+  }
+
+  private replace(next: ChatState): void {
+    this.state = {
+      ...next,
+      conversationGroups: groupConversations(next.conversations),
+    };
     this.emit();
   }
 

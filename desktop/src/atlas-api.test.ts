@@ -17,6 +17,7 @@ const metadata: ConversationMetadata = {
   createdAt: "2026-10-04T10:00:00Z",
   updatedAt: "2026-10-04T10:00:01Z",
   messageCount: 2,
+  workspace: { path: "/work/atlas", name: "atlas" },
 };
 
 const conversation: Conversation = {
@@ -76,10 +77,12 @@ describe("Tauri Atlas API", () => {
       const args = payload as {
         prompt: string;
         conversationId: string | null;
+        workspacePath: string | null;
         channel: Channel<ChatEvent>;
       };
       expect(args.prompt).toBe("hello");
       expect(args.conversationId).toBeNull();
+      expect(args.workspacePath).toBe("/work/atlas");
       args.channel.onmessage({ event: "delta", data: { content: "Hello" } });
       args.channel.onmessage({ event: "delta", data: { content: " desktop" } });
       return result;
@@ -89,10 +92,58 @@ describe("Tauri Atlas API", () => {
     const completed = await createTauriAtlasApi().ask(
       "hello",
       null,
+      "/work/atlas",
       (delta) => deltas.push(delta),
     );
 
     expect(deltas).toEqual(["Hello", " desktop"]);
     expect(completed).toEqual(result);
+  });
+
+  test("uses exact settings and workspace commands and treats dialog cancellation as null", async () => {
+    const calls: Array<{ command: string; payload: unknown }> = [];
+    mockIPC((command, payload) => {
+      calls.push({ command, payload });
+      if (command === "plugin:dialog|open") return null;
+      if (command === "load_settings" || command === "save_settings") {
+        return {
+          apiKeySource: "missing",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-flash",
+          historyLimit: 40,
+          defaultWorkspace: null,
+          environmentOverrides: [],
+        };
+      }
+      if (command === "validate_workspace") return metadata.workspace;
+      if (command === "assign_conversation_workspace") return metadata;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = createTauriAtlasApi();
+    const input = {
+      apiKey: null,
+      clearApiKey: false,
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-flash",
+      historyLimit: 40,
+      defaultWorkspacePath: null,
+    };
+
+    await api.loadSettings();
+    await api.saveSettings(input);
+    await api.validateWorkspace("/work/atlas");
+    await api.assignConversationWorkspace(metadata.id, "/work/atlas");
+    expect(await api.chooseWorkspace()).toBeNull();
+
+    expect(calls.slice(0, 4)).toEqual([
+      { command: "load_settings", payload: {} },
+      { command: "save_settings", payload: { input } },
+      { command: "validate_workspace", payload: { path: "/work/atlas" } },
+      {
+        command: "assign_conversation_workspace",
+        payload: { id: metadata.id, path: "/work/atlas" },
+      },
+    ]);
+    expect(calls[4]?.command).toBe("plugin:dialog|open");
   });
 });

@@ -1,5 +1,10 @@
 export type MessageRole = "user" | "assistant";
 
+export interface Workspace {
+  path: string;
+  name: string;
+}
+
 export interface ConversationMetadata {
   id: string;
   title: string;
@@ -7,6 +12,7 @@ export interface ConversationMetadata {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  workspace: Workspace | null;
 }
 
 export interface ConversationMessage {
@@ -33,6 +39,7 @@ export type ChatEvent = {
 
 export type ChatStatus = "idle" | "loading" | "streaming" | "error";
 export type ConversationListStatus = "idle" | "loading" | "error";
+export type SettingsStatus = "idle" | "loading" | "saving" | "error";
 export type MessageDelivery = "saved" | "pending" | "failed";
 
 export interface DisplayMessage {
@@ -51,4 +58,47 @@ export interface ChatState {
   errorMessage: string | null;
   listStatus: ConversationListStatus;
   listErrorMessage: string | null;
+  activeWorkspace: Workspace | null;
+  screen: "chat" | "settings";
+  settings: SettingsView | null;
+  settingsDraft: SettingsDraft | null;
+  settingsStatus: SettingsStatus;
+  settingsErrorMessage: string | null;
+  conversationGroups: ConversationGroup[];
+}
+
+export interface ConversationGroup {
+  key: string;
+  workspace: Workspace | null;
+  conversations: ConversationMetadata[];
+  updatedAt: string;
+}
+
+export type ApiKeySource = "missing" | "settings" | "environment";
+
+export interface SettingsView {
+  apiKeySource: ApiKeySource;
+  baseUrl: string;
+  model: string;
+  historyLimit: number;
+  defaultWorkspace: Workspace | null;
+  environmentOverrides: Array<"apiKey" | "baseUrl" | "model" | "historyLimit">;
+}
+
+export interface SettingsDraft {
+  apiKey: string;
+  clearApiKey: boolean;
+  baseUrl: string;
+  model: string;
+  historyLimit: number;
+  defaultWorkspace: Workspace | null;
+}
+
+export interface SaveSettingsInput {
+  apiKey: string | null;
+  clearApiKey: boolean;
+  baseUrl: string;
+  model: string;
+  historyLimit: number;
+  defaultWorkspacePath: string | null;
 }

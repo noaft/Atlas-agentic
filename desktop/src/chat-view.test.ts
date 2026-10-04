@@ -7,7 +7,19 @@ import type {
   Conversation,
   ConversationAskResult,
   ConversationMetadata,
+  SaveSettingsInput,
+  SettingsView,
 } from "./types";
+
+const workspace = { path: "/work/atlas", name: "atlas" };
+const settings: SettingsView = {
+  apiKeySource: "missing",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-flash",
+  historyLimit: 40,
+  defaultWorkspace: null,
+  environmentOverrides: [],
+};
 
 if (!("showModal" in HTMLDialogElement.prototype)) {
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
@@ -25,6 +37,7 @@ const metadata: ConversationMetadata = {
   createdAt: "2026-10-04T10:00:00Z",
   updatedAt: "2026-10-04T10:00:01Z",
   messageCount: 2,
+  workspace,
 };
 
 const conversation = (title = metadata.title): Conversation => ({
@@ -51,6 +64,7 @@ class ViewApi implements AtlasApi {
   askImpl = async (
     _prompt: string,
     _id: string | null,
+    _workspacePath: string | null,
     onDelta: (text: string) => void,
   ): Promise<ConversationAskResult> => {
     onDelta("Done");
@@ -70,9 +84,14 @@ class ViewApi implements AtlasApi {
     return this.load(id);
   }
 
-  ask(prompt: string, id: string | null, onDelta: (text: string) => void) {
+  ask(
+    prompt: string,
+    id: string | null,
+    workspacePath: string | null,
+    onDelta: (text: string) => void,
+  ) {
     this.askCount += 1;
-    return this.askImpl(prompt, id, onDelta);
+    return this.askImpl(prompt, id, workspacePath, onDelta);
   }
 
   renameConversation(id: string, title: string) {
@@ -81,6 +100,26 @@ class ViewApi implements AtlasApi {
 
   deleteConversation(id: string) {
     return this.deleteImpl(id);
+  }
+
+  async loadSettings() {
+    return settings;
+  }
+
+  async saveSettings(_input: SaveSettingsInput) {
+    return settings;
+  }
+
+  async chooseWorkspace() {
+    return workspace.path;
+  }
+
+  async validateWorkspace(path: string) {
+    return { path, name: path.split("/").at(-1) ?? path };
+  }
+
+  async assignConversationWorkspace(id: string, path: string) {
+    return { ...metadata, id, workspace: await this.validateWorkspace(path) };
   }
 }
 
@@ -165,7 +204,8 @@ test("conversation selection shows loading then its saved messages", async () =>
 });
 
 test("Enter sends while Shift Enter keeps a newline", async () => {
-  const { api, root } = setup();
+  const { api, root, store } = setup();
+  await store.chooseWorkspaceForDraft();
   let input = inputComposer(root, "hello");
 
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
@@ -208,12 +248,13 @@ test("typing preserves the composer's caret position", () => {
 test("streaming renders ordered assistant text and disables mutation controls", async () => {
   const api = new ViewApi();
   const pending = deferred<ConversationAskResult>();
-  api.askImpl = async (_prompt, _id, onDelta) => {
+  api.askImpl = async (_prompt, _id, _workspace, onDelta) => {
     onDelta("Hello");
     onDelta(" desktop");
     return pending.promise;
   };
-  const { root } = setup(api);
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
   inputComposer(root, "hello");
 
   click(root, "[data-send]");
