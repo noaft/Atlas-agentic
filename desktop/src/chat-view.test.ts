@@ -335,16 +335,77 @@ test("streaming_deltas_update_the_answer_without_rebuilding_the_ui", async () =>
   const shell = root.querySelector(".atlas-shell");
   const streamingComposer = composer(root);
 
-  emit("Hello");
-  emit(" responsive desktop");
+  emit("**Hello");
+  emit("** responsive desktop");
 
   expect(root.querySelector(".atlas-shell")).toBe(shell);
   expect(composer(root)).toBe(streamingComposer);
   expect(root.querySelector("[data-message-role='assistant']")?.textContent).toContain(
     "Hello responsive desktop",
   );
+  expect(root.querySelector("[data-message-role='assistant'] strong")?.textContent).toBe(
+    "Hello",
+  );
   pending.resolve({ answer: "Hello responsive desktop", metadata, created: true });
   await flush();
+});
+
+test("assistant_messages_render_markdown_while_user_messages_stay_literal", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  api.load = async () => ({
+    metadata,
+    messages: [
+      { role: "user", content: "# Keep this literal", createdAt: metadata.createdAt },
+      {
+        role: "assistant",
+        content: "## Result\n\n- First\n- **Second**\n\n```bash\necho atlas\n```",
+        createdAt: metadata.updatedAt,
+      },
+    ],
+  });
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  await store.selectConversation(metadata.id);
+
+  const user = root.querySelector("[data-message-role='user']")!;
+  const assistant = root.querySelector("[data-message-role='assistant']")!;
+  expect(user.querySelector("h1")).toBeNull();
+  expect(user.textContent).toContain("# Keep this literal");
+  expect(assistant.querySelector("h2")?.textContent).toBe("Result");
+  expect(assistant.querySelectorAll("li")).toHaveLength(2);
+  expect(assistant.querySelector("strong")?.textContent).toBe("Second");
+  expect(assistant.querySelector("pre code")?.textContent).toContain("echo atlas");
+});
+
+test("assistant_markdown_removes_unsafe_html_and_link_protocols", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  api.load = async () => ({
+    metadata,
+    messages: [
+      {
+        role: "assistant",
+        content:
+          "Safe [link](https://example.com) and [unsafe](javascript:alert(1)).\n\n<img src=x onerror=alert(1)><script>alert(1)</script>",
+        createdAt: metadata.updatedAt,
+      },
+    ],
+  });
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  await store.selectConversation(metadata.id);
+
+  const assistant = root.querySelector("[data-message-role='assistant']")!;
+  const links = assistant.querySelectorAll("a");
+  expect(links).toHaveLength(2);
+  expect(links[0].getAttribute("href")).toBe("https://example.com");
+  expect(links[0].getAttribute("rel")).toBe("noopener noreferrer");
+  expect(links[1].hasAttribute("href")).toBe(false);
+  expect(assistant.querySelector("img")).toBeNull();
+  expect(assistant.querySelector("script")).toBeNull();
 });
 
 test("rename keeps the dialog on failure and updates title on success", async () => {

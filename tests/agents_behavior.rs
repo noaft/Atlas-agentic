@@ -129,6 +129,7 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
         "preserve unrelated",
         "verify",
         "blockers",
+        "markdown",
     ] {
         assert!(
             prompt.contains(required),

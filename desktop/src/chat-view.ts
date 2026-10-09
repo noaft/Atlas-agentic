@@ -1,4 +1,5 @@
 import type { ChatStore } from "./chat-state";
+import { renderMarkdown } from "./markdown";
 import { renderSettings } from "./settings-view";
 import type { ChatState, ConversationMetadata, DisplayMessage } from "./types";
 
@@ -25,7 +26,13 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   label.textContent = message.role === "assistant" ? "Atlas" : "You";
   const content = document.createElement("div");
   content.className = "message-content";
-  content.textContent = message.content || (message.delivery === "pending" ? "Thinking…" : "");
+  const renderedContent =
+    message.content || (message.delivery === "pending" ? "Thinking…" : "");
+  if (message.role === "assistant" && message.content) {
+    renderMarkdown(content, renderedContent);
+  } else {
+    content.textContent = renderedContent;
+  }
   article.append(label, content);
   if (message.delivery === "failed") {
     const failed = document.createElement("div");
@@ -435,7 +442,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const articles = messages?.querySelectorAll<HTMLElement>("[data-message-role]");
     const content = articles?.item(lastIndex).querySelector<HTMLElement>(".message-content");
     if (!messages || !content) return false;
-    content.textContent = message.content || "Thinking…";
+    if (message.content) renderMarkdown(content, message.content);
+    else content.textContent = "Thinking…";
     messages.scrollTop = messages.scrollHeight;
     return true;
   };

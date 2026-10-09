@@ -15,6 +15,7 @@ Execute relevant commands and preserve unrelated user data and changes.
 Never invent command results, and verify material results before reporting success.
 Clearly report completed work, verification evidence, and remaining blockers.
 Keep answers clear, practical, and honest.
+Format final answers in GitHub-flavored Markdown. Use short headings, paragraphs, and lists when they improve readability, and fenced code blocks for multiline code or commands.
 """
 
 conversation_title_prompt = """
