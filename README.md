@@ -30,22 +30,24 @@ npm --prefix desktop run tauri dev
 ```
 
 The app opens on a blank, unsaved draft and never automatically resumes the
-latest conversation. Choose a workspace folder before sending the first
-message. Cancelling the native picker leaves the draft unassigned. Atlas creates
-the conversation ID, workspace assignment, and local history only after the
-first model response completes successfully; a failed first request remains an
-unsaved, retryable draft.
+latest conversation. It creates an `Atlas` folder inside the current user's home
+directory and uses that Atlas home as the starting folder, so a new chat is ready
+without setup. Atlas creates the conversation ID, workspace assignment, and
+local history only after the first model response completes successfully; a
+failed first request remains an unsaved, retryable draft.
 
-The sidebar groups saved conversations by workspace. Reopening a conversation
-restores its folder, and changing the folder updates only its metadata—not its
-history. Older conversations without workspace metadata remain readable and ask
-you to choose a folder before continuing. Runtime tools always use the validated
-conversation workspace, not the desktop process directory.
+The sidebar groups saved conversations by starting folder. Reopening a
+conversation restores its folder, and changing the folder updates only its
+metadata—not its history. Project folders remain optional. A new chat uses an
+explicitly chosen draft folder first, then a custom Settings default, then Atlas
+home. Older unassigned conversations use the current default and persist it with
+their next successful turn.
 
 Use **Settings** to configure the DeepSeek API key, base URL, model, history
-limit, and default workspace. Settings affect the next request without restarting
-Atlas. Conversation management and Settings remain available without a
-configured provider; only sending requires an API key.
+limit, and an optional custom default folder. Resetting that folder returns new
+chats to Atlas home. Settings affect the next request without restarting Atlas.
+Conversation management and Settings remain available without a configured
+provider; only sending requires an API key.
 
 Build a local debug executable without creating an installer:
 
@@ -180,11 +182,11 @@ top_p = 0.9
 
 Atlas can execute structured tool calls from the agent. Tool definitions are passed to the model request at runtime, not hard-coded into the local agent prompt.
 
-The default agent inspects relevant workspace context before making repository
-claims, runs commands when needed for implementation and verification, preserves
-unrelated changes, and reports completed work, verification, and blockers honestly.
-Its behavior and separate `conversation_title_prompt` are configured in
-`agents/atlas.toml`.
+The default agent is a general assistant for conversation, files, applications,
+computer tasks, shell work, coding, and projects. It inspects relevant context,
+uses tools when needed, preserves unrelated data, verifies material results, and
+reports blockers honestly. Its behavior and separate
+`conversation_title_prompt` are configured in `agents/atlas.toml`.
 
 Default runtime tools:
 
@@ -194,7 +196,14 @@ Default runtime tools:
 - `create_file`: create a new file with a relative path
 - `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
 
-`exec_command` is available on Linux, WSL, and macOS. It supports shell operators, pipes, redirects, and commands that access paths outside the workspace. It runs with the same permissions as the Atlas process. Commands and inherited output capture time out after 30 seconds, and stdout and stderr are each limited to 64 KiB before truncation.
+The workspace shown in the app is the tools' starting directory and conversation
+label. The structured file helpers remain scoped to it. `exec_command` is
+available on Linux, WSL, and macOS and is intentionally unrestricted: it supports
+shell operators, pipes, redirects, changing directories, and absolute paths
+outside the starting folder. It runs with the same permissions as the Atlas
+process, so normal OS access controls still apply. Commands and inherited output
+capture time out after 30 seconds, and stdout and stderr are each limited to 64
+KiB before truncation.
 
 ## Source layout and verification
 
@@ -205,7 +214,8 @@ and history-window selection (`types.rs`), local persistence (`store.rs`), ask/s
 orchestration (`service.rs`), and title sanitization (`title.rs`). `src/runtime.rs`
 coordinates agents and tools; agents and model providers pass typed user/assistant
 history without owning persistence. `src/settings.rs` owns versioned private
-settings and environment precedence. `desktop/` contains the TypeScript
+settings and environment precedence; `src/workspace.rs` provisions Atlas home.
+`desktop/` contains the TypeScript
 workspace-aware chat/Settings UI and native dialog adapter; nested
 `desktop/src-tauri/` contains the Rust bridge and packaging.
 

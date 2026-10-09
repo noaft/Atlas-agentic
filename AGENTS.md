@@ -6,9 +6,10 @@ Atlas Agentic is a Rust project for a desktop-first AI agent system.
 
 The current product includes a Rust CLI and a Tauri desktop app. Both load the
 default Atlas agent from `agents/atlas.toml`, share model/settings/runtime code,
-and persist multiple local conversations. The desktop app adds native workspace
-selection, per-conversation workspace persistence, grouped history, and local
-Settings.
+and persist multiple local conversations. Atlas is a general assistant for
+conversation and OS tasks as well as coding. The desktop app adds an automatic
+Atlas home, optional native project-folder selection, per-conversation starting
+folder persistence, grouped history, and local Settings.
 
 The planned direction is a multi-agent system with a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
 
@@ -33,6 +34,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   ├── service.rs      Ask, workspace persistence, successful turns, and titles
 │   │   └── title.rs        Title sanitization
 │   ├── settings.rs         Versioned private settings and environment precedence
+│   ├── workspace.rs        Automatic Atlas home provisioning and validation
 │   ├── models/             Model-provider trait and DeepSeek provider
 │   └── tools/              Tool trait, registry, and built-in tools
 ├── desktop/
@@ -54,7 +56,12 @@ The built-in runtime tools are:
 - `create_file`: safely create a new file inside the workspace
 - `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
 
-`exec_command` is available on Linux, WSL, and macOS and is intentionally unrestricted. It supports shell operators, pipes, redirects, and paths outside the workspace, and it runs with the same permissions as the Atlas process. Its default command-and-output-capture timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
+The displayed workspace is a starting directory, not a shell sandbox.
+`exec_command` is available on Linux, WSL, and macOS and is intentionally
+unrestricted. It supports shell operators, pipes, redirects, and paths outside
+the starting folder, and it runs with the same permissions as the Atlas process.
+The structured file helpers remain workspace-scoped. The command's default
+timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
 
 ## Configure and Run
 
@@ -157,10 +164,13 @@ npm --prefix desktop run tauri dev
 
 The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
 chat** as an unsaved frontend draft; only a successful first `ask` may create
-local conversation data or persist its validated workspace. Saved continuations
-derive workspace authority from conversation metadata and must ignore a
-conflicting frontend path. Legacy unassigned conversations stay readable but
-must be assigned a folder before sending.
+local conversation data or persist its validated starting folder. New chats use
+an explicitly chosen draft folder, then a custom Settings default, then the
+automatic `Atlas` folder in the user's home directory. Saved continuations derive
+workspace authority from conversation metadata and must ignore a conflicting
+frontend path. Legacy unassigned conversations use the current default and gain
+that assignment only with their next successful saved turn. The CLI continues to
+use its process's current directory.
 
 Keep native platform access narrow. Folder selection uses
 `@tauri-apps/plugin-dialog` with only `dialog:allow-open`; do not add shell,

@@ -12,12 +12,14 @@ import type {
 } from "./types";
 
 const workspace = { path: "/work/atlas", name: "atlas" };
+const automaticWorkspace = { path: "/home/user/Atlas", name: "Atlas" };
 const settings: SettingsView = {
   apiKeySource: "missing",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-flash",
   historyLimit: 40,
-  defaultWorkspace: null,
+  defaultWorkspace: automaticWorkspace,
+  defaultWorkspaceAutomatic: true,
   environmentOverrides: [],
 };
 
@@ -435,7 +437,7 @@ test("a failed settings load is visible and can be retried", async () => {
   expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")?.disabled).toBe(false);
 });
 
-test("renders workspace groups, active path, Settings, and folder-first action accessibly", async () => {
+test("renders a ready general assistant with an optional starting folder action", async () => {
   const api = new ViewApi();
   const other = {
     ...metadata,
@@ -447,11 +449,16 @@ test("renders workspace groups, active path, Settings, and folder-first action a
   const { root, store } = setup(api);
   await store.initialize();
 
+  expect(root.textContent).toContain("Computer assistant");
+  expect(root.textContent).toContain("How can I help?");
   expect(root.querySelector("[aria-label='Active workspace']")).not.toBeNull();
+  expect(root.querySelector("[data-workspace-action]")).not.toBeNull();
   expect(root.querySelector("[data-open-settings]")?.textContent).toContain("Settings");
-  expect(root.textContent).toContain("atlas");
+  expect(root.textContent).toContain("Atlas");
   expect(root.textContent).toContain("other");
-  expect(root.querySelector("[data-choose-workspace]")?.textContent).toContain("Choose folder");
+  expect(composer(root).disabled).toBe(false);
+  expect(root.querySelector("[data-composer-note]")?.textContent).toContain("starting folder");
+  expect(root.querySelector("[data-composer-note]")?.textContent).toContain("other locations");
 
   await store.selectConversation(metadata.id);
   expect(root.textContent).toContain("/work/atlas");

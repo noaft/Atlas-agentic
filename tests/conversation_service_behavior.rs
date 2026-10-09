@@ -493,6 +493,35 @@ fn continuation_preserves_generated_title_without_another_title_request() {
 }
 
 #[test]
+fn successful_legacy_continuation_assigns_the_resolved_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let metadata = store.create_turn("old input", "old answer").unwrap();
+    let (runtime, _) = runtime(
+        &store,
+        vec![Response::success(vec!["next answer"])],
+        Ok("unused"),
+    );
+
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask_with_workspace(
+            "next input",
+            Some(&metadata.id),
+            Some(&workspace),
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.metadata.workspace_path,
+        Some(workspace.canonicalize().unwrap())
+    );
+    assert_eq!(store.load(&metadata.id).unwrap().messages.len(), 4);
+}
+
+#[test]
 fn manual_rename_during_title_generation_wins_over_late_generated_title() {
     for manual_title in ["My chosen title", "Untitled conversation"] {
         let temp = tempfile::tempdir().unwrap();
@@ -534,19 +563,38 @@ fn manual_rename_during_title_generation_wins_over_late_generated_title() {
 
 #[test]
 fn failed_continuation_leaves_saved_history_and_metadata_unchanged() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = ConversationStore::at(temp.path().join("data"));
-    let metadata = store.create_turn("old input", "old answer").unwrap();
-    let before = store.load(&metadata.id).unwrap();
-    let (runtime, requests) = runtime(&store, vec![Response::failure()], Ok("unused"));
+    for sink_fails in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let store = ConversationStore::at(temp.path().join("data"));
+        let metadata = store.create_turn("old input", "old answer").unwrap();
+        let before = store.load(&metadata.id).unwrap();
+        let response = if sink_fails {
+            Response::success(vec!["next answer"])
+        } else {
+            Response::failure()
+        };
+        let (runtime, requests) = runtime(&store, vec![response], Ok("unused"));
 
-    let error = ConversationService::new(&runtime, &store, 40)
-        .ask("next input", Some(&metadata.id), &mut |_| {})
-        .unwrap_err();
+        let result = ConversationService::new(&runtime, &store, 40)
+            .ask_with_workspace_and_fallible_sink(
+                "next input",
+                Some(&metadata.id),
+                Some(&workspace),
+                &mut |_| {
+                    if sink_fails {
+                        Err("stream receiver closed".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
 
-    assert_eq!(error, "model unavailable");
-    assert_eq!(store.load(&metadata.id).unwrap(), before);
-    assert_eq!(requests.borrow().len(), 1);
+        assert!(result.is_err());
+        assert_eq!(store.load(&metadata.id).unwrap(), before);
+        assert_eq!(requests.borrow().len(), 1);
+    }
 }
 
 #[test]

@@ -87,7 +87,12 @@ impl<'a> ConversationService<'a> {
         let answer = answer?;
 
         let metadata = match id {
-            Some(id) => self.store.append_turn(id, prompt, &answer)?,
+            Some(id) => self.store.append_turn_with_workspace_if_missing(
+                id,
+                prompt,
+                &answer,
+                new_workspace,
+            )?,
             None => {
                 let metadata =
                     self.store

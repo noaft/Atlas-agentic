@@ -1,6 +1,8 @@
 # Atlas Vision
 
-Atlas is a desktop-first agent system for choosing the right AI worker for a task.
+Atlas is a desktop-first general assistant that can converse, work with files and
+applications, run computer tasks, and help with software projects. Its planned
+multi-agent system will choose the right AI worker for each task.
 
 The first goal is not to build every agent at once. The first goal is to build a clean agent runtime where a router can look at a user request and choose the best agent name to process it.
 
@@ -31,7 +33,15 @@ The router answers questions like:
 
 ## Desktop First
 
-Atlas will start as a desktop app because the user experience should feel like a local companion, not only a terminal script.
+Atlas starts as a desktop app because the user experience should feel like a
+local companion, not only a terminal script. A new chat is immediately usable
+from an automatic Atlas home starting directory, while an optional project folder
+can provide task-specific context.
+
+The starting folder organizes tools and conversations; it does not confine shell
+access. On supported Unix-like systems, `exec_command` can reach other locations
+allowed by the current user's OS permissions. Structured file helpers remain
+scoped to the selected starting folder.
 
 The current repo starts with a Rust CLI because it is the simplest runtime foundation. The CLI lets us build and test the agent core before adding the desktop interface.
 

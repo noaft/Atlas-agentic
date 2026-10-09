@@ -110,17 +110,22 @@ system_prompt = "Missing title prompt."
 }
 
 #[test]
-fn default_atlas_prompt_guides_repository_work_without_embedding_tool_protocol() {
+fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_protocol() {
     let definition = LocalAgentDefinition::from_file("agents/atlas.toml").unwrap();
     let prompt = definition.system_prompt.to_lowercase();
 
     for required in [
+        "conversation",
+        "files",
+        "applications",
+        "computer",
+        "shell",
+        "starting context",
+        "os permissions",
         "inspect",
+        "relevant context",
         "runtime-provided tools",
-        "commands",
         "coding",
-        "debugging",
-        "testing",
         "preserve unrelated",
         "verify",
         "blockers",

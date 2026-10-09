@@ -6,6 +6,7 @@ pub mod models;
 pub mod runtime;
 pub mod settings;
 pub mod tools;
+pub mod workspace;
 
 pub use runtime::Runtime;
 

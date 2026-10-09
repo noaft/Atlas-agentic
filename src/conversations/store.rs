@@ -172,12 +172,27 @@ impl ConversationStore {
         user: &str,
         assistant: &str,
     ) -> Result<ConversationMetadata, String> {
+        self.append_turn_with_workspace_if_missing(id, user, assistant, None)
+    }
+
+    pub fn append_turn_with_workspace_if_missing(
+        &self,
+        id: &ConversationId,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+    ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
             let history_path = self.history_path(id);
             let existing_messages = self.read_history(&history_path)?;
             reconcile_metadata(&mut index.conversations[position], &existing_messages);
+            let workspace_path = if index.conversations[position].workspace_path.is_none() {
+                workspace.map(validate_workspace).transpose()?
+            } else {
+                None
+            };
 
             let now = Utc::now();
             let messages = [
@@ -195,6 +210,9 @@ impl ConversationStore {
             self.append_history(&history_path, &messages)?;
 
             let metadata = &mut index.conversations[position];
+            if metadata.workspace_path.is_none() {
+                metadata.workspace_path = workspace_path;
+            }
             metadata.message_count = existing_messages.len() + messages.len();
             metadata.updated_at = now;
             let metadata = metadata.clone();

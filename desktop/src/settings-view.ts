@@ -52,7 +52,7 @@ export function renderSettings(
   title.id = "settings-title";
   title.textContent = "Settings";
   const subtitle = document.createElement("p");
-  subtitle.textContent = "Model access and local workspace defaults for Atlas.";
+  subtitle.textContent = "Model access and the starting folder Atlas uses for new chats.";
   heading.append(title, subtitle);
 
   const form = document.createElement("form");
@@ -144,27 +144,38 @@ export function renderSettings(
   const workspaceValue = document.createElement("div");
   workspaceValue.className = "settings-workspace-value";
   const workspaceName = document.createElement("strong");
-  workspaceName.textContent = draft.defaultWorkspace?.name ?? "No default folder";
+  const configuredWorkspace = draft.defaultWorkspace;
+  const usingAutomaticWorkspace = configuredWorkspace === null;
+  workspaceName.textContent = usingAutomaticWorkspace
+    ? "Atlas home (automatic)"
+    : configuredWorkspace.name;
   const workspacePath = document.createElement("span");
-  workspacePath.textContent = draft.defaultWorkspace?.path ?? "Choose a folder for new chats.";
+  workspacePath.textContent = usingAutomaticWorkspace
+    ? settings.defaultWorkspaceAutomatic
+      ? settings.defaultWorkspace.path
+      : "Save settings to use the automatic Atlas home."
+    : configuredWorkspace.path;
   workspaceValue.append(workspaceName, workspacePath);
   const workspaceActions = document.createElement("div");
   workspaceActions.className = "settings-workspace-actions";
   const choose = document.createElement("button");
   choose.type = "button";
   choose.className = "secondary-button";
-  choose.textContent = draft.defaultWorkspace ? "Change folder" : "Choose folder";
+  choose.textContent = "Choose custom folder";
+  choose.dataset.chooseDefaultWorkspace = "";
   choose.disabled = saving;
   choose.addEventListener("click", () => void store.chooseDefaultWorkspace());
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "text-button";
-  remove.textContent = "Clear";
-  remove.disabled = saving || !draft.defaultWorkspace;
+  remove.textContent = "Reset to Atlas home";
+  remove.dataset.resetDefaultWorkspace = "";
+  remove.disabled = saving;
   remove.addEventListener("click", () =>
     store.updateSettingsDraft({ defaultWorkspace: null }),
   );
-  workspaceActions.append(choose, remove);
+  workspaceActions.append(choose);
+  if (!usingAutomaticWorkspace) workspaceActions.append(remove);
   workspaceBlock.append(workspaceLabel, workspaceValue, workspaceActions);
   form.append(workspaceBlock);
 

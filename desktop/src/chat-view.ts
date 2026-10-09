@@ -71,7 +71,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     root.innerHTML = `
       <div class="atlas-shell">
         <aside class="sidebar${sidebarOpen ? " open" : ""}" data-sidebar>
-          <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Code companion</small></span></div>
+          <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
           <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
           <section class="workspace-card" aria-label="Active workspace" data-workspace-card>
             <div class="workspace-card-icon" aria-hidden="true">⌘</div>
@@ -277,15 +277,15 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       const welcome = document.createElement("div");
       welcome.className = "welcome";
       const eyebrow = document.createElement("span");
-      eyebrow.textContent = state.activeWorkspace ? "Workspace ready" : "Start with a folder";
+      eyebrow.textContent = state.activeWorkspace ? "Ready to help" : "Starting folder unavailable";
       const heading = document.createElement("h2");
       heading.textContent = state.activeWorkspace
-        ? "What are we building?"
-        : "Choose a workspace to begin";
+        ? "How can I help?"
+        : "Atlas needs a starting folder";
       const copy = document.createElement("p");
       copy.textContent = state.activeWorkspace
-        ? `Atlas can inspect, explain, debug, and change code in ${state.activeWorkspace.name}.`
-        : "Atlas keeps coding tools inside the folder you select.";
+        ? "Atlas can chat, organize files, run commands, help with applications, and work on code."
+        : "Check Settings or choose a folder before sending a message.";
       welcome.append(eyebrow, heading, copy);
       if (!state.activeWorkspace) {
         const choose = button("Choose folder", "primary-button folder-first-action");
@@ -306,13 +306,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
     textarea.value = state.draftText;
     textarea.placeholder = state.activeWorkspace
-      ? `Message Atlas about ${state.activeWorkspace.name}…`
-      : "Choose a folder to continue";
+      ? "Message Atlas…"
+      : "Starting folder unavailable";
     textarea.disabled = isBusy;
     send.disabled = isBusy || !state.activeWorkspace || !state.draftText.trim();
     root.querySelector<HTMLElement>("[data-composer-note]")!.textContent = state.activeWorkspace
-      ? `Tools are limited to ${state.activeWorkspace.path}`
-      : "A workspace is required before Atlas can run coding tools.";
+      ? `Commands use ${state.activeWorkspace.path} as their starting folder and can access other locations allowed by your OS account.`
+      : "Atlas needs an accessible starting folder before it can run tools.";
     textarea.addEventListener("compositionstart", () => {
       if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
       compositionSettleTimer = null;

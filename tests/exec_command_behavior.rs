@@ -68,6 +68,21 @@ fn exec_command_runs_from_the_configured_workspace() {
 }
 
 #[test]
+fn exec_command_can_access_an_absolute_path_outside_the_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside.txt");
+    std::fs::create_dir(&workspace).unwrap();
+    let tool = ExecCommandTool::new(&workspace);
+    let command = format!("printf atlas > {}", shell_quote(outside.to_str().unwrap()));
+
+    let result = execute(&tool, &command);
+
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "atlas");
+}
+
+#[test]
 fn exec_command_returns_nonzero_exit_and_stderr_to_the_agent() {
     let workspace = tempfile::tempdir().unwrap();
     let tool = ExecCommandTool::new(workspace.path());

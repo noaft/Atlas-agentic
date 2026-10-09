@@ -11,6 +11,7 @@ use atlas_agentic::conversations::{
 use atlas_agentic::{
     app::build_runtime_with_settings,
     settings::{AtlasSettings, EffectiveSettings, SettingField, SettingsStore},
+    workspace::automatic_workspace,
     Runtime,
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ use tauri::{ipc::Channel, State};
 
 type RuntimeFactory =
     Arc<dyn Fn(&Path, &EffectiveSettings) -> Result<Runtime, String> + Send + Sync>;
+type AutomaticWorkspaceResolver = Arc<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct DesktopState {
@@ -25,6 +27,7 @@ pub struct DesktopState {
     settings_store: SettingsStore,
     _agent_file: PathBuf,
     runtime_factory: RuntimeFactory,
+    automatic_workspace_resolver: AutomaticWorkspaceResolver,
 }
 
 impl DesktopState {
@@ -36,11 +39,12 @@ impl DesktopState {
 
     #[cfg(test)]
     pub fn new_with_settings(store: ConversationStore, settings_store: SettingsStore) -> Self {
-        Self::with_runtime_factory_and_settings(
+        Self::with_runtime_factory_settings_and_workspace_resolver(
             store,
             settings_store,
             PathBuf::from("agents/atlas.toml"),
             Arc::new(|_, _| Err("Atlas runtime is not configured".to_string())),
+            test_automatic_workspace_resolver(),
         )
     }
 
@@ -67,11 +71,12 @@ impl DesktopState {
         runtime_factory: Arc<dyn Fn() -> Result<Runtime, String> + Send + Sync>,
     ) -> Self {
         let settings_store = test_settings_store();
-        Self::with_runtime_factory_and_settings(
+        Self::with_runtime_factory_settings_and_workspace_resolver(
             store,
             settings_store,
             PathBuf::from("agents/atlas.toml"),
             Arc::new(move |_, _| runtime_factory()),
+            test_automatic_workspace_resolver(),
         )
     }
 
@@ -81,11 +86,28 @@ impl DesktopState {
         agent_file: PathBuf,
         runtime_factory: RuntimeFactory,
     ) -> Self {
+        Self::with_runtime_factory_settings_and_workspace_resolver(
+            store,
+            settings_store,
+            agent_file,
+            runtime_factory,
+            Arc::new(automatic_workspace),
+        )
+    }
+
+    fn with_runtime_factory_settings_and_workspace_resolver(
+        store: ConversationStore,
+        settings_store: SettingsStore,
+        agent_file: PathBuf,
+        runtime_factory: RuntimeFactory,
+        automatic_workspace_resolver: AutomaticWorkspaceResolver,
+    ) -> Self {
         Self {
             store,
             settings_store,
             _agent_file: agent_file,
             runtime_factory,
+            automatic_workspace_resolver,
         }
     }
 
@@ -122,7 +144,7 @@ impl DesktopState {
             .ask_with_workspace_and_fallible_sink(
                 prompt,
                 conversation_id,
-                conversation_id.is_none().then_some(workspace.as_path()),
+                Some(workspace.as_path()),
                 on_delta,
             )
             .map(Into::into)
@@ -134,21 +156,33 @@ impl DesktopState {
         requested: Option<&Path>,
         effective: &EffectiveSettings,
     ) -> Result<PathBuf, String> {
-        let selected = match conversation_id {
-            Some(id) => self
-                .store
-                .load(id)?
-                .metadata
-                .workspace_path
-                .ok_or_else(|| {
-                    "conversation has no workspace; choose a folder before continuing".to_string()
-                })?,
-            None => requested
-                .map(Path::to_path_buf)
-                .or_else(|| effective.default_workspace.clone())
-                .ok_or_else(|| "choose a workspace folder before starting a chat".to_string())?,
-        };
-        validate_workspace_path(&selected)
+        match conversation_id {
+            Some(id) => match self.store.load(id)?.metadata.workspace_path {
+                Some(saved) => validate_workspace_path(&saved),
+                None => self
+                    .resolve_default_workspace(effective)
+                    .map(|(workspace, _)| workspace),
+            },
+            None => match requested {
+                Some(selected) => validate_workspace_path(selected),
+                None => self
+                    .resolve_default_workspace(effective)
+                    .map(|(workspace, _)| workspace),
+            },
+        }
+    }
+
+    fn resolve_default_workspace(
+        &self,
+        effective: &EffectiveSettings,
+    ) -> Result<(PathBuf, bool), String> {
+        match effective.default_workspace.as_deref() {
+            Some(configured) => validate_workspace_path(configured).map(|path| (path, false)),
+            None => {
+                let automatic = (self.automatic_workspace_resolver)()?;
+                validate_workspace_path(&automatic).map(|path| (path, true))
+            }
+        }
     }
 }
 
@@ -159,6 +193,16 @@ fn test_settings_store() -> SettingsStore {
             .join(format!("atlas-desktop-test-{}", ConversationId::new()))
             .join("settings.json"),
     )
+}
+
+#[cfg(test)]
+fn test_automatic_workspace_resolver() -> AutomaticWorkspaceResolver {
+    let path = std::env::temp_dir().join(format!(
+        "atlas-desktop-test-workspace-{}",
+        ConversationId::new()
+    ));
+    std::fs::create_dir_all(&path).expect("test automatic workspace must be creatable");
+    Arc::new(move || Ok(path.clone()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -278,7 +322,8 @@ pub struct SettingsViewDto {
     pub base_url: String,
     pub model: String,
     pub history_limit: usize,
-    pub default_workspace: Option<WorkspaceDto>,
+    pub default_workspace: WorkspaceDto,
+    pub default_workspace_automatic: bool,
     pub environment_overrides: Vec<&'static str>,
 }
 
@@ -296,10 +341,22 @@ pub struct SaveSettingsInput {
 fn load_settings_impl(state: &DesktopState) -> Result<SettingsViewDto, String> {
     let saved = state.settings_store.load()?;
     let effective = saved.resolve_from_env()?;
-    Ok(settings_view(&saved, effective))
+    let (default_workspace, default_workspace_automatic) =
+        state.resolve_default_workspace(&effective)?;
+    Ok(settings_view(
+        &saved,
+        effective,
+        workspace_dto(&default_workspace),
+        default_workspace_automatic,
+    ))
 }
 
-fn settings_view(saved: &AtlasSettings, effective: EffectiveSettings) -> SettingsViewDto {
+fn settings_view(
+    saved: &AtlasSettings,
+    effective: EffectiveSettings,
+    default_workspace: WorkspaceDto,
+    default_workspace_automatic: bool,
+) -> SettingsViewDto {
     let api_key_source = if effective
         .environment_overrides
         .contains(&SettingField::ApiKey)
@@ -325,7 +382,8 @@ fn settings_view(saved: &AtlasSettings, effective: EffectiveSettings) -> Setting
         base_url: saved.deepseek.base_url.clone(),
         model: saved.deepseek.model.clone(),
         history_limit: saved.conversation.history_limit,
-        default_workspace: saved.workspace.default_path.as_deref().map(workspace_dto),
+        default_workspace,
+        default_workspace_automatic,
         environment_overrides,
     }
 }
@@ -623,6 +681,37 @@ mod tests {
         DesktopState::with_runtime_factory(store, 40, runtime_factory)
     }
 
+    fn state_with_responses_and_automatic(
+        store: ConversationStore,
+        settings_store: SettingsStore,
+        automatic: PathBuf,
+        responses: Vec<FakeResponse>,
+        runtime_workspaces: Arc<Mutex<Vec<PathBuf>>>,
+    ) -> DesktopState {
+        let responses = Arc::new(Mutex::new(responses.into_iter().collect()));
+        DesktopState::with_runtime_factory_settings_and_workspace_resolver(
+            store,
+            settings_store,
+            PathBuf::from("agents/atlas.toml"),
+            {
+                let runtime_workspaces = Arc::clone(&runtime_workspaces);
+                Arc::new(move |workspace, _| {
+                    runtime_workspaces
+                        .lock()
+                        .unwrap()
+                        .push(workspace.to_path_buf());
+                    Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                        FakeAgent {
+                            responses: Arc::clone(&responses),
+                            histories: Arc::new(Mutex::new(Vec::new())),
+                        },
+                    )])))
+                })
+            },
+            Arc::new(move || Ok(automatic.clone())),
+        )
+    }
+
     fn fixture() -> (TempDir, ConversationStore, DesktopState) {
         let data = TempDir::new().unwrap();
         let store = ConversationStore::at(data.path().to_path_buf());
@@ -722,6 +811,148 @@ mod tests {
     }
 
     #[test]
+    fn automatic_workspace_is_the_fallback_for_new_and_legacy_conversations() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        std::fs::create_dir(&automatic).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let legacy = store.create_turn("old question", "old answer").unwrap();
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            settings_store,
+            automatic.clone(),
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let effective = AtlasSettings::default().resolve_with(|_| None).unwrap();
+
+        assert_eq!(
+            state.resolve_workspace(None, None, &effective).unwrap(),
+            automatic.canonicalize().unwrap()
+        );
+        assert_eq!(
+            state
+                .resolve_workspace(Some(&legacy.id), None, &effective)
+                .unwrap(),
+            automatic.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn requested_configured_and_saved_workspaces_follow_authority_order() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        let configured = root.path().join("configured");
+        let requested = root.path().join("requested");
+        let saved_workspace = root.path().join("saved");
+        for path in [&automatic, &configured, &requested, &saved_workspace] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let store = ConversationStore::at(root.path().join("data"));
+        let saved = store
+            .create_turn_with_workspace("old question", "old answer", Some(&saved_workspace))
+            .unwrap();
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let state = state_with_responses_and_automatic(
+            store,
+            settings_store,
+            automatic,
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let mut settings = AtlasSettings::default();
+        settings.workspace.default_path = Some(configured.clone());
+        let effective = settings.resolve_with(|_| None).unwrap();
+
+        assert_eq!(
+            state
+                .resolve_workspace(None, Some(&requested), &effective)
+                .unwrap(),
+            requested.canonicalize().unwrap()
+        );
+        assert_eq!(
+            state.resolve_workspace(None, None, &effective).unwrap(),
+            configured.canonicalize().unwrap()
+        );
+        assert_eq!(
+            state
+                .resolve_workspace(Some(&saved.id), Some(&requested), &effective)
+                .unwrap(),
+            saved_workspace.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn successful_legacy_ask_uses_and_assigns_the_automatic_workspace() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        std::fs::create_dir(&automatic).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let legacy = store.create_turn("old question", "old answer").unwrap();
+        let runtime_workspaces = Arc::new(Mutex::new(Vec::new()));
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("settings.json")),
+            automatic.clone(),
+            vec![FakeResponse {
+                chunks: vec!["next answer"],
+                error: None,
+            }],
+            Arc::clone(&runtime_workspaces),
+        );
+
+        let result = state
+            .ask_with_sink("next question", Some(&legacy.id), None, &mut |_| {})
+            .unwrap();
+
+        let expected = automatic.canonicalize().unwrap();
+        assert_eq!(
+            result.metadata.workspace.unwrap().path,
+            expected.display().to_string()
+        );
+        assert_eq!(*runtime_workspaces.lock().unwrap(), vec![expected.clone()]);
+        assert_eq!(
+            store.load(&legacy.id).unwrap().metadata.workspace_path,
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn automatic_settings_view_is_marked_and_configured_default_stays_explicit() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        let configured = root.path().join("configured");
+        std::fs::create_dir(&automatic).unwrap();
+        std::fs::create_dir(&configured).unwrap();
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let state = state_with_responses_and_automatic(
+            ConversationStore::at(root.path().join("data")),
+            settings_store.clone(),
+            automatic.clone(),
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+
+        let automatic_view = load_settings_impl(&state).unwrap();
+        assert!(automatic_view.default_workspace_automatic);
+        assert_eq!(
+            automatic_view.default_workspace.path,
+            automatic.canonicalize().unwrap().display().to_string()
+        );
+
+        let mut settings = AtlasSettings::default();
+        settings.workspace.default_path = Some(configured.clone());
+        settings_store.save(&settings).unwrap();
+        let configured_view = load_settings_impl(&state).unwrap();
+        assert!(!configured_view.default_workspace_automatic);
+        assert_eq!(
+            configured_view.default_workspace.path,
+            configured.canonicalize().unwrap().display().to_string()
+        );
+    }
+
+    #[test]
     fn first_ask_failure_leaves_store_empty() {
         let data = TempDir::new().unwrap();
         let store = ConversationStore::at(data.path().to_path_buf());
@@ -807,6 +1038,62 @@ mod tests {
     }
 
     #[test]
+    fn legacy_provider_failure_preserves_unassigned_metadata() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        std::fs::create_dir(&automatic).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let legacy = store.create_turn("old question", "old answer").unwrap();
+        let before = store.load(&legacy.id).unwrap();
+        let state = DesktopState::with_runtime_factory_settings_and_workspace_resolver(
+            store.clone(),
+            SettingsStore::at(root.path().join("settings.json")),
+            PathBuf::from("agents/atlas.toml"),
+            Arc::new(|_, _| Err("provider is not configured".to_string())),
+            Arc::new(move || Ok(automatic.clone())),
+        );
+
+        let error = state
+            .ask_with_sink("next question", Some(&legacy.id), None, &mut |_| {})
+            .unwrap_err();
+
+        assert_eq!(error, "provider is not configured");
+        assert_eq!(store.load(&legacy.id).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_sink_failure_preserves_unassigned_metadata() {
+        let root = TempDir::new().unwrap();
+        let automatic = root.path().join("Atlas");
+        std::fs::create_dir(&automatic).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let legacy = store.create_turn("old question", "old answer").unwrap();
+        let before = store.load(&legacy.id).unwrap();
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("settings.json")),
+            automatic,
+            vec![FakeResponse {
+                chunks: vec!["next answer"],
+                error: None,
+            }],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+
+        let error = state
+            .ask_with_workspace_and_fallible_sink(
+                "next question",
+                Some(&legacy.id),
+                None,
+                &mut |_| Err("stream receiver closed".to_string()),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, "stream receiver closed");
+        assert_eq!(store.load(&legacy.id).unwrap(), before);
+    }
+
+    #[test]
     fn configured_ask_constructs_the_blocking_provider_off_the_async_executor() {
         let data = TempDir::new().unwrap();
         let store = ConversationStore::at(data.path().to_path_buf());
@@ -873,14 +1160,26 @@ conversation_title_prompt = "Return a short title."
     fn settings_view_distinguishes_missing_settings_and_environment_sources() {
         let missing = AtlasSettings::default();
         assert_eq!(
-            settings_view(&missing, missing.resolve_with(|_| None).unwrap()).api_key_source,
+            settings_view(
+                &missing,
+                missing.resolve_with(|_| None).unwrap(),
+                super::workspace_dto(Path::new("/tmp/Atlas")),
+                true,
+            )
+            .api_key_source,
             "missing"
         );
 
         let mut saved = AtlasSettings::default();
         saved.deepseek.api_key = Some("saved-secret".to_string());
         assert_eq!(
-            settings_view(&saved, saved.resolve_with(|_| None).unwrap()).api_key_source,
+            settings_view(
+                &saved,
+                saved.resolve_with(|_| None).unwrap(),
+                super::workspace_dto(Path::new("/tmp/Atlas")),
+                true,
+            )
+            .api_key_source,
             "settings"
         );
 
@@ -889,7 +1188,12 @@ conversation_title_prompt = "Return a short title."
                 (name == "DEEPSEEK_API_KEY").then(|| OsString::from("environment-secret"))
             })
             .unwrap();
-        let view = settings_view(&saved, environment);
+        let view = settings_view(
+            &saved,
+            environment,
+            super::workspace_dto(Path::new("/tmp/Atlas")),
+            true,
+        );
         let json = serde_json::to_string(&view).unwrap();
         assert_eq!(view.api_key_source, "environment");
         assert_eq!(view.environment_overrides, vec!["apiKey"]);
@@ -912,7 +1216,12 @@ conversation_title_prompt = "Return a short title."
             })
             .unwrap();
 
-        let view = settings_view(&saved, effective);
+        let view = settings_view(
+            &saved,
+            effective,
+            super::workspace_dto(Path::new("/tmp/Atlas")),
+            true,
+        );
 
         assert_eq!(view.base_url, "https://saved.example.test");
         assert_eq!(view.model, "saved-model");

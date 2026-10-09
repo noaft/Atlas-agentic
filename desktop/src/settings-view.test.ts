@@ -14,10 +14,11 @@ const settings: SettingsView = {
     path: "/work/<img src=x onerror=alert(1)>",
     name: "<script>unsafe</script>",
   },
+  defaultWorkspaceAutomatic: false,
   environmentOverrides: ["apiKey"],
 };
 
-function fixture() {
+function fixture(currentSettings = settings) {
   const saves: SaveSettingsInput[] = [];
   const api = {
     listConversations: async () => [],
@@ -31,10 +32,10 @@ function fixture() {
       throw new Error("unused");
     },
     deleteConversation: async () => {},
-    loadSettings: async () => settings,
+    loadSettings: async () => currentSettings,
     saveSettings: async (input: SaveSettingsInput) => {
       saves.push(input);
-      return { ...settings, apiKeySource: "settings" as const };
+      return { ...currentSettings, apiKeySource: "settings" as const };
     },
     chooseWorkspace: async () => null,
     validateWorkspace: async () => {
@@ -83,4 +84,43 @@ test("settings Enter saves null for a blank key and Escape cancels", async () =>
     .querySelector<HTMLInputElement>("[data-settings-api-key]")!
     .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   expect(store.getState().screen).toBe("chat");
+});
+
+test("automatic workspace is labeled with its effective path", async () => {
+  const automatic = {
+    ...settings,
+    defaultWorkspace: { path: "/home/user/Atlas", name: "Atlas" },
+    defaultWorkspaceAutomatic: true,
+  };
+  const { root, store } = fixture(automatic);
+  await store.initialize();
+  store.openSettings();
+  renderSettings(root, store.getState(), store);
+
+  expect(root.textContent).toContain("Atlas home (automatic)");
+  expect(root.textContent).toContain("/home/user/Atlas");
+  expect(root.querySelector("[data-choose-default-workspace]")?.textContent).toBe(
+    "Choose custom folder",
+  );
+  expect(root.querySelector("[data-reset-default-workspace]")).toBeNull();
+});
+
+test("custom default can reset to Atlas home", async () => {
+  const { root, store } = fixture();
+  await store.initialize();
+  store.openSettings();
+  renderSettings(root, store.getState(), store);
+
+  expect(root.textContent).toContain("<script>unsafe</script>");
+  expect(root.querySelector("[data-reset-default-workspace]")?.textContent).toBe(
+    "Reset to Atlas home",
+  );
+  root.querySelector<HTMLButtonElement>("[data-reset-default-workspace]")!.click();
+  renderSettings(root, store.getState(), store);
+
+  expect(root.textContent).toContain("Atlas home (automatic)");
+  expect(root.querySelector("[data-choose-default-workspace]")?.textContent).toBe(
+    "Choose custom folder",
+  );
+  expect(root.querySelector("[data-reset-default-workspace]")).toBeNull();
 });

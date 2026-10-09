@@ -296,6 +296,75 @@ fn append_load_list_rename_and_record_title_attempt_update_expected_fields() {
 }
 
 #[test]
+fn append_assigns_workspace_only_when_missing() {
+    let root = tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let store = ConversationStore::at(root.path().join("data"));
+    let created = store.create_turn("one", "two").unwrap();
+
+    let appended = store
+        .append_turn_with_workspace_if_missing(&created.id, "three", "four", Some(&workspace))
+        .unwrap();
+
+    assert_eq!(appended.message_count, 4);
+    assert_eq!(
+        appended.workspace_path,
+        Some(workspace.canonicalize().unwrap())
+    );
+    let loaded = store.load(&created.id).unwrap();
+    assert_eq!(loaded.messages.len(), 4);
+    assert_eq!(loaded.messages[2].content, "three");
+    assert_eq!(loaded.messages[3].content, "four");
+}
+
+#[test]
+fn append_preserves_an_existing_workspace_over_a_fallback() {
+    let root = tempdir().unwrap();
+    let assigned = root.path().join("assigned");
+    let fallback = root.path().join("fallback");
+    fs::create_dir(&assigned).unwrap();
+    fs::create_dir(&fallback).unwrap();
+    let store = ConversationStore::at(root.path().join("data"));
+    let created = store
+        .create_turn_with_workspace("one", "two", Some(&assigned))
+        .unwrap();
+
+    let appended = store
+        .append_turn_with_workspace_if_missing(&created.id, "three", "four", Some(&fallback))
+        .unwrap();
+
+    assert_eq!(appended.message_count, 4);
+    assert_eq!(
+        appended.workspace_path,
+        Some(assigned.canonicalize().unwrap())
+    );
+    assert_eq!(store.load(&created.id).unwrap().messages.len(), 4);
+}
+
+#[test]
+fn append_preserves_a_workspace_assigned_after_fallback_resolution() {
+    let root = tempdir().unwrap();
+    let assigned = root.path().join("assigned");
+    let fallback = root.path().join("fallback");
+    fs::create_dir(&assigned).unwrap();
+    fs::create_dir(&fallback).unwrap();
+    let store = ConversationStore::at(root.path().join("data"));
+    let created = store.create_turn("one", "two").unwrap();
+
+    store.assign_workspace(&created.id, &assigned).unwrap();
+    let appended = store
+        .append_turn_with_workspace_if_missing(&created.id, "three", "four", Some(&fallback))
+        .unwrap();
+
+    assert_eq!(
+        appended.workspace_path,
+        Some(assigned.canonicalize().unwrap())
+    );
+    assert_eq!(store.load(&created.id).unwrap().messages.len(), 4);
+}
+
+#[test]
 fn delete_moves_history_to_trash_and_removes_metadata() {
     let data = tempdir().unwrap();
     let store = ConversationStore::at(data.path().to_path_buf());

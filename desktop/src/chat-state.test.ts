@@ -11,12 +11,14 @@ import type {
 } from "./types";
 
 const workspace = { path: "/work/atlas", name: "atlas" };
+const automaticWorkspace = { path: "/home/user/Atlas", name: "Atlas" };
 const settings: SettingsView = {
   apiKeySource: "missing",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-flash",
   historyLimit: 40,
-  defaultWorkspace: null,
+  defaultWorkspace: automaticWorkspace,
+  defaultWorkspaceAutomatic: true,
   environmentOverrides: [],
 };
 
@@ -86,6 +88,7 @@ class FakeApi implements AtlasApi {
   chooseCalls = 0;
   validateCalls: string[] = [];
   save: (input: SaveSettingsInput) => Promise<SettingsView> = async () => this.settings;
+  loadSettingsResult: () => Promise<SettingsView> = async () => this.settings;
   assign: (id: string, path: string) => Promise<ConversationMetadata> = async (
     id,
     path,
@@ -129,7 +132,7 @@ class FakeApi implements AtlasApi {
   }
 
   async loadSettings(): Promise<SettingsView> {
-    return this.settings;
+    return this.loadSettingsResult();
   }
 
   async saveSettings(input: SaveSettingsInput): Promise<SettingsView> {
@@ -419,38 +422,34 @@ test("a completed delete cannot erase a newer draft", async () => {
   expect(store.getState().conversations).toEqual([]);
 });
 
-test("startup loads conversations and settings independently", async () => {
+test("initialization_uses_automatic_workspace_without_picker", async () => {
   const api = new FakeApi();
   api.listConversations = async () => {
     throw new Error("list unavailable");
   };
-  api.settings = { ...settings, defaultWorkspace: workspace };
   const store = new ChatStore(api);
 
   await store.initialize();
 
   expect(store.getState().listStatus).toBe("error");
   expect(store.getState().settings).toEqual(api.settings);
-  expect(store.getState().activeWorkspace).toEqual(workspace);
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+  expect(api.chooseCalls).toBe(0);
 });
 
-test("new chat adopts a valid default and cancelled selection stays unassigned", async () => {
+test("new_chat_restores_effective_default_without_picker", async () => {
   const api = new FakeApi();
-  api.settings = { ...settings, defaultWorkspace: workspace };
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
   const store = new ChatStore(api);
   await store.initialize();
+  await store.selectConversation(first.id);
 
   await store.newChat();
-  expect(store.getState().activeWorkspace).toEqual(workspace);
-  expect(api.chooseCalls).toBe(0);
 
-  api.settings = settings;
-  api.chosenWorkspace = null;
-  const cancelled = new ChatStore(api);
-  await cancelled.initialize();
-  await cancelled.newChat();
-  expect(cancelled.getState().activeWorkspace).toBeNull();
-  expect(cancelled.getState().activeConversationId).toBeNull();
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+  expect(api.chooseCalls).toBe(0);
+  expect(store.getState().activeConversationId).toBeNull();
 });
 
 test("send is blocked until a workspace is selected", async () => {
@@ -465,25 +464,70 @@ test("send is blocked until a workspace is selected", async () => {
   expect(store.getState().draftText).toBe("inspect this repo");
 });
 
-test("legacy conversation is readable and assignment commits only after backend success", async () => {
+test("legacy_conversation_uses_default_until_successful_assignment", async () => {
   const api = new FakeApi();
   const legacy = { ...first, workspace: null };
   api.conversations = [legacy];
   api.loads.set(legacy.id, async () => savedConversation(legacy));
-  const assignment = deferred<ConversationMetadata>();
-  api.assign = () => assignment.promise;
+  const assigned = { ...legacy, workspace: automaticWorkspace, messageCount: 4 };
+  api.asks.push(async () => result(assigned, "next answer", false));
   const store = new ChatStore(api);
   await store.initialize();
   await store.selectConversation(legacy.id);
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
   store.setDraft("continue");
-  await store.send();
-  expect(api.askCalls).toEqual([]);
 
-  const changing = store.changeActiveWorkspace();
-  expect(store.getState().activeWorkspace).toBeNull();
-  assignment.resolve({ ...legacy, workspace });
-  await changing;
+  await store.send();
+
+  expect(api.askCalls).toEqual([
+    { prompt: "continue", conversationId: legacy.id, workspacePath: null },
+  ]);
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+  expect(store.getState().conversations[0]).toEqual(assigned);
+});
+
+test("late_settings_do_not_override_a_selected_workspace", async () => {
+  const api = new FakeApi();
+  const loadingSettings = deferred<SettingsView>();
+  api.loadSettingsResult = () => loadingSettings.promise;
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  const store = new ChatStore(api);
+
+  const initializing = store.initialize();
+  await Promise.resolve();
+  await store.selectConversation(first.id);
+  loadingSettings.resolve(settings);
+  await initializing;
+
+  expect(store.getState().activeConversationId).toBe(first.id);
   expect(store.getState().activeWorkspace).toEqual(workspace);
+});
+
+test("deleting_or_resetting_keeps_saved_conversation_workspace_authoritative", async () => {
+  const api = new FakeApi();
+  api.settings = {
+    ...settings,
+    defaultWorkspace: automaticWorkspace,
+    defaultWorkspaceAutomatic: false,
+  };
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  api.save = async () => settings;
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  store.openSettings();
+  store.updateSettingsDraft({ defaultWorkspace: null });
+
+  await store.saveSettings();
+
+  expect(store.getState().activeConversationId).toBe(first.id);
+  expect(store.getState().activeWorkspace).toEqual(workspace);
+  expect(api.savedSettings.at(-1)?.defaultWorkspacePath).toBeNull();
+
+  await store.deleteActive();
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
 });
 
 test("send stays blocked for the full workspace assignment", async () => {
