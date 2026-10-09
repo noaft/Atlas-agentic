@@ -80,6 +80,7 @@ class ViewApi implements AtlasApi {
   settings = settings;
   loadSettingsImpl = async () => this.settings;
   chosenWorkspace: string | null = workspace.path;
+  fullscreenCalls = 0;
 
   listConversations() {
     return this.list;
@@ -126,6 +127,11 @@ class ViewApi implements AtlasApi {
 
   async assignConversationWorkspace(id: string, path: string) {
     return { ...metadata, id, workspace: await this.validateWorkspace(path) };
+  }
+
+  async toggleFullscreen() {
+    this.fullscreenCalls += 1;
+    return this.fullscreenCalls % 2 === 1;
   }
 }
 
@@ -471,6 +477,20 @@ test("mobile sidebar toggle and composer focus remain keyboard accessible", asyn
   click(root, "[data-new-chat]");
   await flush();
   expect(document.activeElement).toBe(composer(root));
+});
+
+test("fullscreen_control_and_f11_toggle_the_native_window", async () => {
+  const { api, root } = setup();
+
+  click(root, "[data-toggle-fullscreen]");
+  await flush();
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "F11", bubbles: true }));
+  await flush();
+
+  expect(api.fullscreenCalls).toBe(2);
+  expect(
+    root.querySelector("[data-toggle-fullscreen]")?.getAttribute("aria-label"),
+  ).toBe("Toggle fullscreen");
 });
 
 test("hostile titles and messages render only as literal text", async () => {

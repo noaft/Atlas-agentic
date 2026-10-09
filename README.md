@@ -36,6 +36,9 @@ without setup. Atlas creates the conversation ID, workspace assignment, and
 local history only after the first model response completes successfully; a
 failed first request remains an unsaved, retryable draft.
 
+The desktop window adapts from compact phone-width layouts through fullscreen.
+Use the header fullscreen control or press **F11** to toggle fullscreen.
+
 The sidebar groups saved conversations by starting folder. Reopening a
 conversation restores its folder, and changing the folder updates only its
 metadata—not its history. Project folders remain optional. A new chat uses an

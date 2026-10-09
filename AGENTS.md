@@ -173,7 +173,8 @@ that assignment only with their next successful saved turn. The CLI continues to
 use its process's current directory.
 
 Keep native platform access narrow. Folder selection uses
-`@tauri-apps/plugin-dialog` with only `dialog:allow-open`; do not add shell,
+`@tauri-apps/plugin-dialog` with `dialog:allow-open`, and the fullscreen
+control uses only `core:window:allow-set-fullscreen`; do not add shell,
 process, or unrestricted filesystem permissions to the frontend.
 
 CLI binary tests isolate their workspace and `ATLAS_DATA_DIR`, use child-only

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { Channel } from "@tauri-apps/api/core";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
 import { createTauriAtlasApi } from "./atlas-api";
 import type {
@@ -147,5 +147,33 @@ describe("Tauri Atlas API", () => {
       },
     ]);
     expect(calls[4]?.command).toBe("plugin:dialog|open");
+  });
+
+  test("toggles_the_current_window_fullscreen_state", async () => {
+    mockWindows("main");
+    let fullscreen = false;
+    const calls: Array<{ command: string; payload: unknown }> = [];
+    mockIPC((command, payload) => {
+      calls.push({ command, payload });
+      if (command === "plugin:window|is_fullscreen") return fullscreen;
+      if (command === "plugin:window|set_fullscreen") {
+        fullscreen = (payload as { value: boolean }).value;
+        return null;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = createTauriAtlasApi();
+
+    expect(await api.toggleFullscreen()).toBe(true);
+    expect(await api.toggleFullscreen()).toBe(false);
+
+    expect(calls.map(({ command }) => command)).toEqual([
+      "plugin:window|is_fullscreen",
+      "plugin:window|set_fullscreen",
+      "plugin:window|is_fullscreen",
+      "plugin:window|set_fullscreen",
+    ]);
+    expect(calls[1]?.payload).toMatchObject({ value: true });
+    expect(calls[3]?.payload).toMatchObject({ value: false });
   });
 });

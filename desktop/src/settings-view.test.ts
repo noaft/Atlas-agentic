@@ -45,6 +45,7 @@ function fixture(currentSettings = settings) {
     assignConversationWorkspace: async () => {
       throw new Error("unused");
     },
+    toggleFullscreen: async () => false,
   } as AtlasApi;
   const store = new ChatStore(api);
   const root = document.createElement("div");

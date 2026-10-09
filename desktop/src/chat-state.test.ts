@@ -155,6 +155,10 @@ class FakeApi implements AtlasApi {
     this.assignments.push({ id, path });
     return this.assign(id, path);
   }
+
+  async toggleFullscreen() {
+    return true;
+  }
 }
 
 function deferred<T>() {

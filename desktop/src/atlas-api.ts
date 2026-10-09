@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
@@ -27,6 +28,7 @@ export interface AtlasApi {
   chooseWorkspace(): Promise<string | null>;
   validateWorkspace(path: string): Promise<Workspace>;
   assignConversationWorkspace(id: string, path: string): Promise<ConversationMetadata>;
+  toggleFullscreen(): Promise<boolean>;
 }
 
 export function createTauriAtlasApi(): AtlasApi {
@@ -60,5 +62,11 @@ export function createTauriAtlasApi(): AtlasApi {
     validateWorkspace: (path) => invoke<Workspace>("validate_workspace", { path }),
     assignConversationWorkspace: (id, path) =>
       invoke<ConversationMetadata>("assign_conversation_workspace", { id, path }),
+    toggleFullscreen: async () => {
+      const window = getCurrentWindow();
+      const fullscreen = !(await window.isFullscreen());
+      await window.setFullscreen(fullscreen);
+      return fullscreen;
+    },
   };
 }

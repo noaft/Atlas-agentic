@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Core capability for the Atlas chat window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-fullscreen",
+    "dialog:allow-open"
+  ]
 }

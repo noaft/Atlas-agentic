@@ -206,7 +206,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       <header class="chat-header">
         <button type="button" class="sidebar-toggle" aria-label="Toggle conversations" aria-expanded="${sidebarOpen}" data-sidebar-toggle>☰</button>
         <div class="header-title"><h1 data-active-title></h1><button type="button" data-header-workspace></button></div>
-        <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>
+        <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Toggle fullscreen" title="Toggle fullscreen (F11)" data-toggle-fullscreen>⛶</button><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>
       </header>
       <div class="notice-area" data-notices></div>
       <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
@@ -235,6 +235,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
 
     const menuButton = root.querySelector<HTMLButtonElement>("[data-conversation-menu]")!;
+    root
+      .querySelector<HTMLButtonElement>("[data-toggle-fullscreen]")!
+      .addEventListener("click", () => void store.toggleFullscreen());
     menuButton.disabled = !metadata || isBusy;
     menuButton.addEventListener("click", () => {
       actionsOpen = !actionsOpen;
@@ -461,9 +464,16 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     renderNow(state);
     renderedState = state;
   };
+  const onWindowKeydown = (event: KeyboardEvent) => {
+    if (event.key !== "F11" || event.repeat) return;
+    event.preventDefault();
+    void store.toggleFullscreen();
+  };
+  window.addEventListener("keydown", onWindowKeydown);
   const unsubscribe = store.subscribe(render);
   return () => {
     if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+    window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();
     root.replaceChildren();
   };

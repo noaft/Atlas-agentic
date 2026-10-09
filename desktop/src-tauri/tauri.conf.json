@@ -16,8 +16,10 @@
         "title": "Atlas",
         "width": 1180,
         "height": 780,
-        "minWidth": 720,
-        "minHeight": 540
+        "minWidth": 360,
+        "minHeight": 480,
+        "resizable": true,
+        "maximizable": true
       }
     ],
     "security": {

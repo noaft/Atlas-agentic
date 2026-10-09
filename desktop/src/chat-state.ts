@@ -501,6 +501,14 @@ export class ChatStore {
     }
   }
 
+  async toggleFullscreen(): Promise<void> {
+    try {
+      await this.api.toggleFullscreen();
+    } catch (error) {
+      this.update({ errorMessage: errorMessage(error) });
+    }
+  }
+
   private appendDelta(token: number, delta: string): void {
     if (token !== this.askToken || this.state.status !== "streaming") return;
     const messages = [...this.state.messages];
