@@ -249,6 +249,48 @@ test("typing preserves the composer's caret position", async () => {
   expect(rendered.selectionEnd).toBe(3);
 });
 
+test("composition end keeps the composer mounted for the final Vietnamese input", async () => {
+  const { root, store } = setup();
+  await store.chooseWorkspaceForDraft();
+  const input = composer(root);
+  input.focus();
+  input.value = "a";
+  input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "á" }));
+
+  input.value = "á";
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "á" }));
+
+  expect(composer(root)).toBe(input);
+  expect(input.value).toBe("á");
+  expect(store.getState().draftText).toBe("á");
+});
+
+test("composition fallback enables sending when no final input event arrives", async () => {
+  vi.useFakeTimers();
+  try {
+    const { root, store } = setup();
+    await store.chooseWorkspaceForDraft();
+    const input = composer(root);
+    input.focus();
+    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    input.value = "á";
+    input.setSelectionRange(1, 1);
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "á" }));
+
+    vi.runAllTimers();
+
+    const rendered = composer(root);
+    expect(rendered.value).toBe("á");
+    expect(document.activeElement).toBe(rendered);
+    expect(rendered.selectionStart).toBe(1);
+    expect(root.querySelector<HTMLButtonElement>("[data-send]")?.disabled).toBe(false);
+    expect(store.getState().draftText).toBe("á");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("streaming renders ordered assistant text and disables mutation controls", async () => {
   const api = new ViewApi();
   const pending = deferred<ConversationAskResult>();
@@ -460,6 +502,7 @@ test("composition defers async renders and preserves Vietnamese text and caret",
   expect(original.value).toBe("tiếng Việt");
 
   original.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  original.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
   const rendered = composer(root);
   expect(rendered).not.toBe(original);
   expect(rendered.value).toBe("tiếng Việt");

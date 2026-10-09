@@ -42,6 +42,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let renameOpen = false;
   let renameValue = "";
   let composing = false;
+  let compositionSettling = false;
+  let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
 
   const focusComposer = (selection?: [number, number]) => {
@@ -312,21 +314,41 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       ? `Tools are limited to ${state.activeWorkspace.path}`
       : "A workspace is required before Atlas can run coding tools.";
     textarea.addEventListener("compositionstart", () => {
+      if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+      compositionSettleTimer = null;
       composing = true;
+      compositionSettling = false;
       pendingState = null;
     });
     textarea.addEventListener("compositionend", () => {
       const value = textarea.value;
-      const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
       store.setDraft(value);
       composing = false;
-      pendingState = null;
-      renderNow(store.getState());
-      focusComposer(selection);
+      compositionSettling = true;
+      compositionSettleTimer = setTimeout(() => {
+        compositionSettleTimer = null;
+        compositionSettling = false;
+        const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
+        pendingState = null;
+        renderNow(store.getState());
+        focusComposer(selection);
+      }, 0);
     });
     textarea.addEventListener("input", () => {
       if (composing) return;
       store.setDraft(textarea.value);
+      if (compositionSettling) {
+        if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+        compositionSettleTimer = null;
+        compositionSettling = false;
+        if (pendingState) {
+          const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
+          pendingState = null;
+          renderNow(store.getState());
+          focusComposer(selection);
+          return;
+        }
+      }
       send.disabled = isBusy || !state.activeWorkspace || !textarea.value.trim();
     });
     textarea.addEventListener("keydown", (event) => {
@@ -383,7 +405,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   };
 
   const render = (state: Readonly<ChatState>) => {
-    if (composing) {
+    if (composing || compositionSettling) {
       pendingState = state;
       return;
     }
@@ -392,6 +414,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   };
   const unsubscribe = store.subscribe(render);
   return () => {
+    if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
     unsubscribe();
     root.replaceChildren();
   };
