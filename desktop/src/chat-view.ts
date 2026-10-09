@@ -45,6 +45,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let compositionSettling = false;
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
+  let renderedState: Readonly<ChatState> | null = null;
 
   const focusComposer = (selection?: [number, number]) => {
     const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
@@ -404,13 +405,53 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     if (composerSelection && !textarea.disabled) focusComposer(composerSelection);
   };
 
+  const patchStreamingDelta = (
+    previous: Readonly<ChatState>,
+    state: Readonly<ChatState>,
+  ): boolean => {
+    if (previous.status !== "streaming" || state.status !== "streaming") return false;
+    for (const key of Object.keys(previous) as Array<keyof ChatState>) {
+      if (key !== "messages" && previous[key] !== state[key]) return false;
+    }
+    if (previous.messages.length !== state.messages.length || state.messages.length === 0) {
+      return false;
+    }
+    const lastIndex = state.messages.length - 1;
+    if (previous.messages.slice(0, lastIndex).some((message, index) => message !== state.messages[index])) {
+      return false;
+    }
+    const previousMessage = previous.messages[lastIndex];
+    const message = state.messages[lastIndex];
+    if (
+      previousMessage.role !== "assistant" ||
+      previousMessage.delivery !== "pending" ||
+      message.role !== "assistant" ||
+      message.delivery !== "pending" ||
+      !message.content.startsWith(previousMessage.content)
+    ) {
+      return false;
+    }
+    const messages = root.querySelector<HTMLElement>("[data-messages]");
+    const articles = messages?.querySelectorAll<HTMLElement>("[data-message-role]");
+    const content = articles?.item(lastIndex).querySelector<HTMLElement>(".message-content");
+    if (!messages || !content) return false;
+    content.textContent = message.content || "Thinking…";
+    messages.scrollTop = messages.scrollHeight;
+    return true;
+  };
+
   const render = (state: Readonly<ChatState>) => {
     if (composing || compositionSettling) {
       pendingState = state;
       return;
     }
     pendingState = null;
+    if (renderedState && patchStreamingDelta(renderedState, state)) {
+      renderedState = state;
+      return;
+    }
     renderNow(state);
+    renderedState = state;
   };
   const unsubscribe = store.subscribe(render);
   return () => {

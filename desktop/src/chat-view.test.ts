@@ -319,6 +319,34 @@ test("streaming renders ordered assistant text and disables mutation controls", 
   expect(composer(root).disabled).toBe(false);
 });
 
+test("streaming_deltas_update_the_answer_without_rebuilding_the_ui", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  let emit!: (text: string) => void;
+  api.askImpl = async (_prompt, _id, _workspace, onDelta) => {
+    emit = onDelta;
+    return pending.promise;
+  };
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
+  inputComposer(root, "hello");
+  click(root, "[data-send]");
+  await flush();
+  const shell = root.querySelector(".atlas-shell");
+  const streamingComposer = composer(root);
+
+  emit("Hello");
+  emit(" responsive desktop");
+
+  expect(root.querySelector(".atlas-shell")).toBe(shell);
+  expect(composer(root)).toBe(streamingComposer);
+  expect(root.querySelector("[data-message-role='assistant']")?.textContent).toContain(
+    "Hello responsive desktop",
+  );
+  pending.resolve({ answer: "Hello responsive desktop", metadata, created: true });
+  await flush();
+});
+
 test("rename keeps the dialog on failure and updates title on success", async () => {
   const api = new ViewApi();
   api.list = Promise.resolve([metadata]);

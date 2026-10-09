@@ -517,7 +517,10 @@ export class ChatStore {
   private replace(next: ChatState): void {
     this.state = {
       ...next,
-      conversationGroups: groupConversations(next.conversations),
+      conversationGroups:
+        next.conversations === this.state.conversations
+          ? this.state.conversationGroups
+          : groupConversations(next.conversations),
     };
     this.emit();
   }
