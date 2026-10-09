@@ -20,6 +20,7 @@ const settings: SettingsView = {
   historyLimit: 40,
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
+  defaultWorkspaceError: null,
   environmentOverrides: [],
 };
 

@@ -82,8 +82,9 @@ export interface SettingsView {
   baseUrl: string;
   model: string;
   historyLimit: number;
-  defaultWorkspace: Workspace;
+  defaultWorkspace: Workspace | null;
   defaultWorkspaceAutomatic: boolean;
+  defaultWorkspaceError: string | null;
   environmentOverrides: Array<"apiKey" | "baseUrl" | "model" | "historyLimit">;
 }
 

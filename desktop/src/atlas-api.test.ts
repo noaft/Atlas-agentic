@@ -112,6 +112,8 @@ describe("Tauri Atlas API", () => {
           model: "deepseek-flash",
           historyLimit: 40,
           defaultWorkspace: null,
+          defaultWorkspaceAutomatic: true,
+          defaultWorkspaceError: "automatic workspace unavailable",
           environmentOverrides: [],
         };
       }

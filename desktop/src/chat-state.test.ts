@@ -19,6 +19,7 @@ const settings: SettingsView = {
   historyLimit: 40,
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
+  defaultWorkspaceError: null,
   environmentOverrides: [],
 };
 
@@ -504,6 +505,42 @@ test("late_settings_do_not_override_a_selected_workspace", async () => {
   expect(store.getState().activeWorkspace).toEqual(workspace);
 });
 
+test("delayed_settings_supply_the_default_to_a_selected_legacy_conversation", async () => {
+  const api = new FakeApi();
+  const loadingSettings = deferred<SettingsView>();
+  api.loadSettingsResult = () => loadingSettings.promise;
+  const legacy = { ...first, workspace: null };
+  api.conversations = [legacy];
+  api.loads.set(legacy.id, async () => savedConversation(legacy));
+  const store = new ChatStore(api);
+
+  const initializing = store.initialize();
+  await Promise.resolve();
+  await store.selectConversation(legacy.id);
+  expect(store.getState().activeWorkspace).toBeNull();
+  loadingSettings.resolve(settings);
+  await initializing;
+
+  expect(store.getState().activeConversationId).toBe(legacy.id);
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+});
+
+test("renaming_a_legacy_conversation_preserves_its_effective_default", async () => {
+  const api = new FakeApi();
+  const legacy = { ...first, workspace: null };
+  api.conversations = [legacy];
+  api.loads.set(legacy.id, async () => savedConversation(legacy));
+  api.rename = async (_id, title) => ({ ...legacy, title });
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(legacy.id);
+
+  await store.renameActive("Renamed legacy");
+
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+  expect(store.getState().conversations[0].workspace).toBeNull();
+});
+
 test("deleting_or_resetting_keeps_saved_conversation_workspace_authoritative", async () => {
   const api = new FakeApi();
   api.settings = {
@@ -528,6 +565,29 @@ test("deleting_or_resetting_keeps_saved_conversation_workspace_authoritative", a
 
   await store.deleteActive();
   expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+});
+
+test("saving_a_new_default_refreshes_an_active_legacy_conversation", async () => {
+  const api = new FakeApi();
+  const legacy = { ...first, workspace: null };
+  const customDefault = { path: "/work/custom", name: "custom" };
+  api.conversations = [legacy];
+  api.loads.set(legacy.id, async () => savedConversation(legacy));
+  api.save = async () => ({
+    ...settings,
+    defaultWorkspace: customDefault,
+    defaultWorkspaceAutomatic: false,
+  });
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(legacy.id);
+  store.openSettings();
+  store.updateSettingsDraft({ defaultWorkspace: customDefault });
+
+  await store.saveSettings();
+
+  expect(store.getState().activeConversationId).toBe(legacy.id);
+  expect(store.getState().activeWorkspace).toEqual(customDefault);
 });
 
 test("send stays blocked for the full workspace assignment", async () => {

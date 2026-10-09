@@ -151,11 +151,18 @@ export function renderSettings(
     : configuredWorkspace.name;
   const workspacePath = document.createElement("span");
   workspacePath.textContent = usingAutomaticWorkspace
-    ? settings.defaultWorkspaceAutomatic
+    ? settings.defaultWorkspaceAutomatic && settings.defaultWorkspace
       ? settings.defaultWorkspace.path
       : "Save settings to use the automatic Atlas home."
     : configuredWorkspace.path;
   workspaceValue.append(workspaceName, workspacePath);
+  if (settings.defaultWorkspaceError) {
+    const workspaceError = document.createElement("span");
+    workspaceError.className = "settings-hint settings-error";
+    workspaceError.setAttribute("role", "alert");
+    workspaceError.textContent = settings.defaultWorkspaceError;
+    workspaceValue.append(workspaceError);
+  }
   const workspaceActions = document.createElement("div");
   workspaceActions.className = "settings-workspace-actions";
   const choose = document.createElement("button");

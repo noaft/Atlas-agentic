@@ -81,6 +81,12 @@ const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
   defaultWorkspace: settings.defaultWorkspaceAutomatic ? null : settings.defaultWorkspace,
 });
 
+const usableDefaultWorkspace = (settings: SettingsView | null): Workspace | null =>
+  settings && !settings.defaultWorkspaceError ? settings.defaultWorkspace : null;
+
+const sameWorkspace = (left: Workspace | null, right: Workspace | null): boolean =>
+  left?.path === right?.path;
+
 export class ChatStore {
   private state: ChatState = initialState();
   private readonly listeners = new Set<Listener>();
@@ -137,8 +143,15 @@ export class ChatStore {
       const settings = await this.api.loadSettings();
       if (token !== this.settingsToken) return;
       this.update({ settings, settingsStatus: "idle", settingsErrorMessage: null });
-      if (!this.state.activeConversationId && !this.state.activeWorkspace) {
-        this.update({ activeWorkspace: settings.defaultWorkspace });
+      if (!this.state.activeWorkspace) {
+        const active = this.state.activeConversationId
+          ? this.state.conversations.find(
+              (conversation) => conversation.id === this.state.activeConversationId,
+            )
+          : null;
+        if (!active || !active.workspace) {
+          this.update({ activeWorkspace: usableDefaultWorkspace(settings) });
+        }
       }
     } catch (error) {
       if (token !== this.settingsToken) return;
@@ -165,7 +178,7 @@ export class ChatStore {
       status: "idle",
       errorMessage: null,
     });
-    const defaultWorkspace = this.state.settings?.defaultWorkspace ?? null;
+    const defaultWorkspace = usableDefaultWorkspace(this.state.settings);
     this.update({ activeWorkspace: defaultWorkspace });
   }
 
@@ -182,7 +195,7 @@ export class ChatStore {
         ...this.state,
         activeConversationId: conversation.metadata.id,
         activeWorkspace:
-          conversation.metadata.workspace ?? this.state.settings?.defaultWorkspace ?? null,
+          conversation.metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
         messages: conversation.messages.map(displaySavedMessage),
         status: "idle",
         errorMessage: null,
@@ -389,6 +402,8 @@ export class ChatStore {
       return;
     }
     const token = ++this.settingsToken;
+    const previousDefault = usableDefaultWorkspace(this.state.settings);
+    const activeWorkspaceBeforeSave = this.state.activeWorkspace;
     this.update({ settingsStatus: "saving", settingsErrorMessage: null });
     try {
       const settings = await this.api.saveSettings({
@@ -400,12 +415,24 @@ export class ChatStore {
         defaultWorkspacePath: draft.defaultWorkspace?.path ?? null,
       });
       if (token !== this.settingsToken) return;
+      const nextDefault = usableDefaultWorkspace(settings);
+      const activeConversation = this.state.activeConversationId
+        ? this.state.conversations.find(
+            (conversation) => conversation.id === this.state.activeConversationId,
+          )
+        : null;
+      const activeWorkspace = activeConversation
+        ? activeConversation.workspace ?? nextDefault
+        : !activeWorkspaceBeforeSave || sameWorkspace(activeWorkspaceBeforeSave, previousDefault)
+          ? nextDefault
+          : activeWorkspaceBeforeSave;
       this.update({
         screen: "chat",
         settings,
         settingsDraft: null,
         settingsStatus: "idle",
         settingsErrorMessage: null,
+        activeWorkspace,
       });
     } catch (error) {
       if (token !== this.settingsToken) return;
@@ -429,7 +456,7 @@ export class ChatStore {
         conversations: this.state.conversations.map((conversation) =>
           conversation.id === metadata.id ? metadata : conversation,
         ),
-        activeWorkspace: metadata.workspace,
+        activeWorkspace: metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
         status: "idle",
         errorMessage: null,
       });
@@ -462,7 +489,7 @@ export class ChatStore {
           (conversation) => conversation.id !== id,
         ),
         activeConversationId: null,
-        activeWorkspace: this.state.settings?.defaultWorkspace ?? null,
+        activeWorkspace: usableDefaultWorkspace(this.state.settings),
         messages: [],
         draftText: "",
         status: "idle",

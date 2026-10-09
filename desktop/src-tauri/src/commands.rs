@@ -322,8 +322,9 @@ pub struct SettingsViewDto {
     pub base_url: String,
     pub model: String,
     pub history_limit: usize,
-    pub default_workspace: WorkspaceDto,
+    pub default_workspace: Option<WorkspaceDto>,
     pub default_workspace_automatic: bool,
+    pub default_workspace_error: Option<String>,
     pub environment_overrides: Vec<&'static str>,
 }
 
@@ -341,21 +342,35 @@ pub struct SaveSettingsInput {
 fn load_settings_impl(state: &DesktopState) -> Result<SettingsViewDto, String> {
     let saved = state.settings_store.load()?;
     let effective = saved.resolve_from_env()?;
-    let (default_workspace, default_workspace_automatic) =
-        state.resolve_default_workspace(&effective)?;
+    let (default_workspace, default_workspace_automatic, default_workspace_error) =
+        match effective.default_workspace.as_deref() {
+            Some(configured) => match validate_workspace_path(configured) {
+                Ok(workspace) => (Some(workspace_dto(&workspace)), false, None),
+                Err(error) => (Some(workspace_dto(configured)), false, Some(error)),
+            },
+            None => match (state.automatic_workspace_resolver)() {
+                Ok(workspace) => match validate_workspace_path(&workspace) {
+                    Ok(workspace) => (Some(workspace_dto(&workspace)), true, None),
+                    Err(error) => (None, true, Some(error)),
+                },
+                Err(error) => (None, true, Some(error)),
+            },
+        };
     Ok(settings_view(
         &saved,
         effective,
-        workspace_dto(&default_workspace),
+        default_workspace,
         default_workspace_automatic,
+        default_workspace_error,
     ))
 }
 
 fn settings_view(
     saved: &AtlasSettings,
     effective: EffectiveSettings,
-    default_workspace: WorkspaceDto,
+    default_workspace: Option<WorkspaceDto>,
     default_workspace_automatic: bool,
+    default_workspace_error: Option<String>,
 ) -> SettingsViewDto {
     let api_key_source = if effective
         .environment_overrides
@@ -384,6 +399,7 @@ fn settings_view(
         history_limit: saved.conversation.history_limit,
         default_workspace,
         default_workspace_automatic,
+        default_workspace_error,
         environment_overrides,
     }
 }
@@ -936,8 +952,9 @@ mod tests {
 
         let automatic_view = load_settings_impl(&state).unwrap();
         assert!(automatic_view.default_workspace_automatic);
+        assert_eq!(automatic_view.default_workspace_error, None);
         assert_eq!(
-            automatic_view.default_workspace.path,
+            automatic_view.default_workspace.unwrap().path,
             automatic.canonicalize().unwrap().display().to_string()
         );
 
@@ -946,9 +963,65 @@ mod tests {
         settings_store.save(&settings).unwrap();
         let configured_view = load_settings_impl(&state).unwrap();
         assert!(!configured_view.default_workspace_automatic);
+        assert_eq!(configured_view.default_workspace_error, None);
         assert_eq!(
-            configured_view.default_workspace.path,
+            configured_view.default_workspace.unwrap().path,
             configured.canonicalize().unwrap().display().to_string()
+        );
+    }
+
+    #[test]
+    fn settings_remain_editable_when_the_configured_default_is_stale() {
+        let root = TempDir::new().unwrap();
+        let stale = root.path().join("deleted-default");
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let mut settings = AtlasSettings::default();
+        settings.workspace.default_path = Some(stale.clone());
+        settings_store.save(&settings).unwrap();
+        let automatic_calls = Arc::new(AtomicUsize::new(0));
+        let state = DesktopState::with_runtime_factory_settings_and_workspace_resolver(
+            ConversationStore::at(root.path().join("data")),
+            settings_store,
+            PathBuf::from("agents/atlas.toml"),
+            Arc::new(|_, _| Err("runtime must not be built".to_string())),
+            {
+                let automatic_calls = Arc::clone(&automatic_calls);
+                Arc::new(move || {
+                    automatic_calls.fetch_add(1, Ordering::SeqCst);
+                    Err("automatic resolver must not run".to_string())
+                })
+            },
+        );
+
+        let view = load_settings_impl(&state).unwrap();
+
+        assert!(!view.default_workspace_automatic);
+        assert_eq!(
+            view.default_workspace.unwrap().path,
+            stale.display().to_string()
+        );
+        assert!(view.default_workspace_error.unwrap().contains("workspace"));
+        assert_eq!(automatic_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn settings_remain_editable_when_the_automatic_workspace_is_unavailable() {
+        let root = TempDir::new().unwrap();
+        let state = DesktopState::with_runtime_factory_settings_and_workspace_resolver(
+            ConversationStore::at(root.path().join("data")),
+            SettingsStore::at(root.path().join("settings.json")),
+            PathBuf::from("agents/atlas.toml"),
+            Arc::new(|_, _| Err("runtime must not be built".to_string())),
+            Arc::new(|| Err("could not resolve the user home directory".to_string())),
+        );
+
+        let view = load_settings_impl(&state).unwrap();
+
+        assert!(view.default_workspace_automatic);
+        assert_eq!(view.default_workspace, None);
+        assert_eq!(
+            view.default_workspace_error.as_deref(),
+            Some("could not resolve the user home directory")
         );
     }
 
@@ -1163,8 +1236,9 @@ conversation_title_prompt = "Return a short title."
             settings_view(
                 &missing,
                 missing.resolve_with(|_| None).unwrap(),
-                super::workspace_dto(Path::new("/tmp/Atlas")),
+                Some(super::workspace_dto(Path::new("/tmp/Atlas"))),
                 true,
+                None,
             )
             .api_key_source,
             "missing"
@@ -1176,8 +1250,9 @@ conversation_title_prompt = "Return a short title."
             settings_view(
                 &saved,
                 saved.resolve_with(|_| None).unwrap(),
-                super::workspace_dto(Path::new("/tmp/Atlas")),
+                Some(super::workspace_dto(Path::new("/tmp/Atlas"))),
                 true,
+                None,
             )
             .api_key_source,
             "settings"
@@ -1191,8 +1266,9 @@ conversation_title_prompt = "Return a short title."
         let view = settings_view(
             &saved,
             environment,
-            super::workspace_dto(Path::new("/tmp/Atlas")),
+            Some(super::workspace_dto(Path::new("/tmp/Atlas"))),
             true,
+            None,
         );
         let json = serde_json::to_string(&view).unwrap();
         assert_eq!(view.api_key_source, "environment");
@@ -1219,8 +1295,9 @@ conversation_title_prompt = "Return a short title."
         let view = settings_view(
             &saved,
             effective,
-            super::workspace_dto(Path::new("/tmp/Atlas")),
+            Some(super::workspace_dto(Path::new("/tmp/Atlas"))),
             true,
+            None,
         );
 
         assert_eq!(view.base_url, "https://saved.example.test");
@@ -1455,7 +1532,9 @@ conversation_title_prompt = "Return a short title."
         let root = TempDir::new().unwrap();
         let data_path = root.path().join("data");
         let workspace = root.path().join("workspace");
+        let automatic = root.path().join("Atlas");
         std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&automatic).unwrap();
         let store = ConversationStore::at(data_path.clone());
         let settings_store = SettingsStore::at(root.path().join("config/settings.json"));
         let responses = Arc::new(Mutex::new(
@@ -1474,7 +1553,7 @@ conversation_title_prompt = "Return a short title."
         ));
         let histories = Arc::new(Mutex::new(Vec::new()));
         let runtime_calls = Arc::new(Mutex::new(Vec::<(PathBuf, Option<String>)>::new()));
-        let state = DesktopState::with_runtime_factory_and_settings(
+        let state = DesktopState::with_runtime_factory_settings_and_workspace_resolver(
             store.clone(),
             settings_store.clone(),
             PathBuf::from("agents/atlas.toml"),
@@ -1495,6 +1574,7 @@ conversation_title_prompt = "Return a short title."
                     )])))
                 })
             },
+            Arc::new(move || Ok(automatic.clone())),
         );
         let secret = "desktop-e2e-secret";
 

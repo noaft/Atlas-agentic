@@ -15,6 +15,7 @@ const settings: SettingsView = {
     name: "<script>unsafe</script>",
   },
   defaultWorkspaceAutomatic: false,
+  defaultWorkspaceError: null,
   environmentOverrides: ["apiKey"],
 };
 
@@ -123,4 +124,19 @@ test("custom default can reset to Atlas home", async () => {
     "Choose custom folder",
   );
   expect(root.querySelector("[data-reset-default-workspace]")).toBeNull();
+});
+
+test("an_invalid_default_remains_editable_and_shows_its_error", async () => {
+  const invalid = {
+    ...settings,
+    defaultWorkspaceError: "workspace does not exist: /missing/project",
+  };
+  const { root, store } = fixture(invalid);
+  await store.initialize();
+  store.openSettings();
+  renderSettings(root, store.getState(), store);
+
+  expect(store.getState().screen).toBe("settings");
+  expect(root.textContent).toContain("workspace does not exist");
+  expect(root.querySelector("[data-reset-default-workspace]")).not.toBeNull();
 });
