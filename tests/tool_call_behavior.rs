@@ -715,6 +715,38 @@ fn runtime_stream_rejects_invalid_tool_protocol_without_emitting_it() {
 }
 
 #[test]
+fn runtime_retries_one_non_json_tool_response_and_preserves_the_pending_request() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec!["The file is in the workspace."],
+            vec![r#"{"type":"final","content":"The file is in the workspace."}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+    let mut deltas = Vec::new();
+
+    let result = runtime
+        .ask_stream("where is this file?", &mut |delta| {
+            deltas.push(delta.to_string())
+        })
+        .unwrap();
+
+    assert_eq!(result, "The file is in the workspace.");
+    assert_eq!(deltas, vec!["The file is in the workspace."]);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 2);
+    let repair: serde_json::Value = serde_json::from_str(&requests[1].user_prompt).unwrap();
+    assert_eq!(repair["type"], "protocol_repair");
+    assert_eq!(repair["pending_request"], "where is this file?");
+}
+
+#[test]
 fn runtime_retries_one_empty_tool_response_and_preserves_the_pending_request() {
     let workspace = tempfile::tempdir().unwrap();
     fs::write(
