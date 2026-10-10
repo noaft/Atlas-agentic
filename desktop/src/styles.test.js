@@ -90,6 +90,7 @@ test("model picker is visually borderless while keeping an accessible label", ()
   expect(select.getAttribute("aria-label")).toBe("Model");
   expect(style.borderStyle).toBe("none");
   expect(style.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(style.appearance).toBe("none");
 });
 
 test("sidebar controls remain visible on desktop", () => {
