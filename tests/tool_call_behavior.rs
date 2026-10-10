@@ -10,7 +10,7 @@ use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     conversations::{ConversationMessage, MessageRole},
     models::{ModelProvider, ModelRequest},
-    permissions::{AllowAllAuthorizer, PermissionMode},
+    permissions::{AllowAllAuthorizer, PermissionMode, ToolEvent},
     tools::{
         CreateFileTool, CurrentTimeTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition,
         ToolRegistry, ToolResult,
@@ -264,6 +264,14 @@ impl ModelProvider for RepeatingToolModel {
     }
 }
 
+struct RepeatingMissingToolModel;
+
+impl ModelProvider for RepeatingMissingToolModel {
+    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
+        Ok(r#"{"type":"tool_call","tool":"missing","args":{}}"#.to_string())
+    }
+}
+
 struct InvalidProtocolModel {
     response: &'static str,
 }
@@ -276,6 +284,26 @@ impl ModelProvider for InvalidProtocolModel {
 
 struct CountingTool {
     executions: Rc<Cell<usize>>,
+}
+
+struct FailingTool;
+
+impl Tool for FailingTool {
+    fn name(&self) -> &str {
+        "failing"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Always fail for runtime recovery tests.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
+        Err("simulated tool failure".to_string())
+    }
 }
 
 impl Tool for CountingTool {
@@ -428,9 +456,13 @@ fn runtime_executes_command_tool_call_and_returns_agent_answer() {
 }
 
 #[test]
-fn create_file_rejects_parent_directory_paths() {
+fn runtime_returns_create_file_validation_failure_to_agent() {
     let workspace = tempfile::tempdir().unwrap();
-    let model = QueueModel::new([r#"
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![
+                r#"
 {
   "type": "tool_call",
   "tool": "create_file",
@@ -439,7 +471,12 @@ fn create_file_rejects_parent_directory_paths() {
     "content": "bad"
   }
 }
-"#]);
+"#,
+            ],
+            vec![r#"{"type":"final","content":"Used a safe path instead."}"#],
+        ],
+        Rc::clone(&requests),
+    );
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
         definition(),
         Box::new(model),
@@ -448,10 +485,13 @@ fn create_file_rejects_parent_directory_paths() {
         workspace.path(),
     ))]));
 
-    let error = ask(&runtime, "create unsafe file").unwrap_err();
+    let answer = ask(&runtime, "create unsafe file").unwrap();
 
+    assert_eq!(answer, "Used a safe path instead.");
+    let retry: serde_json::Value = serde_json::from_str(&requests.borrow()[1].user_prompt).unwrap();
+    assert_eq!(retry["tool_results"][0]["success"], false);
     assert_eq!(
-        error,
+        retry["tool_results"][0]["output"],
         "create_file path cannot contain parent directory segments"
     );
 }
@@ -587,6 +627,114 @@ fn runtime_sends_tool_output_back_to_agent_before_returning_final_answer() {
     let result = ask(&runtime, "where am I?").unwrap();
 
     assert_eq!(result, "Atlas confirmed the workspace.");
+}
+
+#[test]
+fn runtime_returns_unknown_tool_failure_to_agent_and_accepts_corrected_retry() {
+    let workspace = tempfile::tempdir().unwrap();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"missing","args":{}}"#],
+            vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+            vec![r#"{"type":"final","content":"Recovered after retry."}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
+        workspace.path(),
+    ))]));
+
+    let answer = ask(&runtime, "find the workspace").unwrap();
+
+    assert_eq!(answer, "Recovered after retry.");
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 3);
+    let first_retry: serde_json::Value = serde_json::from_str(&requests[1].user_prompt).unwrap();
+    assert_eq!(first_retry["tool_results"][0]["tool"], "missing");
+    assert_eq!(first_retry["tool_results"][0]["success"], false);
+    assert_eq!(
+        first_retry["tool_results"][0]["output"],
+        "unknown tool: missing"
+    );
+    let corrected_retry: serde_json::Value =
+        serde_json::from_str(&requests[2].user_prompt).unwrap();
+    assert_eq!(corrected_retry["tool_results"].as_array().unwrap().len(), 2);
+    assert_eq!(corrected_retry["tool_results"][1]["tool"], "pwd");
+    assert_eq!(corrected_retry["tool_results"][1]["success"], true);
+}
+
+#[test]
+fn runtime_with_no_registered_tools_returns_lookup_failure_to_agent() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"missing","args":{}}"#],
+            vec!["Recovered ", "without tools."],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]));
+    let mut deltas = Vec::new();
+
+    let answer = runtime
+        .ask_stream("try a tool", &mut |delta| deltas.push(delta.to_string()))
+        .unwrap();
+
+    assert_eq!(answer, "Recovered without tools.");
+    assert_eq!(deltas, vec!["Recovered ", "without tools."]);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 2);
+    let retry: serde_json::Value = serde_json::from_str(&requests[1].user_prompt).unwrap();
+    assert_eq!(retry["tool_results"][0]["tool"], "missing");
+    assert_eq!(retry["tool_results"][0]["success"], false);
+    assert_eq!(retry["tool_results"][0]["output"], "unknown tool: missing");
+}
+
+#[test]
+fn runtime_returns_execution_failure_to_agent_and_emits_failed_event() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"failing","args":{}}"#],
+            vec![r#"{"type":"final","content":"Handled the failure."}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(FailingTool)]));
+    let mut events = Vec::new();
+
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "run it",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    assert_eq!(answer, "Handled the failure.");
+    let retry: serde_json::Value = serde_json::from_str(&requests.borrow()[1].user_prompt).unwrap();
+    assert_eq!(retry["tool_results"][0]["success"], false);
+    assert_eq!(retry["tool_results"][0]["output"], "simulated tool failure");
+    assert!(matches!(events[0], ToolEvent::Started { .. }));
+    assert!(matches!(
+        events[1],
+        ToolEvent::Finished { success: false, .. }
+    ));
 }
 
 #[test]
@@ -853,6 +1001,19 @@ fn runtime_stops_an_agent_that_exceeds_the_tool_call_limit() {
 }
 
 #[test]
+fn runtime_counts_repeated_tool_failures_toward_the_tool_call_limit() {
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(RepeatingMissingToolModel),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+
+    let error = ask(&runtime, "keep trying a missing tool").unwrap_err();
+
+    assert_eq!(error, "agent exceeded the maximum of 8 tool calls");
+}
+
+#[test]
 fn runtime_executes_ls_tool_call() {
     let workspace = tempfile::tempdir().unwrap();
     fs::create_dir(workspace.path().join("notes")).unwrap();
@@ -884,9 +1045,10 @@ fn runtime_executes_ls_tool_call() {
 }
 
 #[test]
-fn ls_rejects_parent_directory_paths() {
+fn runtime_continues_after_ls_rejects_parent_directory_path() {
     let workspace = tempfile::tempdir().unwrap();
-    let model = QueueModel::new([r#"
+    let model = QueueModel::new([
+        r#"
 {
   "type": "tool_call",
   "tool": "ls",
@@ -894,7 +1056,9 @@ fn ls_rejects_parent_directory_paths() {
     "path": "../"
   }
 }
-"#]);
+"#,
+        r#"{"type":"final","content":"Cannot list outside the workspace."}"#,
+    ]);
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
         definition(),
         Box::new(model),
@@ -903,7 +1067,7 @@ fn ls_rejects_parent_directory_paths() {
         workspace.path(),
     ))]));
 
-    let error = ask(&runtime, "list outside").unwrap_err();
+    let answer = ask(&runtime, "list outside").unwrap();
 
-    assert_eq!(error, "ls path cannot contain parent directory segments");
+    assert_eq!(answer, "Cannot list outside the workspace.");
 }

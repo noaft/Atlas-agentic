@@ -1,4 +1,8 @@
-use std::{cell::Cell, collections::VecDeque, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+};
 
 use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
@@ -11,11 +15,17 @@ use atlas_agentic::{
     Runtime,
 };
 
-struct QueueModel(std::cell::RefCell<VecDeque<&'static str>>);
+struct QueueModel {
+    responses: RefCell<VecDeque<&'static str>>,
+    requests: Rc<RefCell<Vec<String>>>,
+}
 
 impl ModelProvider for QueueModel {
-    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
-        Ok(self.0.borrow_mut().pop_front().unwrap().to_string())
+    fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+        self.requests
+            .borrow_mut()
+            .push(request.user_prompt.to_string());
+        Ok(self.responses.borrow_mut().pop_front().unwrap().to_string())
     }
 }
 
@@ -60,7 +70,7 @@ impl ToolAuthorizer for FixedAuthorizer {
     }
 }
 
-fn test_runtime(executions: Rc<Cell<usize>>) -> Runtime {
+fn test_runtime(executions: Rc<Cell<usize>>) -> (Runtime, Rc<RefCell<Vec<String>>>) {
     let definition = LocalAgentDefinition::from_toml(
         r#"
 name = "atlas"
@@ -72,18 +82,21 @@ conversation_title_prompt = "Write a title."
 "#,
     )
     .unwrap();
-    let model = QueueModel(std::cell::RefCell::new(
-        [
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = QueueModel {
+        responses: RefCell::new([
             r#"{"type":"tool_call","tool":"risky","args":{"token":"secret-value","text":"abcdefghijklmnopqrstuvwxyz"}}"#,
             r#"{"type":"final","content":"finished"}"#,
         ]
-        .into(),
-    ));
-    Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        .into()),
+        requests: Rc::clone(&requests),
+    };
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
         definition,
         Box::new(model),
     ))]))
-    .with_tools(ToolRegistry::new(vec![Box::new(RiskyTool { executions })]))
+    .with_tools(ToolRegistry::new(vec![Box::new(RiskyTool { executions })]));
+    (runtime, requests)
 }
 
 #[test]
@@ -136,7 +149,7 @@ fn argument_summary_redacts_secrets_and_is_bounded() {
 #[test]
 fn runtime_asks_once_and_executes_after_allow() {
     let executions = Rc::new(Cell::new(0));
-    let runtime = test_runtime(Rc::clone(&executions));
+    let (runtime, _) = test_runtime(Rc::clone(&executions));
     let authorizer = FixedAuthorizer {
         decision: Ok(AuthorizationDecision::Allow),
         calls: Cell::new(0),
@@ -168,7 +181,7 @@ fn runtime_asks_once_and_executes_after_allow() {
 #[test]
 fn runtime_returns_denial_to_model_without_execution() {
     let executions = Rc::new(Cell::new(0));
-    let runtime = test_runtime(Rc::clone(&executions));
+    let (runtime, requests) = test_runtime(Rc::clone(&executions));
     let authorizer = FixedAuthorizer {
         decision: Ok(AuthorizationDecision::Deny),
         calls: Cell::new(0),
@@ -188,12 +201,22 @@ fn runtime_returns_denial_to_model_without_execution() {
     assert_eq!(answer, "finished");
     assert_eq!(authorizer.calls.get(), 1);
     assert_eq!(executions.get(), 0);
+    let continuation: serde_json::Value = serde_json::from_str(&requests.borrow()[1]).unwrap();
+    assert_eq!(continuation["tool_results"][0]["success"], false);
+    assert_eq!(
+        continuation["tool_results"][0]["args"],
+        serde_json::json!({"token":"secret-value","text":"abcdefghijklmnopqrstuvwxyz"})
+    );
+    assert_eq!(
+        continuation["tool_results"][0]["output"],
+        "Tool risky was denied by the user."
+    );
 }
 
 #[test]
 fn full_access_bypasses_authorizer_and_authorizer_errors_fail_the_turn() {
     let executions = Rc::new(Cell::new(0));
-    let runtime = test_runtime(Rc::clone(&executions));
+    let (runtime, _) = test_runtime(Rc::clone(&executions));
     let unused = FixedAuthorizer {
         decision: Err("approval transport failed"),
         calls: Cell::new(0),
@@ -212,7 +235,7 @@ fn full_access_bypasses_authorizer_and_authorizer_errors_fail_the_turn() {
     assert_eq!(executions.get(), 1);
 
     let executions = Rc::new(Cell::new(0));
-    let runtime = test_runtime(Rc::clone(&executions));
+    let (runtime, _) = test_runtime(Rc::clone(&executions));
     let failing = FixedAuthorizer {
         decision: Err("approval transport failed"),
         calls: Cell::new(0),

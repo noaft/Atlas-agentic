@@ -17,6 +17,7 @@ const MAX_TOOL_CALLS: usize = 8;
 struct ToolExecutionRecord {
     tool: String,
     args: serde_json::Value,
+    success: bool,
     output: String,
 }
 
@@ -101,23 +102,23 @@ impl Runtime {
             .ok_or_else(|| "no agent is registered".to_string())?;
         let tool_definitions = self.tools.definitions();
 
-        if tool_definitions.is_empty() {
-            let response = agent.process_stream(prompt, history, &tool_definitions, on_delta)?;
-            let output = AgentOutput::parse(&response)?;
-            return self.tools.execute(&output).map(|result| result.message);
-        }
-
         let mut input = prompt.to_string();
         let mut tool_results = Vec::new();
         let mut retried_invalid_response = false;
+        let allow_plain_final = tool_definitions.is_empty();
 
         loop {
-            let mut final_stream = FinalContentStream::default();
+            let mut final_stream = FinalContentStream::new(allow_plain_final);
             let response =
                 agent.process_stream(&input, history, &tool_definitions, &mut |delta| {
                     final_stream.push(delta, on_delta);
                 })?;
-            let output = match AgentOutput::parse_tool_protocol(&response) {
+            let parsed = if allow_plain_final {
+                AgentOutput::parse(&response)
+            } else {
+                AgentOutput::parse_tool_protocol(&response)
+            };
+            let output = match parsed {
                 Ok(output) => output,
                 Err(_) if !retried_invalid_response => {
                     input = render_protocol_repair(&input)?;
@@ -140,7 +141,19 @@ impl Runtime {
                         ));
                     }
 
-                    let (risk, arguments) = self.tools.authorization(&tool, &args)?;
+                    let (risk, arguments) = match self.tools.authorization(&tool, &args) {
+                        Ok(authorization) => authorization,
+                        Err(error) => {
+                            tool_results.push(ToolExecutionRecord {
+                                tool,
+                                args,
+                                success: false,
+                                output: error,
+                            });
+                            input = render_tool_continuation(prompt, &tool_results)?;
+                            continue;
+                        }
+                    };
                     if requires_confirmation(permission_mode, risk) {
                         let request = AuthorizationRequest::new(&tool, arguments, risk);
                         on_tool_event(&ToolEvent::ApprovalRequested {
@@ -150,6 +163,7 @@ impl Runtime {
                             tool_results.push(ToolExecutionRecord {
                                 tool: tool.clone(),
                                 args,
+                                success: false,
                                 output: format!("Tool {tool} was denied by the user."),
                             });
                             input = render_tool_continuation(prompt, &tool_results)?;
@@ -166,11 +180,15 @@ impl Runtime {
                         tool: tool.clone(),
                         success: result.is_ok(),
                     });
-                    let result = result?;
+                    let (success, output) = match result {
+                        Ok(result) => (true, result.message),
+                        Err(error) => (false, error),
+                    };
                     tool_results.push(ToolExecutionRecord {
                         tool,
                         args,
-                        output: result.message,
+                        success,
+                        output,
                     });
                     input = render_tool_continuation(prompt, &tool_results)?;
                 }
@@ -196,20 +214,47 @@ fn render_tool_continuation(
         message_type: "tool_results",
         original_user_request,
         tool_results,
-        instruction: "Use these tool results to continue the task. Return a final answer or request another available tool.",
+        instruction: "Use these tool results to continue the task. If a tool failed, correct the request or choose another available tool. Return a final answer or request another available tool.",
     })
     .map_err(|error| format!("failed to serialize tool results: {error}"))
 }
 
-#[derive(Default)]
 struct FinalContentStream {
     response: String,
     emitted_content: String,
+    allow_plain_final: bool,
+    streaming_plain: bool,
 }
 
 impl FinalContentStream {
+    fn new(allow_plain_final: bool) -> Self {
+        Self {
+            response: String::new(),
+            emitted_content: String::new(),
+            allow_plain_final,
+            streaming_plain: false,
+        }
+    }
+
     fn push(&mut self, delta: &str, on_delta: &mut dyn FnMut(&str)) {
         self.response.push_str(delta);
+        if self.streaming_plain {
+            on_delta(delta);
+            self.emitted_content.push_str(delta);
+            return;
+        }
+        if self.allow_plain_final {
+            let trimmed = self.response.trim_start();
+            if trimmed.is_empty() {
+                return;
+            }
+            if !trimmed.starts_with('{') {
+                on_delta(&self.response);
+                self.emitted_content.push_str(&self.response);
+                self.streaming_plain = true;
+                return;
+            }
+        }
         let Some(content) = partial_final_content(&self.response) else {
             return;
         };

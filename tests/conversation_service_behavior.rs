@@ -465,26 +465,32 @@ fn saved_permission_is_authoritative_and_legacy_chat_always_defaults_to_ask() {
 }
 
 #[test]
-fn tool_failure_saves_no_new_conversation() {
+fn tool_failure_can_recover_and_save_new_conversation() {
     let temp = tempfile::tempdir().unwrap();
     let store = ConversationStore::at(temp.path().join("data"));
     let (runtime, requests) = runtime(
         &store,
-        vec![Response::success(vec![
-            r#"{"type":"tool_call","tool":"missing","args":{}}"#,
-        ])],
-        Ok("unused"),
+        vec![
+            Response::success(vec![r#"{"type":"tool_call","tool":"missing","args":{}}"#]),
+            Response::success(vec![r#"{"type":"final","content":"Recovered answer"}"#]),
+        ],
+        Ok("Recovered conversation"),
     );
     let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(temp.path()))]));
 
-    let error = ConversationService::new(&runtime, &store, 40)
+    let result = ConversationService::new(&runtime, &store, 40)
         .ask("first input", None, &mut |_| {})
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error.contains("unknown tool"), "{error}");
-    assert!(store.list().unwrap().is_empty());
-    assert!(!temp.path().join("data/conversations").exists());
-    assert_eq!(requests.borrow().len(), 1);
+    assert_eq!(result.answer, "Recovered answer");
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.messages[1].content, "Recovered answer");
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 3);
+    let retry: serde_json::Value = serde_json::from_str(&requests[1].input).unwrap();
+    assert_eq!(retry["tool_results"][0]["success"], false);
+    assert_eq!(retry["tool_results"][0]["output"], "unknown tool: missing");
 }
 
 #[test]
