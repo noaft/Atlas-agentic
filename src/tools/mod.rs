@@ -1,4 +1,5 @@
 mod create_file;
+mod current_time;
 #[cfg(unix)]
 mod exec_command;
 mod list_dir;
@@ -6,6 +7,7 @@ mod pwd;
 mod read_file;
 
 pub use create_file::CreateFileTool;
+pub use current_time::CurrentTimeTool;
 #[cfg(unix)]
 pub use exec_command::ExecCommandTool;
 pub use list_dir::ListDirTool;

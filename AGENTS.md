@@ -50,6 +50,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 
 The built-in runtime tools are:
 
+- `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace

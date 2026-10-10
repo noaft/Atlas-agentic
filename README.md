@@ -196,6 +196,7 @@ reports blockers honestly. Its behavior and separate
 
 Default runtime tools:
 
+- `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace

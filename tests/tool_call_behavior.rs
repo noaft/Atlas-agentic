@@ -11,12 +11,12 @@ use atlas_agentic::{
     conversations::{ConversationMessage, MessageRole},
     models::{ModelProvider, ModelRequest},
     tools::{
-        CreateFileTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition, ToolRegistry,
-        ToolResult,
+        CreateFileTool, CurrentTimeTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition,
+        ToolRegistry, ToolResult,
     },
     Runtime,
 };
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 
 #[cfg(unix)]
 use atlas_agentic::tools::ExecCommandTool;
@@ -541,6 +541,28 @@ fn runtime_executes_pwd_tool_call() {
     let result = ask(&runtime, "where am I?").unwrap();
 
     assert_eq!(result, "The workspace was found.");
+}
+
+#[test]
+fn current_time_tool_reports_the_machine_local_date_time() {
+    let before = Local::now().fixed_offset();
+
+    let result = CurrentTimeTool::new()
+        .execute(&serde_json::json!({}))
+        .unwrap();
+
+    let after = Local::now().fixed_offset();
+    let value = result
+        .message
+        .strip_prefix("Local date and time: ")
+        .expect("current time output needs a clear label");
+    let reported = DateTime::parse_from_rfc3339(value).expect("current time must be RFC 3339");
+    assert!(reported >= before, "reported {reported} before {before}");
+    assert!(reported <= after, "reported {reported} after {after}");
+    assert_eq!(
+        reported.offset().local_minus_utc(),
+        before.offset().local_minus_utc()
+    );
 }
 
 #[test]
