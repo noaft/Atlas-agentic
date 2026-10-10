@@ -1,3 +1,4 @@
+import { createChatComposer } from "./chat-composer";
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
 import { renderSettings } from "./settings-view";
@@ -17,11 +18,6 @@ function button(label: string, className?: string): HTMLButtonElement {
   return element;
 }
 
-function resizeComposer(textarea: HTMLTextAreaElement) {
-  textarea.style.height = "0px";
-  textarea.style.height = `${textarea.scrollHeight}px`;
-}
-
 function chatIsBusy(state: Readonly<ChatState>) {
   return (
     state.status === "streaming" ||
@@ -29,19 +25,6 @@ function chatIsBusy(state: Readonly<ChatState>) {
     state.workspaceBusy ||
     state.modelListStatus === "saving"
   );
-}
-
-type AtomicMoveElement = Element & {
-  moveBefore(node: Node, child: Node | null): void;
-};
-
-function supportsAtomicMove(element: Element): element is AtomicMoveElement {
-  return "moveBefore" in element && typeof element.moveBefore === "function";
-}
-
-function moveAtomically(parent: Element, node: Node, child: Node | null) {
-  if (!supportsAtomicMove(parent)) throw new Error("Atomic DOM moves are unavailable");
-  parent.moveBefore(node, child);
 }
 
 function renderMessage(message: DisplayMessage): HTMLElement {
@@ -76,12 +59,40 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let actionsOpen = false;
   let renameOpen = false;
   let renameValue = "";
-  let composing = false;
-  let compositionSettling = false;
-  let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
-  let composerBlurTimer: ReturnType<typeof setTimeout> | null = null;
-  let pendingState: Readonly<ChatState> | null = null;
   let renderedState: Readonly<ChatState> | null = null;
+
+  root.innerHTML = `
+    <div class="atlas-shell">
+      <aside class="sidebar" data-sidebar></aside>
+      <main class="chat-main" data-main>
+        <div data-chat-screen>
+          <header class="chat-header" data-chat-header></header>
+          <div class="notice-area" data-notices></div>
+          <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
+        </div>
+        <div data-settings-screen></div>
+      </main>
+    </div>`;
+
+  const shell = root.querySelector<HTMLElement>(".atlas-shell")!;
+  const sidebar = root.querySelector<HTMLElement>("[data-sidebar]")!;
+  const main = root.querySelector<HTMLElement>("[data-main]")!;
+  const chatScreen = root.querySelector<HTMLElement>("[data-chat-screen]")!;
+  const settingsScreen = root.querySelector<HTMLElement>("[data-settings-screen]")!;
+  const header = root.querySelector<HTMLElement>("[data-chat-header]")!;
+  const notices = root.querySelector<HTMLElement>("[data-notices]")!;
+  const messages = root.querySelector<HTMLElement>("[data-messages]")!;
+  const dialog = document.createElement("dialog");
+  dialog.className = "rename-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-labelledby", "rename-title");
+
+  const composer = createChatComposer(store, async () => {
+    await store.send();
+    composer.replaceDraft(store.getState().draftText);
+  });
+  composer.replaceDraft(store.getState().draftText);
+  chatScreen.append(composer.element, dialog);
 
   const isCompactSidebar = () =>
     typeof window.matchMedia === "function" &&
@@ -96,107 +107,59 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     renderNow(store.getState());
   };
 
-  const focusComposer = (selection?: [number, number]) => {
-    const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
-    if (!composer || composer.disabled) return;
-    composer.focus();
-    const start = Math.min(selection?.[0] ?? composer.value.length, composer.value.length);
-    const end = Math.min(selection?.[1] ?? start, composer.value.length);
-    composer.setSelectionRange(start, end);
-  };
-
-  const resizeVisibleComposer = () => {
-    const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
-    if (composer) resizeComposer(composer);
-  };
-
   const renderNow = (state: Readonly<ChatState>) => {
-    const activeComposer =
-      document.activeElement instanceof HTMLTextAreaElement &&
-      document.activeElement.hasAttribute("data-composer") &&
-      root.contains(document.activeElement)
-        ? document.activeElement
-        : null;
-    const parkingParent = root.parentElement;
-    if (
-      activeComposer &&
-      activeComposer.value !== "" &&
-      state.screen === "chat" &&
-      (!parkingParent || !supportsAtomicMove(parkingParent))
-    ) {
-      const isBusy = chatIsBusy(state);
-      activeComposer.disabled = isBusy;
-      const send = root.querySelector<HTMLButtonElement>("[data-send]");
-      if (send) {
-        send.disabled = isBusy || !state.activeWorkspace || !activeComposer.value.trim();
-      }
-      pendingState = state;
-      return;
-    }
-    const focusedComposer =
-      state.screen === "chat" &&
-      activeComposer &&
-      parkingParent &&
-      supportsAtomicMove(parkingParent)
-        ? activeComposer
-        : null;
-    const composerSelection: [number, number] | undefined =
-      state.screen === "chat" && activeComposer
-      ? [activeComposer.selectionStart, activeComposer.selectionEnd]
-      : undefined;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = chatIsBusy(state);
 
-    if (focusedComposer && parkingParent)
-      moveAtomically(parkingParent, focusedComposer, root.nextSibling);
-
-    root.innerHTML = `
-      <div class="atlas-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}">
-        <aside class="sidebar${sidebarOpen ? " open" : ""}" data-sidebar>
-          <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
-          <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
-          <section class="workspace-card" aria-label="Active workspace" data-workspace-card>
-            <div class="workspace-card-icon" aria-hidden="true">⌘</div>
-            <div class="workspace-card-copy"><span>Workspace</span><strong data-workspace-name></strong><small data-workspace-path></small></div>
-            <button type="button" class="workspace-card-action" data-workspace-action aria-label="Choose workspace folder">⌄</button>
-          </section>
-          <div class="section-label">Conversations</div>
-          <nav class="conversation-list" aria-label="Saved conversations" data-conversation-list></nav>
-          <div class="sidebar-footer">
-            <button type="button" class="settings-nav" data-open-settings><span aria-hidden="true">⚙</span> Settings</button>
-            <p class="local-note">Private and stored locally on this device.</p>
-          </div>
-        </aside>
-        <main class="chat-main" data-main></main>
+    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+    sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
+    sidebar.innerHTML = `
+      <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
+      <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
+      <section class="workspace-card" aria-label="Active workspace" data-workspace-card>
+        <div class="workspace-card-icon" aria-hidden="true">⌘</div>
+        <div class="workspace-card-copy"><span>Workspace</span><strong data-workspace-name></strong><small data-workspace-path></small></div>
+        <button type="button" class="workspace-card-action" data-workspace-action aria-label="Choose workspace folder">⌄</button>
+      </section>
+      <div class="section-label">Conversations</div>
+      <nav class="conversation-list" aria-label="Saved conversations" data-conversation-list></nav>
+      <div class="sidebar-footer">
+        <button type="button" class="settings-nav" data-open-settings><span aria-hidden="true">⚙</span> Settings</button>
+        <p class="local-note">Private and stored locally on this device.</p>
       </div>`;
 
-    const sidebar = root.querySelector<HTMLElement>("[data-sidebar]")!;
-    const main = root.querySelector<HTMLElement>("[data-main]")!;
-    const workspaceName = root.querySelector<HTMLElement>("[data-workspace-name]")!;
-    const workspacePath = root.querySelector<HTMLElement>("[data-workspace-path]")!;
-    workspaceName.textContent = state.activeWorkspace?.name ?? "No folder selected";
-    workspacePath.textContent = state.activeWorkspace?.path ?? "Choose a folder to begin";
+    sidebar.querySelector<HTMLElement>("[data-workspace-name]")!.textContent =
+      state.activeWorkspace?.name ?? "No folder selected";
+    sidebar.querySelector<HTMLElement>("[data-workspace-path]")!.textContent =
+      state.activeWorkspace?.path ?? "Choose a folder to begin";
 
-    const workspaceAction = root.querySelector<HTMLButtonElement>("[data-workspace-action]")!;
-    workspaceAction.disabled = isBusy;
-    workspaceAction.addEventListener("click", async () => {
-      if (state.activeConversationId) await store.changeActiveWorkspace();
+    const focusComposer = () => composer.focus();
+    const chooseWorkspace = async () => {
+      if (store.getState().activeConversationId) await store.changeActiveWorkspace();
       else await store.chooseWorkspaceForDraft();
       focusComposer();
-    });
+    };
 
-    const newChat = root.querySelector<HTMLButtonElement>("[data-new-chat]")!;
+    const workspaceAction = sidebar.querySelector<HTMLButtonElement>(
+      "[data-workspace-action]",
+    )!;
+    workspaceAction.disabled = isBusy;
+    workspaceAction.addEventListener("click", chooseWorkspace);
+
+    const newChat = sidebar.querySelector<HTMLButtonElement>("[data-new-chat]")!;
     newChat.disabled = isBusy;
     newChat.addEventListener("click", async () => {
       actionsOpen = false;
       renameOpen = false;
       sidebarOpen = false;
-      await store.newChat();
+      const transition = store.newChat();
+      composer.replaceDraft(store.getState().draftText);
+      await transition;
       focusComposer();
     });
 
-    const openSettings = root.querySelector<HTMLButtonElement>("[data-open-settings]")!;
+    const openSettings = sidebar.querySelector<HTMLButtonElement>("[data-open-settings]")!;
     openSettings.disabled = isBusy || !state.settings;
     openSettings.addEventListener("click", () => {
       sidebarOpen = false;
@@ -215,7 +178,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       settingsError.insertAdjacentElement("afterend", retry);
     }
 
-    const list = root.querySelector<HTMLElement>("[data-conversation-list]")!;
+    const list = sidebar.querySelector<HTMLElement>("[data-conversation-list]")!;
     if (state.listStatus === "loading" && state.conversations.length === 0) {
       const loading = document.createElement("p");
       loading.className = "sidebar-status";
@@ -250,6 +213,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
             renameOpen = false;
             sidebarOpen = false;
             await store.selectConversation(conversation.id);
+            composer.replaceDraft(store.getState().draftText);
             focusComposer();
           });
           list.append(item);
@@ -258,7 +222,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     if (state.screen === "settings") {
-      main.classList.add("settings-main");
+      chatScreen.style.display = "none";
+      settingsScreen.style.display = "contents";
+      main.className = "settings-main";
+      settingsScreen.replaceChildren();
       const mobileHeader = document.createElement("header");
       mobileHeader.className = "settings-mobile-header";
       const toggle = button("☰", "sidebar-toggle");
@@ -269,56 +236,44 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       mobileHeader.append(toggle);
       const settingsHost = document.createElement("div");
       settingsHost.className = "settings-scroll";
-      main.append(mobileHeader, settingsHost);
+      settingsScreen.append(mobileHeader, settingsHost);
       renderSettings(settingsHost, state, store);
       return;
     }
 
-    main.innerHTML = `
-      <header class="chat-header">
-        <button type="button" class="sidebar-toggle" aria-label="${sidebarExpanded() ? "Hide sidebar" : "Show sidebar"}" aria-expanded="${sidebarExpanded()}" data-sidebar-toggle>☰</button>
-        <div class="header-title"><h1 data-active-title></h1><button type="button" data-header-workspace></button></div>
-        <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Toggle fullscreen" title="Toggle fullscreen (F11)" data-toggle-fullscreen>⛶</button><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>
-      </header>
-      <div class="notice-area" data-notices></div>
-      <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
-      <form class="composer-wrap" data-composer-form>
-        <div class="composer-box">
-          <textarea rows="1" aria-label="Message Atlas" data-composer></textarea>
-          <div class="composer-controls" data-composer-controls>
-            <div class="model-picker" data-model-picker></div>
-            <button type="submit" class="send-button" aria-label="Send message" data-send>↑</button>
-          </div>
-        </div>
-        <p class="composer-note" data-composer-note></p>
-      </form>
-      <dialog class="rename-dialog" role="dialog" aria-labelledby="rename-title"><form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form></dialog>`;
+    settingsScreen.style.display = "none";
+    chatScreen.style.display = "contents";
+    main.className = "chat-main";
 
-    const toggle = root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
+    header.innerHTML = `
+      <button type="button" class="sidebar-toggle" data-sidebar-toggle>☰</button>
+      <div class="header-title"><h1 data-active-title></h1><button type="button" data-header-workspace></button></div>
+      <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Toggle fullscreen" title="Toggle fullscreen (F11)" data-toggle-fullscreen>⛶</button><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>`;
+    const toggle = header.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
+    toggle.setAttribute("aria-label", sidebarExpanded() ? "Hide sidebar" : "Show sidebar");
+    toggle.setAttribute("aria-expanded", String(sidebarExpanded()));
     toggle.addEventListener("click", toggleSidebar);
-    const title = root.querySelector<HTMLElement>("[data-active-title]")!;
-    title.textContent = metadata?.title ?? "New chat";
-    const headerWorkspace = root.querySelector<HTMLButtonElement>("[data-header-workspace]")!;
+    header.querySelector<HTMLElement>("[data-active-title]")!.textContent =
+      metadata?.title ?? "New chat";
+    const headerWorkspace = header.querySelector<HTMLButtonElement>(
+      "[data-header-workspace]",
+    )!;
     headerWorkspace.textContent = state.activeWorkspace
       ? `${state.activeWorkspace.name} · Change folder`
       : "Choose folder";
     headerWorkspace.disabled = isBusy;
-    headerWorkspace.addEventListener("click", async () => {
-      if (state.activeConversationId) await store.changeActiveWorkspace();
-      else await store.chooseWorkspaceForDraft();
-      focusComposer();
-    });
-
-    const menuButton = root.querySelector<HTMLButtonElement>("[data-conversation-menu]")!;
-    root
+    headerWorkspace.addEventListener("click", chooseWorkspace);
+    header
       .querySelector<HTMLButtonElement>("[data-toggle-fullscreen]")!
       .addEventListener("click", () => void store.toggleFullscreen());
+
+    const menuButton = header.querySelector<HTMLButtonElement>("[data-conversation-menu]")!;
     menuButton.disabled = !metadata || isBusy;
     menuButton.addEventListener("click", () => {
       actionsOpen = !actionsOpen;
       renderNow(store.getState());
     });
-    const menu = root.querySelector<HTMLElement>("[data-action-menu]")!;
+    const menu = header.querySelector<HTMLElement>("[data-action-menu]")!;
     if (actionsOpen && metadata) {
       menu.classList.add("open");
       const change = button("Change folder", "menu-item");
@@ -330,20 +285,26 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         renameOpen = true;
         actionsOpen = false;
         renderNow(store.getState());
-        root.querySelector<HTMLInputElement>("[data-rename-input]")?.focus();
+        dialog.querySelector<HTMLInputElement>("[data-rename-input]")?.focus();
       });
       const remove = button("Delete", "menu-item danger");
       remove.dataset.delete = "";
       remove.addEventListener("click", async () => {
-        if (!window.confirm("Delete this conversation? Its history will be moved to Atlas trash.")) return;
+        if (
+          !window.confirm(
+            "Delete this conversation? Its history will be moved to Atlas trash.",
+          )
+        )
+          return;
         actionsOpen = false;
         await store.deleteActive();
+        composer.replaceDraft(store.getState().draftText);
         focusComposer();
       });
       menu.append(change, rename, remove);
     }
 
-    const notices = root.querySelector<HTMLElement>("[data-notices]")!;
+    notices.replaceChildren();
     if (state.errorMessage) {
       const error = document.createElement("div");
       error.className = "error-notice";
@@ -358,12 +319,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       notices.append(status);
     }
 
-    const messages = root.querySelector<HTMLElement>("[data-messages]")!;
+    messages.replaceChildren();
     if (state.messages.length === 0) {
       const welcome = document.createElement("div");
       welcome.className = "welcome";
       const eyebrow = document.createElement("span");
-      eyebrow.textContent = state.activeWorkspace ? "Ready to help" : "Starting folder unavailable";
+      eyebrow.textContent = state.activeWorkspace
+        ? "Ready to help"
+        : "Starting folder unavailable";
       const heading = document.createElement("h2");
       heading.textContent = state.activeWorkspace
         ? "How can I help?"
@@ -376,10 +339,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       if (!state.activeWorkspace) {
         const choose = button("Choose folder", "primary-button folder-first-action");
         choose.dataset.chooseWorkspace = "";
-        choose.addEventListener("click", async () => {
-          await store.chooseWorkspaceForDraft();
-          focusComposer();
-        });
+        choose.addEventListener("click", chooseWorkspace);
         welcome.append(choose);
       }
       messages.append(welcome);
@@ -388,7 +348,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       messages.scrollTop = messages.scrollHeight;
     }
 
-    const modelPicker = root.querySelector<HTMLElement>("[data-model-picker]")!;
+    composer.modelHost.replaceChildren();
+    composer.feedbackHost.replaceChildren();
     if (state.settings && state.settings.apiKeySource !== "missing") {
       const label = document.createElement("label");
       const select = document.createElement("select");
@@ -410,7 +371,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         state.settings.environmentOverrides.includes("model");
       select.addEventListener("change", () => void store.selectModel(select.value));
       label.append(select);
-      modelPicker.append(label);
+      composer.modelHost.append(label);
       const modelControlledByEnvironment =
         state.settings.environmentOverrides.includes("model");
       if (modelControlledByEnvironment || state.modelListStatus === "loading") {
@@ -420,7 +381,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         status.textContent = modelControlledByEnvironment
           ? "Controlled by DEEPSEEK_MODEL"
           : "Loading models…";
-        modelPicker.append(status);
+        composer.modelHost.append(status);
       }
       if (state.modelListErrorMessage) {
         const feedback = document.createElement("div");
@@ -433,159 +394,47 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         feedback.append(error);
         if (state.modelListRetryAvailable) {
           const retry = button("Retry", "model-picker-retry");
-          retry.type = "button";
           retry.dataset.retryModels = "";
           retry.disabled = isBusy || state.modelListStatus === "loading";
           retry.addEventListener("click", () => void store.retryModels());
           feedback.append(retry);
         }
-        root.querySelector<HTMLElement>(".composer-box")!.insertAdjacentElement(
-          "afterend",
-          feedback,
-        );
+        composer.feedbackHost.append(feedback);
       }
-    } else {
-      modelPicker.remove();
     }
+    composer.updateState(state);
 
-    const renderedTextarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
-    const textarea = focusedComposer ?? renderedTextarea;
-    if (focusedComposer) {
-      const composerParent = renderedTextarea.parentElement!;
-      moveAtomically(composerParent, focusedComposer, renderedTextarea);
-      renderedTextarea.remove();
-    }
-    const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
-    textarea.value = state.draftText;
-    resizeComposer(textarea);
-    textarea.placeholder = state.activeWorkspace
-      ? "Message Atlas…"
-      : "Starting folder unavailable";
-    textarea.disabled = isBusy;
-    send.disabled = isBusy || !state.activeWorkspace || !state.draftText.trim();
-    root.querySelector<HTMLElement>("[data-composer-note]")!.textContent = state.activeWorkspace
-      ? `Commands use ${state.activeWorkspace.path} as their starting folder and can access other locations allowed by your OS account.`
-      : "Atlas needs an accessible starting folder before it can run tools.";
-    if (!focusedComposer) {
-      const updateSendAvailability = () => {
-        const currentState = store.getState();
-        const currentSend = root.querySelector<HTMLButtonElement>("[data-send]");
-        if (!currentSend) return;
-        currentSend.disabled =
-          chatIsBusy(currentState) ||
-          !currentState.activeWorkspace ||
-          !textarea.value.trim();
-      };
-      textarea.addEventListener("compositionstart", () => {
-        if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
-        compositionSettleTimer = null;
-        composing = true;
-        compositionSettling = false;
-      });
-      textarea.addEventListener("compositionend", () => {
-        const value = textarea.value;
-        resizeComposer(textarea);
-        store.setDraft(value);
-        composing = false;
-        compositionSettling = true;
-        compositionSettleTimer = setTimeout(() => {
-          compositionSettleTimer = null;
-          compositionSettling = false;
-          if (pendingState) {
-            const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
-            pendingState = null;
-            renderNow(store.getState());
-            focusComposer(selection);
-            return;
-          }
-          updateSendAvailability();
-        }, 0);
-      });
-      textarea.addEventListener("input", () => {
-        if (composing) return;
-        resizeComposer(textarea);
-        store.setDraft(textarea.value);
-        if (compositionSettling) {
-          if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
-          compositionSettleTimer = null;
-          compositionSettling = false;
-          if (pendingState) {
-            const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
-            pendingState = null;
-            renderNow(store.getState());
-            focusComposer(selection);
-            return;
-          }
-        }
-        updateSendAvailability();
-      });
-      textarea.addEventListener("blur", () => {
-        if (composerBlurTimer !== null) clearTimeout(composerBlurTimer);
-        composerBlurTimer = setTimeout(() => {
-          composerBlurTimer = null;
-          if (!pendingState || document.activeElement === textarea) return;
-          pendingState = null;
-          render(store.getState());
-        }, 0);
-      });
-      textarea.addEventListener("keydown", (event) => {
-        if (
-          event.key === "Enter" &&
-          !event.shiftKey &&
-          !event.isComposing &&
-          !composing &&
-          event.keyCode !== 229
-        ) {
-          event.preventDefault();
-          root.querySelector<HTMLFormElement>("[data-composer-form]")?.requestSubmit();
-        }
-      });
-    }
-    root.querySelector<HTMLFormElement>("[data-composer-form]")!.addEventListener(
-      "submit",
-      async (event) => {
-        event.preventDefault();
-        textarea.blur();
-        await store.send();
-        focusComposer();
-      },
-    );
-
-    const dialog = root.querySelector<HTMLDialogElement>("dialog")!;
+    dialog.innerHTML = `<form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form>`;
     if (renameOpen) {
-      dialog.addEventListener("close", () => {
-        renameOpen = false;
-      });
-      dialog.showModal();
-      const renameInput = root.querySelector<HTMLInputElement>("[data-rename-input]")!;
+      if (!dialog.open) dialog.showModal();
+      const renameInput = dialog.querySelector<HTMLInputElement>("[data-rename-input]")!;
       renameInput.value = renameValue;
       renameInput.addEventListener("input", () => {
         renameValue = renameInput.value;
       });
-      root.querySelector<HTMLButtonElement>("[data-cancel-rename]")!.addEventListener(
-        "click",
-        () => {
+      dialog
+        .querySelector<HTMLButtonElement>("[data-cancel-rename]")!
+        .addEventListener("click", () => {
           renameOpen = false;
+          dialog.removeAttribute("open");
           renderNow(store.getState());
-        },
-      );
-      root.querySelector<HTMLFormElement>(".dialog-card")!.addEventListener(
+        });
+      dialog.querySelector<HTMLFormElement>(".dialog-card")!.addEventListener(
         "submit",
         async (event) => {
           event.preventDefault();
           if (!renameValue.trim()) return renameInput.focus();
           await store.renameActive(renameValue);
-          if (store.getState().status !== "error") renameOpen = false;
+          if (store.getState().status !== "error") {
+            renameOpen = false;
+            dialog.removeAttribute("open");
+          }
           renderNow(store.getState());
         },
       );
+    } else {
+      dialog.removeAttribute("open");
     }
-    if (
-      composerSelection &&
-      !textarea.disabled &&
-      document.activeElement !== textarea
-    )
-      focusComposer(composerSelection);
   };
 
   const patchStreamingDelta = (
@@ -600,7 +449,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       return false;
     }
     const lastIndex = state.messages.length - 1;
-    if (previous.messages.slice(0, lastIndex).some((message, index) => message !== state.messages[index])) {
+    if (
+      previous.messages
+        .slice(0, lastIndex)
+        .some((message, index) => message !== state.messages[index])
+    ) {
       return false;
     }
     const previousMessage = previous.messages[lastIndex];
@@ -614,10 +467,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     ) {
       return false;
     }
-    const messages = root.querySelector<HTMLElement>("[data-messages]");
-    const articles = messages?.querySelectorAll<HTMLElement>("[data-message-role]");
-    const content = articles?.item(lastIndex).querySelector<HTMLElement>(".message-content");
-    if (!messages || !content) return false;
+    const articles = messages.querySelectorAll<HTMLElement>("[data-message-role]");
+    const content = articles.item(lastIndex).querySelector<HTMLElement>(".message-content");
+    if (!content) return false;
     if (message.content) renderMarkdown(content, message.content);
     else content.textContent = "Thinking…";
     messages.scrollTop = messages.scrollHeight;
@@ -625,30 +477,22 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   };
 
   const render = (state: Readonly<ChatState>) => {
-    if (composing || compositionSettling) {
-      pendingState = state;
-      return;
-    }
-    pendingState = null;
     if (renderedState && patchStreamingDelta(renderedState, state)) {
       renderedState = state;
       return;
     }
     renderNow(state);
-    if (!pendingState) renderedState = state;
+    renderedState = state;
   };
   const onWindowKeydown = (event: KeyboardEvent) => {
     if (event.key !== "F11" || event.repeat) return;
     event.preventDefault();
     void store.toggleFullscreen();
   };
-  window.addEventListener("resize", resizeVisibleComposer);
   window.addEventListener("keydown", onWindowKeydown);
   const unsubscribe = store.subscribe(render);
   return () => {
-    if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
-    if (composerBlurTimer !== null) clearTimeout(composerBlurTimer);
-    window.removeEventListener("resize", resizeVisibleComposer);
+    composer.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();
     root.replaceChildren();

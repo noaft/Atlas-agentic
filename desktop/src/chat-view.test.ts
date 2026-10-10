@@ -290,7 +290,8 @@ test("chat controls stay disabled while a model selection is being saved", async
   picker.value = "deepseek-v4-pro";
   picker.dispatchEvent(new Event("change", { bubbles: true }));
 
-  expect(composer(root).disabled).toBe(true);
+  expect(composer(root).disabled).toBe(false);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(true);
   expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")!.disabled).toBe(true);
   pending.resolve({
     ...api.settings,
@@ -312,22 +313,24 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 let restoreMoveBefore: (() => void) | null = null;
 
-function emulateAtomicMoveBefore() {
+function observeMoveBefore() {
   const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "moveBefore");
+  const moveBefore = vi.fn(function (
+    this: Element,
+    node: Node,
+    child: Node | null,
+  ) {
+    this.insertBefore(node, child);
+  });
   Object.defineProperty(Element.prototype, "moveBefore", {
     configurable: true,
-    value(this: Element, node: Node, child: Node | null) {
-      const active = document.activeElement;
-      this.insertBefore(node, child);
-      if (active === node && node instanceof HTMLElement) {
-        HTMLElement.prototype.focus.call(node);
-      }
-    },
+    value: moveBefore,
   });
   restoreMoveBefore = () => {
     if (descriptor) Object.defineProperty(Element.prototype, "moveBefore", descriptor);
     else Reflect.deleteProperty(Element.prototype, "moveBefore");
   };
+  return moveBefore;
 }
 
 afterEach(() => {
@@ -430,8 +433,8 @@ test("typing preserves the composer's caret position", async () => {
   expect(rendered.selectionEnd).toBe(3);
 });
 
-test("background renders keep the focused composer mounted for Windows IME", async () => {
-  emulateAtomicMoveBefore();
+test("composer node and parent stay mounted across every background render", async () => {
+  observeMoveBefore();
   const api = new ViewApi();
   const listing = deferred<ConversationMetadata[]>();
   api.list = listing.promise;
@@ -439,6 +442,7 @@ test("background renders keep the focused composer mounted for Windows IME", asy
   const initializing = store.initialize();
   await flush();
   const input = composer(root);
+  const parent = input.parentElement;
   input.focus();
   input.value = "tiếng Việt";
   input.setSelectionRange(5, 5);
@@ -449,13 +453,16 @@ test("background renders keep the focused composer mounted for Windows IME", asy
   await initializing;
 
   expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.isConnected).toBe(true);
   expect(document.activeElement).toBe(input);
   expect(refocus).not.toHaveBeenCalled();
   expect(input.value).toBe("tiếng Việt");
   expect(input.selectionStart).toBe(5);
 });
 
-test("IME fallback updates send availability and flushes background renders on blur", async () => {
+test("background render does not touch focused composer APIs", async () => {
+  const moveBefore = observeMoveBefore();
   const api = new ViewApi();
   const listing = deferred<ConversationMetadata[]>();
   api.list = listing.promise;
@@ -465,16 +472,44 @@ test("IME fallback updates send availability and flushes background renders on b
   input.focus();
   input.value = "tiếng Việt";
   input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
+  const focus = vi.spyOn(input, "focus");
+  const blur = vi.spyOn(input, "blur");
+  const value = vi.spyOn(HTMLTextAreaElement.prototype, "value", "set");
 
   listing.resolve([metadata]);
   await initializing;
 
   expect(composer(root)).toBe(input);
-  expect(root.querySelector<HTMLButtonElement>("[data-send]")?.disabled).toBe(false);
-  expect(root.textContent).not.toContain("Atlas runtime");
+  expect(focus).not.toHaveBeenCalled();
+  expect(blur).not.toHaveBeenCalled();
+  expect(value).not.toHaveBeenCalled();
+  expect(moveBefore).not.toHaveBeenCalled();
+});
 
-  input.blur();
-  await flush();
+test("composed first character survives initialization", async () => {
+  const api = new ViewApi();
+  const listing = deferred<ConversationMetadata[]>();
+  api.list = listing.promise;
+  const { root, store } = setup(api);
+  const initializing = store.initialize();
+  const input = composer(root);
+  const parent = input.parentElement;
+  input.focus();
+  input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  input.value = "á";
+  input.setSelectionRange(1, 1);
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "á" }));
+
+  listing.resolve([metadata]);
+  await initializing;
+  input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "á" }));
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "á" }));
+
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("á");
+  expect(store.getState().draftText).toBe("á");
   expect(root.textContent).toContain("Atlas runtime");
 });
 
@@ -536,32 +571,6 @@ test("composer recalculates its height when the window resizes", async () => {
   expect(composer(root).style.height).toBe("72px");
 });
 
-test("composition fallback enables sending when no final input event arrives", async () => {
-  vi.useFakeTimers();
-  try {
-    const { root, store } = setup();
-    await store.chooseWorkspaceForDraft();
-    const input = composer(root);
-    input.focus();
-    input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-    input.value = "á";
-    input.setSelectionRange(1, 1);
-    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "á" }));
-
-    vi.runAllTimers();
-
-    const rendered = composer(root);
-    expect(rendered).toBe(input);
-    expect(rendered.value).toBe("á");
-    expect(document.activeElement).toBe(rendered);
-    expect(rendered.selectionStart).toBe(1);
-    expect(root.querySelector<HTMLButtonElement>("[data-send]")?.disabled).toBe(false);
-    expect(store.getState().draftText).toBe("á");
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
 test("streaming renders ordered assistant text and disables mutation controls", async () => {
   const api = new ViewApi();
   const pending = deferred<ConversationAskResult>();
@@ -580,7 +589,8 @@ test("streaming renders ordered assistant text and disables mutation controls", 
   expect(root.querySelector("[data-message-role='assistant']")?.textContent).toContain(
     "Hello desktop",
   );
-  expect(composer(root).disabled).toBe(true);
+  expect(composer(root).disabled).toBe(false);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(true);
   expect(root.querySelector<HTMLButtonElement>("[data-new-chat]")?.disabled).toBe(true);
   pending.resolve({ answer: "Hello desktop", metadata, created: true });
   await flush();
@@ -891,7 +901,7 @@ test("mobile sidebar contains workspace and Settings controls", () => {
   expect(sidebar.querySelector("[data-open-settings]")).not.toBeNull();
 });
 
-test("composition defers async renders and preserves Vietnamese text and caret", async () => {
+test("composition survives async renders and preserves Vietnamese text and caret", async () => {
   const api = new ViewApi();
   const listing = deferred<ConversationMetadata[]>();
   api.list = listing.promise;
@@ -918,13 +928,6 @@ test("composition defers async renders and preserves Vietnamese text and caret",
   expect(store.getState().draftText).toBe("tiếng Việt");
   expect(rendered.selectionStart).toBe(5);
   expect(document.activeElement).toBe(rendered);
-  expect(root.textContent).not.toContain("Atlas runtime");
-
-  rendered.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-  rendered.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
-  await flush();
-  rendered.blur();
-  await flush();
   expect(root.textContent).toContain("Atlas runtime");
 });
 
