@@ -16,6 +16,7 @@ const settings: SettingsView = {
   apiKeySource: "missing",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-flash",
+  activeModel: "deepseek-flash",
   historyLimit: 40,
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
@@ -85,6 +86,12 @@ class FakeApi implements AtlasApi {
   settings: SettingsView = settings;
   chosenWorkspace: string | null = workspace.path;
   savedSettings: SaveSettingsInput[] = [];
+  selectedModels: string[] = [];
+  models = [
+    { id: "deepseek-flash", name: "DeepSeek Flash" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+  ];
+  listModelCalls = 0;
   assignments: Array<{ id: string; path: string }> = [];
   chooseCalls = 0;
   validateCalls: string[] = [];
@@ -139,6 +146,16 @@ class FakeApi implements AtlasApi {
   async saveSettings(input: SaveSettingsInput): Promise<SettingsView> {
     this.savedSettings.push(input);
     return this.save(input);
+  }
+
+  async listModels() {
+    this.listModelCalls += 1;
+    return this.models;
+  }
+
+  async setModel(model: string) {
+    this.selectedModels.push(model);
+    return { ...this.settings, model, activeModel: model };
   }
 
   async chooseWorkspace(): Promise<string | null> {
@@ -655,12 +672,117 @@ test("settings cancel discards edits while failure keeps them and success uses m
   expect(store.getState().settingsDraft?.model).toBe("edited-model");
   expect(api.savedSettings.at(-1)?.apiKey).toBeNull();
 
-  const returned = { ...settings, apiKeySource: "settings" as const, model: "edited-model" };
+  const returned = {
+    ...settings,
+    apiKeySource: "settings" as const,
+    model: "edited-model",
+    activeModel: "edited-model",
+  };
   api.save = async () => returned;
   await store.saveSettings();
   expect(store.getState().screen).toBe("chat");
   expect(store.getState().settings).toEqual(returned);
   expect(store.getState().settingsDraft).toBeNull();
+});
+
+test("successful settings save loads available models for the chat picker", async () => {
+  const api = new FakeApi();
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.openSettings();
+  api.save = async () => ({ ...settings, apiKeySource: "settings" as const });
+
+  await store.saveSettings();
+
+  expect(api.listModelCalls).toBe(1);
+  expect(store.getState().availableModels).toEqual(api.models);
+  expect(store.getState().modelListStatus).toBe("idle");
+});
+
+test("selecting a chat model saves it globally before applying it", async () => {
+  const api = new FakeApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.save = async (input) => ({
+    ...api.settings,
+    model: input.model,
+    activeModel: input.model,
+  });
+  const store = new ChatStore(api);
+  await store.initialize();
+
+  await store.selectModel("deepseek-v4-pro");
+
+  expect(api.selectedModels).toEqual(["deepseek-v4-pro"]);
+  expect(api.savedSettings).toEqual([]);
+  expect(store.getState().settings?.model).toBe("deepseek-v4-pro");
+  expect(store.getState().settings?.activeModel).toBe("deepseek-v4-pro");
+});
+
+test("model discovery failure keeps the configured model and can retry", async () => {
+  const api = new FakeApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  let failing = true;
+  api.listModels = async () => {
+    api.listModelCalls += 1;
+    if (failing) throw new Error("model catalog unavailable");
+    return api.models;
+  };
+  const store = new ChatStore(api);
+
+  await store.initialize();
+  expect(store.getState().modelListStatus).toBe("error");
+  expect(store.getState().modelListErrorMessage).toBe("model catalog unavailable");
+  expect(store.getState().modelListRetryAvailable).toBe(true);
+  expect(store.getState().availableModels).toEqual([
+    { id: "deepseek-flash", name: "deepseek-flash" },
+  ]);
+
+  failing = false;
+  await store.retryModels();
+  expect(api.listModelCalls).toBe(2);
+  expect(store.getState().availableModels).toEqual(api.models);
+  expect(store.getState().modelListErrorMessage).toBeNull();
+  expect(store.getState().modelListRetryAvailable).toBe(false);
+});
+
+test("model save failure reports the error without offering discovery retry", async () => {
+  const api = new FakeApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.setModel = async () => {
+    throw new Error("model save failed");
+  };
+  const store = new ChatStore(api);
+  await store.initialize();
+
+  await store.selectModel("deepseek-v4-pro");
+
+  expect(store.getState().modelListErrorMessage).toBe("model save failed");
+  expect(store.getState().modelListRetryAvailable).toBe(false);
+});
+
+test("sending waits until a selected model has been persisted", async () => {
+  const api = new FakeApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const pending = deferred<SettingsView>();
+  api.setModel = async (model) => {
+    api.selectedModels.push(model);
+    return pending.promise;
+  };
+  const store = new ChatStore(api);
+  await store.initialize();
+  const selecting = store.selectModel("deepseek-v4-pro");
+  store.setDraft("use the new model");
+
+  await store.send();
+
+  expect(api.askCalls).toEqual([]);
+  expect(store.getState().draftText).toBe("use the new model");
+  pending.resolve({
+    ...api.settings,
+    model: "deepseek-v4-pro",
+    activeModel: "deepseek-v4-pro",
+  });
+  await selecting;
 });
 
 test("settings and workspace navigation are disabled while an ask streams", async () => {

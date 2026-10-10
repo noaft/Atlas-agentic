@@ -46,11 +46,14 @@ explicitly chosen draft folder first, then a custom Settings default, then Atlas
 home. Older unassigned conversations use the current default and persist it with
 their next successful turn.
 
-Use **Settings** to configure the DeepSeek API key, base URL, model, history
-limit, and an optional custom default folder. Resetting that folder returns new
-chats to Atlas home. Settings affect the next request without restarting Atlas.
-Conversation management and Settings remain available without a configured
-provider; only sending requires an API key.
+Use **Settings** to configure the DeepSeek API key, base URL, default model,
+history limit, and an optional custom default folder. After provider settings
+are saved, Atlas loads the available models from DeepSeek and shows a model
+picker above the chat composer. Choosing a model saves it globally and affects
+the next request without restarting Atlas. If model discovery fails, the saved
+model remains usable and the picker offers a retry. Resetting the default folder
+returns new chats to Atlas home. Conversation management and Settings remain
+available without a configured provider; only sending requires an API key.
 
 Build a local debug executable without creating an installer:
 

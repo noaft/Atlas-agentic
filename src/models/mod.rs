@@ -7,8 +7,19 @@ use crate::tools::ToolDefinition;
 
 use deepseek::{DeepSeekConfig, DeepSeekProvider};
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+}
+
 pub trait ModelProvider {
     fn complete(&self, request: &ModelRequest) -> Result<String, String>;
+
+    fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
+        Err("model provider does not support model discovery".to_string())
+    }
 
     fn stream(
         &self,
@@ -67,4 +78,11 @@ pub fn provider_from_definition_with_settings(
         }
         provider => Err(format!("unknown model provider: {provider}")),
     }
+}
+
+pub fn list_models_from_definition_with_settings(
+    definition: &LocalAgentDefinition,
+    settings: &EffectiveSettings,
+) -> Result<Vec<ModelInfo>, String> {
+    provider_from_definition_with_settings(definition, settings)?.list_models()
 }

@@ -74,7 +74,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       : undefined;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
-    const isBusy = isStreaming || state.status === "loading" || state.workspaceBusy;
+    const isBusy =
+      isStreaming ||
+      state.status === "loading" ||
+      state.workspaceBusy ||
+      state.modelListStatus === "saving";
 
     root.innerHTML = `
       <div class="atlas-shell">
@@ -211,6 +215,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       <div class="notice-area" data-notices></div>
       <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
       <form class="composer-wrap" data-composer-form>
+        <div class="model-picker" data-model-picker></div>
         <div class="composer-box"><textarea rows="1" aria-label="Message Atlas" data-composer></textarea><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
         <p class="composer-note" data-composer-note></p>
       </form>
@@ -311,6 +316,48 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     } else {
       for (const message of state.messages) messages.append(renderMessage(message));
       messages.scrollTop = messages.scrollHeight;
+    }
+
+    const modelPicker = root.querySelector<HTMLElement>("[data-model-picker]")!;
+    if (state.settings && state.settings.apiKeySource !== "missing") {
+      const label = document.createElement("label");
+      label.textContent = "Model";
+      const select = document.createElement("select");
+      select.dataset.modelSelect = "";
+      select.setAttribute("aria-label", "Model");
+      const models = state.availableModels.length
+        ? state.availableModels
+        : [{ id: state.settings.activeModel, name: state.settings.activeModel }];
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = model.name;
+        select.append(option);
+      }
+      select.value = state.settings.activeModel;
+      select.disabled =
+        isBusy ||
+        state.modelListStatus === "loading" ||
+        state.settings.environmentOverrides.includes("model");
+      select.addEventListener("change", () => void store.selectModel(select.value));
+      label.append(select);
+      modelPicker.append(label);
+      if (state.modelListErrorMessage) {
+        const error = document.createElement("span");
+        error.className = "model-picker-error";
+        error.setAttribute("role", "alert");
+        error.textContent = state.modelListErrorMessage;
+        modelPicker.append(error);
+        if (state.modelListRetryAvailable) {
+          const retry = button("Retry", "model-picker-retry");
+          retry.type = "button";
+          retry.disabled = isBusy || state.modelListStatus === "loading";
+          retry.addEventListener("click", () => void store.retryModels());
+          modelPicker.append(retry);
+        }
+      }
+    } else {
+      modelPicker.remove();
     }
 
     const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;

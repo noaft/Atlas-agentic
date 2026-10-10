@@ -289,6 +289,32 @@ impl SettingsStore {
         let lock = self.open_lock()?;
         FileExt::lock_shared(&lock)
             .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
+        self.read_unlocked()
+    }
+
+    pub fn save(&self, settings: &AtlasSettings) -> Result<(), String> {
+        settings.validate()?;
+        let lock = self.open_lock()?;
+        lock.lock_exclusive()
+            .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
+        self.write_unlocked(settings)
+    }
+
+    pub fn update(
+        &self,
+        mutation: impl FnOnce(&mut AtlasSettings) -> Result<(), String>,
+    ) -> Result<AtlasSettings, String> {
+        let lock = self.open_lock()?;
+        lock.lock_exclusive()
+            .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
+        let mut settings = self.read_unlocked()?;
+        mutation(&mut settings)?;
+        settings.validate()?;
+        self.write_unlocked(&settings)?;
+        Ok(settings)
+    }
+
+    fn read_unlocked(&self) -> Result<AtlasSettings, String> {
         if !self.path.exists() {
             return Ok(AtlasSettings::default());
         }
@@ -302,12 +328,7 @@ impl SettingsStore {
         Ok(settings)
     }
 
-    pub fn save(&self, settings: &AtlasSettings) -> Result<(), String> {
-        settings.validate()?;
-        let lock = self.open_lock()?;
-        lock.lock_exclusive()
-            .map_err(|error| format!("failed to lock {}: {error}", self.lock_path().display()))?;
-
+    fn write_unlocked(&self, settings: &AtlasSettings) -> Result<(), String> {
         let temporary = self.temporary_path();
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|error| format!("failed to serialize settings: {error}"))?;

@@ -9,6 +9,7 @@ const settings: SettingsView = {
   apiKeySource: "environment",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-flash",
+  activeModel: "deepseek-flash",
   historyLimit: 40,
   defaultWorkspace: {
     path: "/work/<img src=x onerror=alert(1)>",
@@ -38,6 +39,12 @@ function fixture(currentSettings = settings) {
       saves.push(input);
       return { ...currentSettings, apiKeySource: "settings" as const };
     },
+    listModels: async () => [],
+    setModel: async (model: string) => ({
+      ...currentSettings,
+      model,
+      activeModel: model,
+    }),
     chooseWorkspace: async () => null,
     validateWorkspace: async () => {
       throw new Error("unused");

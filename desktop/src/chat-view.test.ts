@@ -17,6 +17,7 @@ const settings: SettingsView = {
   apiKeySource: "missing",
   baseUrl: "https://api.deepseek.com",
   model: "deepseek-flash",
+  activeModel: "deepseek-flash",
   historyLimit: 40,
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
@@ -78,6 +79,12 @@ class ViewApi implements AtlasApi {
   askCount = 0;
   loadCount = 0;
   settings = settings;
+  availableModels = [
+    { id: "deepseek-flash", name: "DeepSeek Flash" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+  ];
+  savedSettings: SaveSettingsInput[] = [];
+  selectedModels: string[] = [];
   loadSettingsImpl = async () => this.settings;
   chosenWorkspace: string | null = workspace.path;
   fullscreenCalls = 0;
@@ -113,7 +120,19 @@ class ViewApi implements AtlasApi {
     return this.loadSettingsImpl();
   }
 
-  async saveSettings(_input: SaveSettingsInput) {
+  async saveSettings(input: SaveSettingsInput) {
+    this.savedSettings.push(input);
+    this.settings = { ...this.settings, model: input.model, activeModel: input.model };
+    return this.settings;
+  }
+
+  async listModels() {
+    return this.availableModels;
+  }
+
+  async setModel(model: string) {
+    this.selectedModels.push(model);
+    this.settings = { ...this.settings, model, activeModel: model };
     return this.settings;
   }
 
@@ -152,6 +171,53 @@ function click(root: HTMLElement, selector: string) {
 function composer(root: HTMLElement) {
   return root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
 }
+
+test("chat model picker shows discovered models and saves the selection", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  const picker = root.querySelector<HTMLSelectElement>("[data-model-select]");
+  expect(picker).not.toBeNull();
+  expect([...picker!.options].map((option) => option.textContent)).toEqual([
+    "DeepSeek Flash",
+    "DeepSeek V4 Pro",
+  ]);
+
+  picker!.value = "deepseek-v4-pro";
+  picker!.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(api.selectedModels).toEqual(["deepseek-v4-pro"]);
+  expect(store.getState().settings?.model).toBe("deepseek-v4-pro");
+});
+
+test("chat controls stay disabled while a model selection is being saved", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const pending = deferred<SettingsView>();
+  api.setModel = async (model) => {
+    api.selectedModels.push(model);
+    return pending.promise;
+  };
+  const { root, store } = setup(api);
+  await store.initialize();
+  const picker = root.querySelector<HTMLSelectElement>("[data-model-select]")!;
+
+  picker.value = "deepseek-v4-pro";
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+
+  expect(composer(root).disabled).toBe(true);
+  expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")!.disabled).toBe(true);
+  pending.resolve({
+    ...api.settings,
+    model: "deepseek-v4-pro",
+    activeModel: "deepseek-v4-pro",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(store.getState().modelListStatus).toBe("idle");
+});
 
 function inputComposer(root: HTMLElement, value: string) {
   const input = composer(root);

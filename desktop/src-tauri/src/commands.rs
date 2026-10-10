@@ -9,7 +9,8 @@ use atlas_agentic::conversations::{
     ConversationStore, MessageRole,
 };
 use atlas_agentic::{
-    app::build_runtime_with_settings,
+    app::{build_runtime_with_settings, list_available_models_with_settings},
+    models::ModelInfo,
     settings::{AtlasSettings, EffectiveSettings, SettingField, SettingsStore},
     workspace::automatic_workspace,
     Runtime,
@@ -25,7 +26,7 @@ type AutomaticWorkspaceResolver = Arc<dyn Fn() -> Result<PathBuf, String> + Send
 pub struct DesktopState {
     store: ConversationStore,
     settings_store: SettingsStore,
-    _agent_file: PathBuf,
+    agent_file: PathBuf,
     runtime_factory: RuntimeFactory,
     automatic_workspace_resolver: AutomaticWorkspaceResolver,
 }
@@ -105,7 +106,7 @@ impl DesktopState {
         Self {
             store,
             settings_store,
-            _agent_file: agent_file,
+            agent_file,
             runtime_factory,
             automatic_workspace_resolver,
         }
@@ -321,6 +322,7 @@ pub struct SettingsViewDto {
     pub api_key_source: &'static str,
     pub base_url: String,
     pub model: String,
+    pub active_model: String,
     pub history_limit: usize,
     pub default_workspace: Option<WorkspaceDto>,
     pub default_workspace_automatic: bool,
@@ -396,6 +398,7 @@ fn settings_view(
         api_key_source,
         base_url: saved.deepseek.base_url.clone(),
         model: saved.deepseek.model.clone(),
+        active_model: effective.model.clone(),
         history_limit: saved.conversation.history_limit,
         default_workspace,
         default_workspace_automatic,
@@ -411,25 +414,56 @@ fn save_settings_impl(
     if input.clear_api_key && input.api_key.is_some() {
         return Err("cannot set and clear the API key in the same save".to_string());
     }
-    let mut saved = state.settings_store.load()?;
-    if input.clear_api_key {
-        saved.deepseek.api_key = None;
-    } else if let Some(api_key) = input.api_key {
-        if api_key.trim().is_empty() {
-            return Err("DeepSeek API key cannot be blank".to_string());
+    state.settings_store.update(|saved| {
+        if input.clear_api_key {
+            saved.deepseek.api_key = None;
+        } else if let Some(api_key) = input.api_key {
+            if api_key.trim().is_empty() {
+                return Err("DeepSeek API key cannot be blank".to_string());
+            }
+            saved.deepseek.api_key = Some(api_key);
         }
-        saved.deepseek.api_key = Some(api_key);
+        saved.deepseek.base_url = input.base_url;
+        saved.deepseek.model = input.model;
+        saved.conversation.history_limit = input.history_limit;
+        saved.workspace.default_path = input
+            .default_workspace_path
+            .as_deref()
+            .map(Path::new)
+            .map(validate_workspace_path)
+            .transpose()?;
+        Ok(())
+    })?;
+    load_settings_impl(state)
+}
+
+fn list_models_impl(state: &DesktopState) -> Result<Vec<ModelInfo>, String> {
+    let settings = state.settings_store.load()?.resolve_from_env()?;
+    list_available_models_with_settings(&state.agent_file, &settings)
+}
+
+async fn list_models_in_background(state: DesktopState) -> Result<Vec<ModelInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_models_impl(&state))
+        .await
+        .map_err(|error| format!("Atlas model list worker failed: {error}"))?
+}
+
+fn set_model_impl(model: &str, state: &DesktopState) -> Result<SettingsViewDto, String> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err("DeepSeek model cannot be blank".to_string());
     }
-    saved.deepseek.base_url = input.base_url;
-    saved.deepseek.model = input.model;
-    saved.conversation.history_limit = input.history_limit;
-    saved.workspace.default_path = input
-        .default_workspace_path
-        .as_deref()
-        .map(Path::new)
-        .map(validate_workspace_path)
-        .transpose()?;
-    state.settings_store.save(&saved)?;
+    state.settings_store.update(|saved| {
+        let effective = saved.resolve_from_env()?;
+        if effective
+            .environment_overrides
+            .contains(&SettingField::Model)
+        {
+            return Err("model is controlled by DEEPSEEK_MODEL".to_string());
+        }
+        saved.deepseek.model = model.to_string();
+        Ok(())
+    })?;
     load_settings_impl(state)
 }
 
@@ -527,6 +561,16 @@ pub fn save_settings(
 }
 
 #[tauri::command]
+pub async fn list_models(state: State<'_, DesktopState>) -> Result<Vec<ModelInfo>, String> {
+    list_models_in_background(state.inner().clone()).await
+}
+
+#[tauri::command]
+pub fn set_model(model: String, state: State<'_, DesktopState>) -> Result<SettingsViewDto, String> {
+    set_model_impl(&model, &state)
+}
+
+#[tauri::command]
 pub fn validate_workspace(path: String) -> Result<WorkspaceDto, String> {
     validate_workspace_impl(&path)
 }
@@ -592,6 +636,8 @@ mod tests {
     use std::{
         collections::VecDeque,
         ffi::OsString,
+        io::{Read, Write},
+        net::TcpListener,
         path::{Path, PathBuf},
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -610,14 +656,110 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ask_in_background, delete_impl, list_impl, load_impl, load_settings_impl, rename_impl,
-        save_settings_impl, settings_view, validate_workspace_impl, DesktopState,
-        SaveSettingsInput,
+        ask_in_background, delete_impl, list_impl, list_models_in_background, load_impl,
+        load_settings_impl, rename_impl, save_settings_impl, set_model_impl, settings_view,
+        validate_workspace_impl, DesktopState, SaveSettingsInput,
     };
 
     fn environment_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvironmentRestore(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvironmentRestore {
+        fn clear(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| {
+                        let previous = std::env::var_os(name);
+                        std::env::remove_var(name);
+                        (*name, previous)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvironmentRestore {
+        fn drop(&mut self) {
+            for (name, previous) in self.0.drain(..) {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn model_list_uses_saved_provider_configuration() {
+        let _environment = environment_lock();
+        let _restore =
+            EnvironmentRestore::clear(&["DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /models HTTP/1.1\r\n"), "{request}");
+            let body = r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","name":"DeepSeek Flash"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let root = TempDir::new().unwrap();
+        let agent_file = root.path().join("atlas.toml");
+        std::fs::write(&agent_file, include_str!("../../../agents/atlas.toml")).unwrap();
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let mut settings = AtlasSettings::default();
+        settings.deepseek.api_key = Some("saved-key".to_string());
+        settings.deepseek.base_url = format!("http://{address}");
+        settings_store.save(&settings).unwrap();
+        let state = DesktopState::with_runtime_paths(
+            ConversationStore::at(root.path().join("data")),
+            settings_store,
+            agent_file,
+        );
+
+        let models = tauri::async_runtime::block_on(list_models_in_background(state)).unwrap();
+
+        server.join().unwrap();
+        assert_eq!(models[0].id, "deepseek-flash");
+        assert_eq!(models[0].name, "DeepSeek Flash");
+    }
+
+    #[test]
+    fn model_selection_updates_only_the_saved_model() {
+        let _environment = environment_lock();
+        let _restore =
+            EnvironmentRestore::clear(&["DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"]);
+        let root = TempDir::new().unwrap();
+        let settings_store = SettingsStore::at(root.path().join("settings.json"));
+        let mut saved = AtlasSettings::default();
+        saved.deepseek.api_key = Some("saved-key".to_string());
+        saved.workspace.default_path = Some(root.path().join("stale-workspace"));
+        settings_store.save(&saved).unwrap();
+        let state = DesktopState::new_with_settings(
+            ConversationStore::at(root.path().join("data")),
+            settings_store.clone(),
+        );
+
+        let view = set_model_impl("deepseek-v4-pro", &state).unwrap();
+
+        let updated = settings_store.load().unwrap();
+        assert_eq!(view.model, "deepseek-v4-pro");
+        assert_eq!(updated.deepseek.model, "deepseek-v4-pro");
+        assert_eq!(updated.deepseek.api_key.as_deref(), Some("saved-key"));
+        assert_eq!(updated.workspace.default_path, saved.workspace.default_path);
     }
 
     #[derive(Clone)]
@@ -1302,6 +1444,7 @@ conversation_title_prompt = "Return a short title."
 
         assert_eq!(view.base_url, "https://saved.example.test");
         assert_eq!(view.model, "saved-model");
+        assert_eq!(view.active_model, "environment-model");
         assert_eq!(view.history_limit, 17);
         assert_eq!(
             view.environment_overrides,

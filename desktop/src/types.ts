@@ -32,6 +32,11 @@ export interface ConversationAskResult {
   created: boolean;
 }
 
+export interface ModelInfo {
+  id: string;
+  name: string;
+}
+
 export type ChatEvent = {
   event: "delta";
   data: { content: string };
@@ -40,6 +45,7 @@ export type ChatEvent = {
 export type ChatStatus = "idle" | "loading" | "streaming" | "error";
 export type ConversationListStatus = "idle" | "loading" | "error";
 export type SettingsStatus = "idle" | "loading" | "saving" | "error";
+export type ModelListStatus = "idle" | "loading" | "saving" | "error";
 export type MessageDelivery = "saved" | "pending" | "failed";
 
 export interface DisplayMessage {
@@ -65,6 +71,10 @@ export interface ChatState {
   settingsDraft: SettingsDraft | null;
   settingsStatus: SettingsStatus;
   settingsErrorMessage: string | null;
+  availableModels: ModelInfo[];
+  modelListStatus: ModelListStatus;
+  modelListErrorMessage: string | null;
+  modelListRetryAvailable: boolean;
   conversationGroups: ConversationGroup[];
 }
 
@@ -81,6 +91,7 @@ export interface SettingsView {
   apiKeySource: ApiKeySource;
   baseUrl: string;
   model: string;
+  activeModel: string;
   historyLimit: number;
   defaultWorkspace: Workspace | null;
   defaultWorkspaceAutomatic: boolean;

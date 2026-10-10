@@ -7,6 +7,7 @@ import type {
   Conversation,
   ConversationAskResult,
   ConversationMetadata,
+  ModelInfo,
   SaveSettingsInput,
   SettingsView,
   Workspace,
@@ -25,6 +26,8 @@ export interface AtlasApi {
   deleteConversation(id: string): Promise<void>;
   loadSettings(): Promise<SettingsView>;
   saveSettings(input: SaveSettingsInput): Promise<SettingsView>;
+  listModels(): Promise<ModelInfo[]>;
+  setModel(model: string): Promise<SettingsView>;
   chooseWorkspace(): Promise<string | null>;
   validateWorkspace(path: string): Promise<Workspace>;
   assignConversationWorkspace(id: string, path: string): Promise<ConversationMetadata>;
@@ -55,6 +58,8 @@ export function createTauriAtlasApi(): AtlasApi {
     },
     loadSettings: () => invoke<SettingsView>("load_settings"),
     saveSettings: (input) => invoke<SettingsView>("save_settings", { input }),
+    listModels: () => invoke<ModelInfo[]>("list_models"),
+    setModel: (model) => invoke<SettingsView>("set_model", { model }),
     chooseWorkspace: async () => {
       const selected = await open({ directory: true, multiple: false });
       return typeof selected === "string" ? selected : null;

@@ -105,11 +105,15 @@ describe("Tauri Atlas API", () => {
     mockIPC((command, payload) => {
       calls.push({ command, payload });
       if (command === "plugin:dialog|open") return null;
-      if (command === "load_settings" || command === "save_settings") {
+      if (command === "list_models") {
+        return [{ id: "deepseek-flash", name: "DeepSeek Flash" }];
+      }
+      if (command === "load_settings" || command === "save_settings" || command === "set_model") {
         return {
           apiKeySource: "missing",
           baseUrl: "https://api.deepseek.com",
           model: "deepseek-flash",
+          activeModel: "deepseek-flash",
           historyLimit: 40,
           defaultWorkspace: null,
           defaultWorkspaceAutomatic: true,
@@ -133,20 +137,26 @@ describe("Tauri Atlas API", () => {
 
     await api.loadSettings();
     await api.saveSettings(input);
+    expect(await api.listModels()).toEqual([
+      { id: "deepseek-flash", name: "DeepSeek Flash" },
+    ]);
+    await api.setModel("deepseek-v4-pro");
     await api.validateWorkspace("/work/atlas");
     await api.assignConversationWorkspace(metadata.id, "/work/atlas");
     expect(await api.chooseWorkspace()).toBeNull();
 
-    expect(calls.slice(0, 4)).toEqual([
+    expect(calls.slice(0, 6)).toEqual([
       { command: "load_settings", payload: {} },
       { command: "save_settings", payload: { input } },
+      { command: "list_models", payload: {} },
+      { command: "set_model", payload: { model: "deepseek-v4-pro" } },
       { command: "validate_workspace", payload: { path: "/work/atlas" } },
       {
         command: "assign_conversation_workspace",
         payload: { id: metadata.id, path: "/work/atlas" },
       },
     ]);
-    expect(calls[4]?.command).toBe("plugin:dialog|open");
+    expect(calls[6]?.command).toBe("plugin:dialog|open");
   });
 
   test("toggles_the_current_window_fullscreen_state", async () => {

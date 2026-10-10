@@ -2,7 +2,10 @@ use std::path::Path;
 
 use crate::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
-    models::{provider_from_definition_with_settings, ModelProvider},
+    models::{
+        list_models_from_definition_with_settings, provider_from_definition_with_settings,
+        ModelInfo, ModelProvider,
+    },
     settings::{EffectiveSettings, SettingsStore},
     tools::{CreateFileTool, ListDirTool, PwdTool, ReadFileTool, ToolRegistry},
     Runtime,
@@ -45,6 +48,14 @@ pub fn build_runtime_with_settings(
         ))]))
         .with_tools(tools),
     )
+}
+
+pub fn list_available_models_with_settings(
+    agent_file: &Path,
+    settings: &EffectiveSettings,
+) -> Result<Vec<ModelInfo>, String> {
+    let definition = LocalAgentDefinition::from_file(agent_file)?;
+    list_models_from_definition_with_settings(&definition, settings)
 }
 
 pub fn load_dotenv() {

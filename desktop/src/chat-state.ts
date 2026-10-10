@@ -5,6 +5,7 @@ import type {
   ConversationMessage,
   ConversationMetadata,
   DisplayMessage,
+  ModelInfo,
   SettingsDraft,
   SettingsView,
   Workspace,
@@ -54,6 +55,10 @@ const initialState = (): ChatState => ({
   settingsDraft: null,
   settingsStatus: "idle",
   settingsErrorMessage: null,
+  availableModels: [],
+  modelListStatus: "idle",
+  modelListErrorMessage: null,
+  modelListRetryAvailable: false,
 });
 
 const displaySavedMessage = (message: ConversationMessage): DisplayMessage => ({
@@ -87,6 +92,11 @@ const usableDefaultWorkspace = (settings: SettingsView | null): Workspace | null
 const sameWorkspace = (left: Workspace | null, right: Workspace | null): boolean =>
   left?.path === right?.path;
 
+const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo[] =>
+  models.some((model) => model.id === configured)
+    ? models
+    : [{ id: configured, name: configured }, ...models];
+
 export class ChatStore {
   private state: ChatState = initialState();
   private readonly listeners = new Set<Listener>();
@@ -95,6 +105,7 @@ export class ChatStore {
   private mutationToken = 0;
   private workspaceToken = 0;
   private settingsToken = 0;
+  private modelListToken = 0;
 
   constructor(private readonly api: AtlasApi) {}
 
@@ -152,6 +163,17 @@ export class ChatStore {
         if (!active || !active.workspace) {
           this.update({ activeWorkspace: usableDefaultWorkspace(settings) });
         }
+      }
+      if (settings.apiKeySource === "missing") {
+        this.modelListToken += 1;
+        this.update({
+          availableModels: [],
+          modelListStatus: "idle",
+          modelListErrorMessage: null,
+          modelListRetryAvailable: false,
+        });
+      } else {
+        await this.loadModels();
       }
     } catch (error) {
       if (token !== this.settingsToken) return;
@@ -266,7 +288,8 @@ export class ChatStore {
     if (
       this.state.status === "streaming" ||
       this.state.status === "loading" ||
-      this.state.workspaceBusy
+      this.state.workspaceBusy ||
+      this.state.modelListStatus === "saving"
     )
       return;
     const prompt = this.state.draftText.trim();
@@ -342,7 +365,12 @@ export class ChatStore {
   }
 
   openSettings(): void {
-    if (this.state.status === "streaming" || this.state.workspaceBusy || !this.state.settings)
+    if (
+      this.state.status === "streaming" ||
+      this.state.workspaceBusy ||
+      this.state.modelListStatus === "saving" ||
+      !this.state.settings
+    )
       return;
     this.settingsToken += 1;
     this.update({
@@ -434,11 +462,92 @@ export class ChatStore {
         settingsErrorMessage: null,
         activeWorkspace,
       });
+      if (settings.apiKeySource === "missing") {
+        this.modelListToken += 1;
+        this.update({
+          availableModels: [],
+          modelListStatus: "idle",
+          modelListErrorMessage: null,
+          modelListRetryAvailable: false,
+        });
+      } else {
+        await this.loadModels();
+      }
     } catch (error) {
       if (token !== this.settingsToken) return;
       this.update({
         settingsStatus: "error",
         settingsErrorMessage: errorMessage(error),
+      });
+    }
+  }
+
+  async retryModels(): Promise<void> {
+    if (!this.state.settings || this.state.settings.apiKeySource === "missing") return;
+    await this.loadModels();
+  }
+
+  async selectModel(model: string): Promise<void> {
+    const settings = this.state.settings;
+    if (
+      !settings ||
+      this.state.status === "streaming" ||
+      this.state.modelListStatus === "loading" ||
+      this.state.modelListStatus === "saving" ||
+      settings.environmentOverrides.includes("model") ||
+      !this.state.availableModels.some((available) => available.id === model)
+    )
+      return;
+    const token = ++this.modelListToken;
+    this.update({
+      modelListStatus: "saving",
+      modelListErrorMessage: null,
+      modelListRetryAvailable: false,
+    });
+    try {
+      const updated = await this.api.setModel(model);
+      if (token !== this.modelListToken) return;
+      this.update({
+        settings: updated,
+        modelListStatus: "idle",
+        modelListErrorMessage: null,
+        modelListRetryAvailable: false,
+      });
+    } catch (error) {
+      if (token !== this.modelListToken) return;
+      this.update({
+        modelListStatus: "error",
+        modelListErrorMessage: errorMessage(error),
+        modelListRetryAvailable: false,
+      });
+    }
+  }
+
+  private async loadModels(): Promise<void> {
+    const settings = this.state.settings;
+    if (!settings) return;
+    const token = ++this.modelListToken;
+    this.update({
+      modelListStatus: "loading",
+      modelListErrorMessage: null,
+      modelListRetryAvailable: false,
+    });
+    try {
+      const models = await this.api.listModels();
+      if (token !== this.modelListToken) return;
+      this.update({
+        availableModels: withConfiguredModel(models, settings.activeModel),
+        modelListStatus: "idle",
+        modelListErrorMessage: null,
+        modelListRetryAvailable: false,
+      });
+    } catch (error) {
+      if (token !== this.modelListToken) return;
+      this.update({
+        availableModels: withConfiguredModel([], settings.activeModel),
+        modelListStatus: "error",
+        modelListErrorMessage: errorMessage(error),
+        modelListRetryAvailable: true,
       });
     }
   }

@@ -38,6 +38,8 @@ pub fn run() {
             commands::delete_conversation,
             commands::load_settings,
             commands::save_settings,
+            commands::list_models,
+            commands::set_model,
             commands::validate_workspace,
             commands::assign_conversation_workspace,
             commands::ask

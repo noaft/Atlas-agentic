@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversations::MessageRole;
 
-use super::{ModelProvider, ModelRequest};
+use super::{ModelInfo, ModelProvider, ModelRequest};
 
 pub struct DeepSeekConfig {
     pub api_key: String,
@@ -102,6 +102,27 @@ impl ModelProvider for DeepSeekProvider {
 
         Ok(full_response)
     }
+
+    fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
+        let response = self
+            .client
+            .get(self.models_url())
+            .bearer_auth(&self.config.api_key)
+            .send()
+            .map_err(|error| format!("DeepSeek model list request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "DeepSeek model list returned HTTP {}",
+                response.status()
+            ));
+        }
+
+        let response = response
+            .text()
+            .map_err(|error| format!("DeepSeek model list response could not be read: {error}"))?;
+        parse_model_list(&response)
+    }
 }
 
 impl DeepSeekProvider {
@@ -110,6 +131,10 @@ impl DeepSeekProvider {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         )
+    }
+
+    fn models_url(&self) -> String {
+        format!("{}/models", self.config.base_url.trim_end_matches('/'))
     }
 
     fn chat_request(&self, request: &ModelRequest, stream: bool) -> ChatRequest {
@@ -216,6 +241,17 @@ struct AssistantMessage {
 }
 
 #[derive(Deserialize)]
+struct ModelListResponse {
+    data: Vec<DeepSeekModel>,
+}
+
+#[derive(Deserialize)]
+struct DeepSeekModel {
+    id: String,
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ChatStreamResponse {
     choices: Vec<ChatStreamChoice>,
 }
@@ -244,8 +280,30 @@ fn parse_stream_delta(line: &str) -> Result<Option<String>, String> {
         .and_then(|choice| choice.delta.content))
 }
 
+fn parse_model_list(response: &str) -> Result<Vec<ModelInfo>, String> {
+    let response: ModelListResponse = serde_json::from_str(response)
+        .map_err(|error| format!("DeepSeek model list was invalid: {error}"))?;
+    Ok(response
+        .data
+        .into_iter()
+        .map(|model| ModelInfo {
+            name: model
+                .name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| model.id.clone()),
+            id: model.id,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
@@ -253,9 +311,10 @@ mod tests {
         conversations::{ConversationMessage, MessageRole},
         models::{
             deepseek::{
-                parse_stream_delta, render_model_instructions, DeepSeekConfig, DeepSeekProvider,
+                parse_model_list, parse_stream_delta, render_model_instructions, DeepSeekConfig,
+                DeepSeekProvider,
             },
-            ModelRequest,
+            ModelProvider, ModelRequest,
         },
         tools::ToolDefinition,
     };
@@ -367,5 +426,62 @@ mod tests {
             parse_stream_delta(r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#).unwrap();
 
         assert_eq!(delta, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn parses_model_list_and_uses_the_id_when_the_display_name_is_missing() {
+        let models = parse_model_list(
+            r#"{
+                "object": "list",
+                "data": [
+                    {"id": "deepseek-flash", "object": "model", "owned_by": "deepseek", "name": "DeepSeek Flash"},
+                    {"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek"}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(models[0].id, "deepseek-flash");
+        assert_eq!(models[0].name, "DeepSeek Flash");
+        assert_eq!(models[1].id, "deepseek-v4-pro");
+        assert_eq!(models[1].name, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn lists_models_with_bearer_auth_from_the_configured_base_url() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /models HTTP/1.1\r\n"), "{request}");
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-key\r\n"),
+                "{request}"
+            );
+            let body = r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","name":"DeepSeek Flash"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let provider = DeepSeekProvider::new(DeepSeekConfig {
+            api_key: "test-key".to_string(),
+            base_url: format!("http://{address}"),
+            model: "deepseek-flash".to_string(),
+        });
+
+        let models = provider.list_models().unwrap();
+
+        server.join().unwrap();
+        assert_eq!(models[0].id, "deepseek-flash");
+        assert_eq!(models[0].name, "DeepSeek Flash");
     }
 }

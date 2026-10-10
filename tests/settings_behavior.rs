@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread,
 };
@@ -124,6 +124,47 @@ fn concurrent_writers_leave_one_complete_valid_document() {
     assert!(saved.deepseek.model.starts_with("model-"));
     let number = saved.deepseek.model[6..].parse::<usize>().unwrap();
     assert!(number < 12);
+}
+
+#[test]
+fn atomic_updates_preserve_changes_from_overlapping_writers() {
+    let data = tempdir().unwrap();
+    let store = Arc::new(SettingsStore::at(data.path().join("settings.json")));
+    store.save(&AtlasSettings::default()).unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_store = Arc::clone(&store);
+    let first = thread::spawn(move || {
+        first_store
+            .update(|settings| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                settings.deepseek.model = "selected-model".to_string();
+                Ok(())
+            })
+            .unwrap();
+    });
+    entered_rx.recv().unwrap();
+    let (attempted_tx, attempted_rx) = mpsc::channel();
+    let second_store = Arc::clone(&store);
+    let second = thread::spawn(move || {
+        attempted_tx.send(()).unwrap();
+        second_store
+            .update(|settings| {
+                settings.conversation.history_limit = 17;
+                Ok(())
+            })
+            .unwrap();
+    });
+    attempted_rx.recv().unwrap();
+
+    release_tx.send(()).unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+
+    let saved = store.load().unwrap();
+    assert_eq!(saved.deepseek.model, "selected-model");
+    assert_eq!(saved.conversation.history_limit, 17);
 }
 
 #[cfg(unix)]
