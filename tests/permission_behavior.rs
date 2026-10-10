@@ -1,0 +1,232 @@
+use std::{cell::Cell, collections::VecDeque, rc::Rc};
+
+use atlas_agentic::{
+    agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
+    models::{ModelProvider, ModelRequest},
+    permissions::{
+        requires_confirmation, AuthorizationDecision, AuthorizationRequest, PermissionMode,
+        ToolAuthorizer, ToolEvent, ToolRisk,
+    },
+    tools::{summarize_arguments, Tool, ToolDefinition, ToolRegistry, ToolResult},
+    Runtime,
+};
+
+struct QueueModel(std::cell::RefCell<VecDeque<&'static str>>);
+
+impl ModelProvider for QueueModel {
+    fn complete(&self, _request: &ModelRequest) -> Result<String, String> {
+        Ok(self.0.borrow_mut().pop_front().unwrap().to_string())
+    }
+}
+
+struct RiskyTool {
+    executions: Rc<Cell<usize>>,
+}
+
+impl Tool for RiskyTool {
+    fn name(&self) -> &str {
+        "risky"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "A modifying test tool.".to_string(),
+            input_schema: serde_json::json!({"type":"object"}),
+        }
+    }
+
+    fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
+        Ok(ToolRisk::ModifyWorkspace)
+    }
+
+    fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
+        self.executions.set(self.executions.get() + 1);
+        Ok(ToolResult {
+            message: "changed".to_string(),
+        })
+    }
+}
+
+struct FixedAuthorizer {
+    decision: Result<AuthorizationDecision, &'static str>,
+    calls: Cell<usize>,
+}
+
+impl ToolAuthorizer for FixedAuthorizer {
+    fn authorize(&self, _request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
+        self.calls.set(self.calls.get() + 1);
+        self.decision.map_err(str::to_string)
+    }
+}
+
+fn test_runtime(executions: Rc<Cell<usize>>) -> Runtime {
+    let definition = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a title."
+"#,
+    )
+    .unwrap();
+    let model = QueueModel(std::cell::RefCell::new(
+        [
+            r#"{"type":"tool_call","tool":"risky","args":{"token":"secret-value","text":"abcdefghijklmnopqrstuvwxyz"}}"#,
+            r#"{"type":"final","content":"finished"}"#,
+        ]
+        .into(),
+    ));
+    Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition,
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(RiskyTool { executions })]))
+}
+
+#[test]
+fn permission_matrix_matches_the_three_modes() {
+    for risk in [
+        ToolRisk::ReadOnly,
+        ToolRisk::ModifyWorkspace,
+        ToolRisk::Destructive,
+        ToolRisk::Launch,
+        ToolRisk::Command,
+    ] {
+        assert!(!requires_confirmation(PermissionMode::FullAccess, risk));
+    }
+    assert!(!requires_confirmation(
+        PermissionMode::Ask,
+        ToolRisk::ReadOnly
+    ));
+    for risk in [
+        ToolRisk::ModifyWorkspace,
+        ToolRisk::Destructive,
+        ToolRisk::Launch,
+        ToolRisk::Command,
+    ] {
+        assert!(requires_confirmation(PermissionMode::Ask, risk));
+    }
+    for risk in [ToolRisk::ReadOnly, ToolRisk::ModifyWorkspace] {
+        assert!(!requires_confirmation(PermissionMode::Workspace, risk));
+    }
+    for risk in [ToolRisk::Destructive, ToolRisk::Launch, ToolRisk::Command] {
+        assert!(requires_confirmation(PermissionMode::Workspace, risk));
+    }
+}
+
+#[test]
+fn argument_summary_redacts_secrets_and_is_bounded() {
+    let summary = summarize_arguments(&serde_json::json!({
+        "apiKey": "top-secret",
+        "password": "also-secret",
+        "path": "notes/file.txt",
+        "content": "x".repeat(2_000)
+    }));
+
+    assert!(!summary.contains("top-secret"));
+    assert!(!summary.contains("also-secret"));
+    assert!(summary.contains("[redacted]"));
+    assert!(summary.contains("notes/file.txt"));
+    assert!(summary.chars().count() <= 512);
+}
+
+#[test]
+fn runtime_asks_once_and_executes_after_allow() {
+    let executions = Rc::new(Cell::new(0));
+    let runtime = test_runtime(Rc::clone(&executions));
+    let authorizer = FixedAuthorizer {
+        decision: Ok(AuthorizationDecision::Allow),
+        calls: Cell::new(0),
+    };
+    let mut events = Vec::new();
+
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "change it",
+            &[],
+            PermissionMode::Ask,
+            &authorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    assert_eq!(answer, "finished");
+    assert_eq!(authorizer.calls.get(), 1);
+    assert_eq!(executions.get(), 1);
+    assert!(matches!(events[0], ToolEvent::ApprovalRequested { .. }));
+    assert!(matches!(events[1], ToolEvent::Started { .. }));
+    assert!(matches!(
+        events[2],
+        ToolEvent::Finished { success: true, .. }
+    ));
+}
+
+#[test]
+fn runtime_returns_denial_to_model_without_execution() {
+    let executions = Rc::new(Cell::new(0));
+    let runtime = test_runtime(Rc::clone(&executions));
+    let authorizer = FixedAuthorizer {
+        decision: Ok(AuthorizationDecision::Deny),
+        calls: Cell::new(0),
+    };
+
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "change it",
+            &[],
+            PermissionMode::Ask,
+            &authorizer,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(answer, "finished");
+    assert_eq!(authorizer.calls.get(), 1);
+    assert_eq!(executions.get(), 0);
+}
+
+#[test]
+fn full_access_bypasses_authorizer_and_authorizer_errors_fail_the_turn() {
+    let executions = Rc::new(Cell::new(0));
+    let runtime = test_runtime(Rc::clone(&executions));
+    let unused = FixedAuthorizer {
+        decision: Err("approval transport failed"),
+        calls: Cell::new(0),
+    };
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "change it",
+            &[],
+            PermissionMode::FullAccess,
+            &unused,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(unused.calls.get(), 0);
+    assert_eq!(executions.get(), 1);
+
+    let executions = Rc::new(Cell::new(0));
+    let runtime = test_runtime(Rc::clone(&executions));
+    let failing = FixedAuthorizer {
+        decision: Err("approval transport failed"),
+        calls: Cell::new(0),
+    };
+    let error = runtime
+        .ask_stream_with_history_and_authorization(
+            "change it",
+            &[],
+            PermissionMode::Ask,
+            &failing,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap_err();
+    assert_eq!(error, "approval transport failed");
+    assert_eq!(executions.get(), 0);
+}

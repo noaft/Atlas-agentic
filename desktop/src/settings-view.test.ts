@@ -17,6 +17,7 @@ const settings: SettingsView = {
   },
   defaultWorkspaceAutomatic: false,
   defaultWorkspaceError: null,
+  defaultPermissionMode: "ask",
   environmentOverrides: ["apiKey"],
 };
 
@@ -52,6 +53,11 @@ function fixture(currentSettings = settings) {
     assignConversationWorkspace: async () => {
       throw new Error("unused");
     },
+    setConversationPermissionMode: async () => {
+      throw new Error("unused");
+    },
+    resolveToolApproval: async () => {},
+    cancelToolApprovals: async () => {},
     toggleFullscreen: async () => false,
   } as AtlasApi;
   const store = new ChatStore(api);
@@ -164,4 +170,29 @@ test("an_invalid_default_remains_editable_and_shows_its_error", async () => {
   expect(store.getState().screen).toBe("settings");
   expect(root.textContent).toContain("workspace does not exist");
   expect(root.querySelector("[data-reset-default-workspace]")).not.toBeNull();
+});
+
+test("settings hydrates and saves the default permission mode with a full access warning", async () => {
+  const { root, saves, store } = fixture({
+    ...settings,
+    defaultPermissionMode: "workspace",
+  });
+  await store.initialize();
+  store.openSettings();
+  renderSettings(root, store.getState(), store);
+
+  const select = root.querySelector<HTMLSelectElement>(
+    "[data-settings-permission-mode]",
+  )!;
+  expect(select.value).toBe("workspace");
+  select.value = "fullAccess";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  renderSettings(root, store.getState(), store);
+  expect(root.textContent).toContain("run tools without asking");
+
+  root.querySelector<HTMLFormElement>("[data-settings-form]")!.dispatchEvent(
+    new Event("submit", { bubbles: true, cancelable: true }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(saves[0]?.defaultPermissionMode).toBe("fullAccess");
 });

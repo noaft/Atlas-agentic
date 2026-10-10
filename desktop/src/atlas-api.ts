@@ -8,6 +8,7 @@ import type {
   ConversationAskResult,
   ConversationMetadata,
   ModelInfo,
+  PermissionMode,
   SaveSettingsInput,
   SettingsView,
   Workspace,
@@ -20,7 +21,8 @@ export interface AtlasApi {
     prompt: string,
     conversationId: string | null,
     workspacePath: string | null,
-    onDelta: (text: string) => void,
+    permissionMode: PermissionMode,
+    onEvent: (event: ChatEvent) => void,
   ): Promise<ConversationAskResult>;
   renameConversation(id: string, title: string): Promise<ConversationMetadata>;
   deleteConversation(id: string): Promise<void>;
@@ -31,6 +33,12 @@ export interface AtlasApi {
   chooseWorkspace(): Promise<string | null>;
   validateWorkspace(path: string): Promise<Workspace>;
   assignConversationWorkspace(id: string, path: string): Promise<ConversationMetadata>;
+  setConversationPermissionMode(
+    id: string,
+    permissionMode: PermissionMode,
+  ): Promise<ConversationMetadata>;
+  resolveToolApproval(id: string, allow: boolean): Promise<void>;
+  cancelToolApprovals(): Promise<void>;
   toggleFullscreen(): Promise<boolean>;
 }
 
@@ -38,16 +46,15 @@ export function createTauriAtlasApi(): AtlasApi {
   return {
     listConversations: () => invoke<ConversationMetadata[]>("list_conversations"),
     loadConversation: (id) => invoke<Conversation>("load_conversation", { id }),
-    ask: (prompt, conversationId, workspacePath, onDelta) => {
+    ask: (prompt, conversationId, workspacePath, permissionMode, onEvent) => {
       const channel = new Channel<ChatEvent>((message) => {
-        if (message.event === "delta") {
-          onDelta(message.data.content);
-        }
+        onEvent(message);
       });
       return invoke<ConversationAskResult>("ask", {
         prompt,
         conversationId,
         workspacePath,
+        permissionMode,
         channel,
       });
     },
@@ -67,6 +74,17 @@ export function createTauriAtlasApi(): AtlasApi {
     validateWorkspace: (path) => invoke<Workspace>("validate_workspace", { path }),
     assignConversationWorkspace: (id, path) =>
       invoke<ConversationMetadata>("assign_conversation_workspace", { id, path }),
+    setConversationPermissionMode: (id, permissionMode) =>
+      invoke<ConversationMetadata>("set_conversation_permission_mode", {
+        id,
+        permissionMode,
+      }),
+    resolveToolApproval: async (id, allow) => {
+      await invoke("resolve_tool_approval", { id, allow });
+    },
+    cancelToolApprovals: async () => {
+      await invoke("cancel_tool_approvals");
+    },
     toggleFullscreen: async () => {
       const window = getCurrentWindow();
       const fullscreen = !(await window.isFullscreen());

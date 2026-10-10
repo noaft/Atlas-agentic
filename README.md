@@ -47,13 +47,32 @@ home. Older unassigned conversations use the current default and persist it with
 their next successful turn.
 
 Use **Settings** to configure the DeepSeek API key, base URL, default model,
-history limit, and an optional custom default folder. After provider settings
+history limit, default tool-access mode, and an optional custom default folder. After provider settings
 are saved, Atlas loads the available models from DeepSeek and shows a model
 picker above the chat composer. Choosing a model saves it globally and affects
 the next request without restarting Atlas. If model discovery fails, the saved
 model remains usable and the picker offers a retry. Resetting the default folder
 returns new chats to Atlas home. Conversation management and Settings remain
 available without a configured provider; only sending requires an API key.
+
+The tool-access picker beside the model picker controls confirmations for the
+current chat. New drafts inherit the Settings default and may override it without
+saving anything. After the first successful response, the selected mode belongs
+to that conversation; reopening it restores the same mode, and changing it does
+not affect other chats.
+
+- **Ask** automatically permits read-only tools and asks before file changes,
+  application launches, or commands.
+- **Workspace** also permits non-destructive changes inside the selected
+  workspace, but asks before deletion, overwrite, launch, or command execution.
+- **Full access** runs all registered tools without an Atlas confirmation. It
+  does not elevate privileges: every action still runs with the desktop process's
+  current OS-user permissions.
+
+When confirmation is required, the chat shows the tool, a bounded argument
+summary, and why approval is needed. **Allow once** approves only that request;
+**Deny** returns the denial to the agent. Approval requests expire after two
+minutes. Tool activity remains visible while Atlas works.
 
 Build a local debug executable without creating an installer:
 
@@ -200,17 +219,26 @@ Default runtime tools:
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
-- `create_file`: create a new file with a relative path
-- `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
+- `search_files`: search workspace filenames and UTF-8 file contents with optional glob and result limits
+- `create_file`: create a new UTF-8 file with a relative path, without overwriting an existing file
+- `create_directory`: create a relative directory path inside the workspace
+- `copy_file`: copy a workspace file to a relative destination; overwrite must be explicit
+- `move_file`: move a workspace file to a relative destination; overwrite must be explicit
+- `delete_file`: delete a workspace file
+- `open_file`: open a workspace file with the operating system's default application
+- `open_application`: launch an application by name or executable path
+- `exec_command`: execute an unrestricted platform shell command from the workspace
 
 The workspace shown in the app is the tools' starting directory and conversation
-label. The structured file helpers remain scoped to it. `exec_command` is
-available on Linux, WSL, and macOS and is intentionally unrestricted: it supports
-shell operators, pipes, redirects, changing directories, and absolute paths
-outside the starting folder. It runs with the same permissions as the Atlas
-process, so normal OS access controls still apply. Commands and inherited output
-capture time out after 30 seconds, and stdout and stderr are each limited to 64
-KiB before truncation.
+label. Structured path-based file helpers reject absolute paths, parent traversal,
+and symlink escapes and remain scoped to that workspace. They do not become
+machine-wide merely because Full access is selected. `exec_command` is available
+on Linux, WSL, macOS, and Windows and is intentionally unrestricted: it supports
+the platform shell's operators, pipes, redirects, changing directories, and
+absolute paths outside the starting folder. It runs with the same permissions as
+the Atlas process, so normal OS access controls still apply. Commands and
+inherited output capture time out after 30 seconds, and stdout and stderr are each
+limited to 64 KiB before truncation.
 
 ## Source layout and verification
 

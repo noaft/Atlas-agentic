@@ -14,6 +14,8 @@ use directories::BaseDirs;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
+use crate::permissions::PermissionMode;
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -31,6 +33,8 @@ pub struct AtlasSettings {
     pub deepseek: DeepSeekSettings,
     pub conversation: ConversationSettings,
     pub workspace: WorkspaceSettings,
+    #[serde(default)]
+    pub permissions: PermissionSettings,
 }
 
 impl fmt::Debug for AtlasSettings {
@@ -41,6 +45,7 @@ impl fmt::Debug for AtlasSettings {
             .field("deepseek", &self.deepseek)
             .field("conversation", &self.conversation)
             .field("workspace", &self.workspace)
+            .field("permissions", &self.permissions)
             .finish()
     }
 }
@@ -52,6 +57,7 @@ impl Default for AtlasSettings {
             deepseek: DeepSeekSettings::default(),
             conversation: ConversationSettings::default(),
             workspace: WorkspaceSettings::default(),
+            permissions: PermissionSettings::default(),
         }
     }
 }
@@ -84,6 +90,7 @@ impl AtlasSettings {
             model: self.deepseek.model.clone(),
             history_limit: self.conversation.history_limit,
             default_workspace: self.workspace.default_path.clone(),
+            default_permission_mode: self.permissions.default_mode,
             environment_overrides: BTreeSet::new(),
         };
 
@@ -137,6 +144,7 @@ pub struct EffectiveSettings {
     pub model: String,
     pub history_limit: usize,
     pub default_workspace: Option<PathBuf>,
+    pub default_permission_mode: PermissionMode,
     pub environment_overrides: BTreeSet<SettingField>,
 }
 
@@ -157,6 +165,7 @@ impl fmt::Debug for EffectiveSettings {
             .field("model", &self.model)
             .field("history_limit", &self.history_limit)
             .field("default_workspace", &self.default_workspace)
+            .field("default_permission_mode", &self.default_permission_mode)
             .field("environment_overrides", &self.environment_overrides)
             .finish()
     }
@@ -241,6 +250,13 @@ impl Default for ConversationSettings {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSettings {
     pub default_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSettings {
+    #[serde(default)]
+    pub default_mode: PermissionMode,
 }
 
 #[derive(Clone)]

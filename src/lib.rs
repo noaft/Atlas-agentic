@@ -3,6 +3,7 @@ pub mod agents;
 pub mod app;
 pub mod conversations;
 pub mod models;
+pub mod permissions;
 pub mod runtime;
 pub mod settings;
 pub mod tools;

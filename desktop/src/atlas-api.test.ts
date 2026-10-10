@@ -18,6 +18,7 @@ const metadata: ConversationMetadata = {
   updatedAt: "2026-10-04T10:00:01Z",
   messageCount: 2,
   workspace: { path: "/work/atlas", name: "atlas" },
+  permissionMode: "ask",
 };
 
 const conversation: Conversation = {
@@ -83,6 +84,7 @@ describe("Tauri Atlas API", () => {
       expect(args.prompt).toBe("hello");
       expect(args.conversationId).toBeNull();
       expect(args.workspacePath).toBe("/work/atlas");
+      expect((args as typeof args & { permissionMode: string }).permissionMode).toBe("ask");
       args.channel.onmessage({ event: "delta", data: { content: "Hello" } });
       args.channel.onmessage({ event: "delta", data: { content: " desktop" } });
       return result;
@@ -93,11 +95,54 @@ describe("Tauri Atlas API", () => {
       "hello",
       null,
       "/work/atlas",
-      (delta) => deltas.push(delta),
+      "ask",
+      (event) => {
+        if (event.event === "delta") deltas.push(event.data.content);
+      },
     );
 
     expect(deltas).toEqual(["Hello", " desktop"]);
     expect(completed).toEqual(result);
+  });
+
+  test("sends the permission mode and resolves streamed tool approvals", async () => {
+    const commands: Array<{ command: string; payload: unknown }> = [];
+    mockIPC((command, payload) => {
+      commands.push({ command, payload });
+      if (command === "ask") {
+        const args = payload as { channel: Channel<ChatEvent> };
+        args.channel.onmessage({
+          event: "approvalRequested",
+          data: {
+            request: {
+              id: "approval-1",
+              tool: "delete_file",
+              arguments: '{"path":"note.txt"}',
+              reason: "deletes or overwrites data",
+            },
+          },
+        });
+        return { answer: "Done", metadata, created: true };
+      }
+      if (command === "resolve_tool_approval") return null;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const api = createTauriAtlasApi();
+
+    await api.ask("clean up", null, "/work/atlas", "workspace", async (event) => {
+      if (event.event === "approvalRequested") {
+        await api.resolveToolApproval(event.data.request.id, false);
+      }
+    });
+
+    expect(commands[0]).toMatchObject({
+      command: "ask",
+      payload: { permissionMode: "workspace" },
+    });
+    expect(commands[1]).toEqual({
+      command: "resolve_tool_approval",
+      payload: { id: "approval-1", allow: false },
+    });
   });
 
   test("uses exact settings and workspace commands and treats dialog cancellation as null", async () => {
@@ -118,6 +163,7 @@ describe("Tauri Atlas API", () => {
           defaultWorkspace: null,
           defaultWorkspaceAutomatic: true,
           defaultWorkspaceError: "automatic workspace unavailable",
+          defaultPermissionMode: "ask",
           environmentOverrides: [],
         };
       }
@@ -133,6 +179,7 @@ describe("Tauri Atlas API", () => {
       model: "deepseek-flash",
       historyLimit: 40,
       defaultWorkspacePath: null,
+      defaultPermissionMode: "ask" as const,
     };
 
     await api.loadSettings();

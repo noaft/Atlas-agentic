@@ -10,7 +10,10 @@ use std::{
     thread,
 };
 
-use atlas_agentic::settings::{AtlasSettings, SettingField, SettingsStore, SETTINGS_VERSION};
+use atlas_agentic::{
+    permissions::PermissionMode,
+    settings::{AtlasSettings, SettingField, SettingsStore, SETTINGS_VERSION},
+};
 use tempfile::tempdir;
 
 #[test]
@@ -26,6 +29,42 @@ fn missing_settings_file_returns_version_one_defaults() {
     assert_eq!(settings.deepseek.model, "deepseek-flash");
     assert_eq!(settings.conversation.history_limit, 40);
     assert_eq!(settings.workspace.default_path, None);
+    assert_eq!(settings.permissions.default_mode, PermissionMode::Ask);
+    assert_eq!(
+        settings
+            .resolve_with(|_| None)
+            .unwrap()
+            .default_permission_mode,
+        PermissionMode::Ask
+    );
+}
+
+#[test]
+fn permission_modes_round_trip_and_legacy_settings_default_to_ask() {
+    let data = tempdir().unwrap();
+    let path = data.path().join("settings.json");
+    let store = SettingsStore::at(path.clone());
+
+    for mode in [
+        PermissionMode::Ask,
+        PermissionMode::Workspace,
+        PermissionMode::FullAccess,
+    ] {
+        let mut settings = AtlasSettings::default();
+        settings.permissions.default_mode = mode;
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().unwrap().permissions.default_mode, mode);
+    }
+
+    fs::write(
+        &path,
+        r#"{"version":1,"deepseek":{"apiKey":null,"baseUrl":"https://api.deepseek.com","model":"deepseek-flash"},"conversation":{"historyLimit":40},"workspace":{"defaultPath":null}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        store.load().unwrap().permissions.default_mode,
+        PermissionMode::Ask
+    );
 }
 
 #[test]

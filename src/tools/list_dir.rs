@@ -1,11 +1,11 @@
-use std::{
-    fs,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{Tool, ToolDefinition, ToolResult};
+use super::{
+    workspace_path::{open_workspace, validate_relative_path},
+    Tool, ToolDefinition, ToolResult,
+};
 
 pub struct ListDirTool {
     workspace: PathBuf,
@@ -44,23 +44,30 @@ impl Tool for ListDirTool {
         let args: ListDirArgs = serde_json::from_value(args.clone())
             .map_err(|error| format!("invalid ls args: {error}"))?;
         let relative_path = args.path.unwrap_or_else(|| ".".to_string());
-        validate_relative_path(&relative_path)?;
-
-        let directory = self.workspace.join(&relative_path);
-        if !directory.is_dir() {
-            return Err(format!("ls target is not a directory: {relative_path}"));
+        let relative_path = validate_relative_path("ls", "path", &relative_path)?;
+        let workspace = open_workspace(self.name(), &self.workspace)?;
+        if !workspace
+            .metadata(&relative_path)
+            .map_err(|error| format!("failed to inspect ls target: {error}"))?
+            .is_dir()
+        {
+            return Err(format!(
+                "ls target is not a directory: {}",
+                relative_path.display()
+            ));
         }
-
-        let mut entries = fs::read_dir(&directory)
+        let mut entries = workspace
+            .read_dir(&relative_path)
             .map_err(|error| format!("failed to list directory: {error}"))?
             .map(|entry| {
                 entry
                     .map_err(|error| format!("failed to read directory entry: {error}"))
-                    .and_then(|entry| {
-                        let path = entry.path();
-                        path.strip_prefix(&self.workspace)
-                            .map(|path| path.display().to_string())
-                            .map_err(|error| format!("failed to format directory entry: {error}"))
+                    .map(|entry| {
+                        if relative_path == Path::new(".") {
+                            PathBuf::from(entry.file_name()).display().to_string()
+                        } else {
+                            relative_path.join(entry.file_name()).display().to_string()
+                        }
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -76,21 +83,4 @@ impl Tool for ListDirTool {
 #[derive(Deserialize)]
 struct ListDirArgs {
     path: Option<String>,
-}
-
-fn validate_relative_path(path: &str) -> Result<(), String> {
-    let path = Path::new(path);
-    if path.as_os_str().is_empty() {
-        return Err("ls path is required".to_string());
-    }
-    if path.is_absolute() {
-        return Err("ls path must be relative".to_string());
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err("ls path cannot contain parent directory segments".to_string());
-    }
-    Ok(())
 }

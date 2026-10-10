@@ -1,11 +1,17 @@
 use std::{
-    fs,
-    path::{Component, Path, PathBuf},
+    io::Write,
+    path::{Path, PathBuf},
 };
 
+use cap_std::fs::OpenOptions;
 use serde::Deserialize;
 
-use super::{Tool, ToolDefinition, ToolResult};
+use crate::permissions::ToolRisk;
+
+use super::{
+    workspace_path::{open_workspace, validate_relative_path},
+    Tool, ToolDefinition, ToolResult,
+};
 
 pub struct CreateFileTool {
     workspace: PathBuf,
@@ -47,22 +53,36 @@ impl Tool for CreateFileTool {
         }
     }
 
+    fn risk(&self, args: &serde_json::Value) -> Result<ToolRisk, String> {
+        let args: CreateFileArgs = serde_json::from_value(args.clone())
+            .map_err(|error| format!("invalid create_file args: {error}"))?;
+        validate_relative_path("create_file", "path", &args.path)?;
+        Ok(ToolRisk::ModifyWorkspace)
+    }
+
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
         let args: CreateFileArgs = serde_json::from_value(args.clone())
             .map_err(|error| format!("invalid create_file args: {error}"))?;
-        validate_relative_path(&args.path)?;
-
-        let path = self.workspace.join(&args.path);
-        if path.exists() {
-            return Err(format!("create_file target already exists: {}", args.path));
-        }
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
+        let path = validate_relative_path("create_file", "path", &args.path)?;
+        let workspace = open_workspace(self.name(), &self.workspace)?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            workspace
+                .create_dir_all(parent)
                 .map_err(|error| format!("failed to create parent directories: {error}"))?;
         }
-
-        fs::write(&path, args.content)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = workspace.open_with(&path, &options).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("create_file target already exists: {}", args.path)
+            } else {
+                format!("failed to create file: {error}")
+            }
+        })?;
+        file.write_all(args.content.as_bytes())
             .map_err(|error| format!("failed to create file: {error}"))?;
 
         Ok(ToolResult {
@@ -75,21 +95,4 @@ impl Tool for CreateFileTool {
 struct CreateFileArgs {
     path: String,
     content: String,
-}
-
-fn validate_relative_path(path: &str) -> Result<(), String> {
-    let path = Path::new(path);
-    if path.as_os_str().is_empty() {
-        return Err("create_file path is required".to_string());
-    }
-    if path.is_absolute() {
-        return Err("create_file path must be relative".to_string());
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err("create_file path cannot contain parent directory segments".to_string());
-    }
-    Ok(())
 }

@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
@@ -13,6 +13,7 @@ use std::{
 
 use atlas_agentic::{
     conversations::{ConversationStore, MessageRole},
+    permissions::PermissionMode,
     settings::{AtlasSettings, SettingsStore},
 };
 use serde_json::{json, Value};
@@ -80,6 +81,22 @@ fn successful_stdout(output: Output) -> String {
     );
     assert!(output.stderr.is_empty());
     String::from_utf8(output.stdout).unwrap()
+}
+
+fn output_with_stdin(mut command: Command, input: &str) -> Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -434,6 +451,69 @@ fn ask_command_loads_deepseek_key_from_dotenv() {
     assert_eq!(server.request()["stream"], false);
 }
 
+#[test]
+fn cli_prompts_for_risky_tools_and_full_access_bypasses_the_prompt() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let mut ask = fixture.ask_command(&server);
+    ask.args(["ask", "create approved file"]);
+
+    let output = output_with_stdin(ask, "maybe\ny\n");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Allow create_file?"), "{stderr}");
+    assert!(stderr.contains("Please answer y or n."), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(fixture.workspace.path().join("approved.txt")).unwrap(),
+        "approved"
+    );
+
+    let full = CliFixture::new();
+    full.install_agent();
+    let full_server = FakeDeepSeek::new();
+    let mut settings = AtlasSettings::default();
+    settings.permissions.default_mode = PermissionMode::FullAccess;
+    full.settings_store().save(&settings).unwrap();
+    let output = full
+        .ask_command(&full_server)
+        .args(["ask", "create approved file"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert!(full.workspace.path().join("approved.txt").is_file());
+}
+
+#[test]
+fn cli_denies_on_eof_without_executing_the_tool() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let output = fixture
+        .ask_command(&server)
+        .args(["ask", "create approved file"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Allow create_file?"));
+    assert!(!fixture.workspace.path().join("approved.txt").exists());
+}
+
 struct FakeDeepSeek {
     url: String,
     requests: Receiver<Value>,
@@ -473,6 +553,8 @@ impl FakeDeepSeek {
                     .unwrap_or_default();
                 let streamed_content = if last_user_content == "report workspace" {
                     r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
+                } else if last_user_content == "create approved file" {
+                    r#"{"type":"tool_call","tool":"create_file","args":{"path":"approved.txt","content":"approved"}}"#.to_string()
                 } else if last_user_content.contains("\"type\": \"tool_results\"") {
                     let continuation: Value = serde_json::from_str(last_user_content).unwrap();
                     let workspace = continuation["tool_results"][0]["output"].as_str().unwrap();

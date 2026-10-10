@@ -133,9 +133,8 @@ Platform adapters use the conventional launcher:
 
 - Linux: `xdg-open` for files; direct process spawn for applications.
 - macOS: `open` for files; `open -a <application> --args ...` for applications.
-- Windows: `cmd.exe /D /S /C start "" <file>` for default file opening and
-  direct process spawn for applications, with platform-specific escaping kept
-  inside the adapter.
+- Windows: native `ShellExecuteW` for default file opening and direct process
+  spawn for applications, so filenames are never interpreted by `cmd.exe`.
 
 Launch tools report that the OS accepted or rejected the launch. They do not
 wait for the opened application to exit.

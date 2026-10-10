@@ -9,6 +9,8 @@ import type {
   ConversationMetadata,
   SaveSettingsInput,
   SettingsView,
+  ChatEvent,
+  PermissionMode,
 } from "./types";
 
 const workspace = { path: "/work/atlas", name: "atlas" };
@@ -21,6 +23,7 @@ const settings: SettingsView = {
   defaultWorkspace: workspace,
   defaultWorkspaceAutomatic: false,
   defaultWorkspaceError: null,
+  defaultPermissionMode: "ask",
   environmentOverrides: [],
 };
 
@@ -35,7 +38,8 @@ class ComposerApi implements AtlasApi {
     _prompt: string,
     _conversationId: string | null,
     _workspacePath: string | null,
-    _onDelta: (text: string) => void,
+    _permissionMode: PermissionMode,
+    _onEvent: (event: ChatEvent) => void,
   ): Promise<ConversationAskResult> {
     throw new Error("not used");
   }
@@ -70,6 +74,14 @@ class ComposerApi implements AtlasApi {
   ): Promise<ConversationMetadata> {
     throw new Error("not used");
   }
+  async setConversationPermissionMode(
+    _id: string,
+    _permissionMode: PermissionMode,
+  ): Promise<ConversationMetadata> {
+    throw new Error("not used");
+  }
+  async resolveToolApproval(_id: string, _allow: boolean) {}
+  async cancelToolApprovals() {}
   async toggleFullscreen() {
     return true;
   }

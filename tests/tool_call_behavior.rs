@@ -10,6 +10,7 @@ use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     conversations::{ConversationMessage, MessageRole},
     models::{ModelProvider, ModelRequest},
+    permissions::{AllowAllAuthorizer, PermissionMode},
     tools::{
         CreateFileTool, CurrentTimeTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition,
         ToolRegistry, ToolResult,
@@ -18,7 +19,7 @@ use atlas_agentic::{
 };
 use chrono::{DateTime, Local, TimeZone, Utc};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use atlas_agentic::tools::ExecCommandTool;
 
 struct QueueModel {
@@ -313,7 +314,14 @@ conversation_title_prompt = "Write a short conversation title."
 }
 
 fn ask(runtime: &Runtime, prompt: &str) -> Result<String, String> {
-    runtime.ask_stream(prompt, &mut |_| {})
+    runtime.ask_stream_with_history_and_authorization(
+        prompt,
+        &[],
+        PermissionMode::FullAccess,
+        &AllowAllAuthorizer,
+        &mut |_| {},
+        &mut |_| {},
+    )
 }
 
 #[test]
@@ -392,7 +400,7 @@ fn runtime_executes_create_file_tool_call() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn runtime_executes_command_tool_call_and_returns_agent_answer() {
     let workspace = tempfile::tempdir().unwrap();
@@ -456,7 +464,7 @@ fn runtime_passes_registered_tools_to_model_request() {
         Box::new(PwdTool::new(workspace.path())),
         Box::new(ListDirTool::new(workspace.path())),
     ]);
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let tools = {
         let mut tools = tools;
         tools.register(Box::new(ExecCommandTool::new(workspace.path())));
@@ -470,9 +478,9 @@ fn runtime_passes_registered_tools_to_model_request() {
 
     let result = ask(&runtime, "what tools exist?").unwrap();
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     assert_eq!(result, "create_file,exec_command,ls,pwd tools available");
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     assert_eq!(result, "create_file,ls,pwd tools available");
 }
 

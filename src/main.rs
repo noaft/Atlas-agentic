@@ -1,10 +1,15 @@
-use std::{io::Write, path::Path};
+use std::{
+    io::{BufRead, BufReader, Write},
+    path::Path,
+    sync::Mutex,
+};
 
 use atlas_agentic::{
     app::{build_runtime_with_settings, load_dotenv},
     conversations::{ConversationId, ConversationService, ConversationStore},
-    handle_command, render_conversation, render_conversation_metadata, render_conversation_summary,
-    render_help,
+    handle_command,
+    permissions::{AuthorizationDecision, AuthorizationRequest, ToolAuthorizer},
+    render_conversation, render_conversation_metadata, render_conversation_summary, render_help,
     settings::SettingsStore,
     AppResult,
 };
@@ -70,11 +75,74 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
     let runtime =
         build_runtime_with_settings(&workspace, Path::new("agents/atlas.toml"), &settings)?;
     let service = ConversationService::new(&runtime, &store, settings.history_limit);
+    let authorizer = TerminalAuthorizer::new();
     let mut stdout = std::io::stdout();
-    let result = service.ask(prompt, id, &mut |delta| {
-        print!("{delta}");
-        let _ = stdout.flush();
-    })?;
+    let result = service.ask_with_permission_authorizer(
+        prompt,
+        id,
+        settings.default_permission_mode,
+        &authorizer,
+        &mut |delta| {
+            print!("{delta}");
+            let _ = stdout.flush();
+        },
+        &mut |_| {},
+    )?;
     println!("\n{}", render_conversation_metadata(&result.metadata));
     Ok(())
+}
+
+struct TerminalAuthorizer {
+    input: Mutex<Box<dyn BufRead + Send>>,
+    output: Mutex<Box<dyn Write + Send>>,
+}
+
+impl TerminalAuthorizer {
+    fn new() -> Self {
+        Self {
+            input: Mutex::new(Box::new(BufReader::new(std::io::stdin()))),
+            output: Mutex::new(Box::new(std::io::stderr())),
+        }
+    }
+}
+
+impl ToolAuthorizer for TerminalAuthorizer {
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
+        let mut input = self
+            .input
+            .lock()
+            .map_err(|_| "terminal approval input lock was poisoned".to_string())?;
+        let mut output = self
+            .output
+            .lock()
+            .map_err(|_| "terminal approval output lock was poisoned".to_string())?;
+        writeln!(
+            output,
+            "\nAllow {}? {}\nArguments: {}",
+            request.tool, request.reason, request.arguments
+        )
+        .map_err(|error| format!("failed to write terminal approval: {error}"))?;
+
+        loop {
+            write!(output, "Allow once? [y/N]: ")
+                .and_then(|()| output.flush())
+                .map_err(|error| format!("failed to write terminal approval: {error}"))?;
+            let mut response = String::new();
+            let read = input
+                .read_line(&mut response)
+                .map_err(|error| format!("failed to read terminal approval: {error}"))?;
+            if read == 0 {
+                writeln!(output, "Denied (input closed).").map_err(|error| {
+                    format!("failed to write terminal approval result: {error}")
+                })?;
+                return Ok(AuthorizationDecision::Deny);
+            }
+            match response.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" => return Ok(AuthorizationDecision::Allow),
+                "" | "n" | "no" => return Ok(AuthorizationDecision::Deny),
+                _ => writeln!(output, "Please answer y or n.")
+                    .map_err(|error| format!("failed to write terminal approval: {error}"))?,
+            }
+        }
+    }
 }

@@ -120,6 +120,40 @@ export function renderSettings(
   modelSummary.append(modelLabel, modelValue, modelHint);
   form.append(modelSummary);
 
+  const permission = document.createElement("select");
+  permission.dataset.settingsPermissionMode = "";
+  permission.disabled = saving;
+  permission.setAttribute("aria-label", "Default tool access");
+  for (const [value, label] of [
+    ["ask", "Ask before changes"],
+    ["workspace", "Allow workspace changes"],
+    ["fullAccess", "Full access"],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    permission.append(option);
+  }
+  permission.value = draft.defaultPermissionMode;
+  permission.addEventListener("change", () =>
+    store.updateSettingsDraft({
+      defaultPermissionMode: permission.value as import("./types").PermissionMode,
+    }),
+  );
+  const permissionField = document.createElement("label");
+  permissionField.className = "settings-field";
+  const permissionTitle = document.createElement("span");
+  permissionTitle.className = "settings-label";
+  permissionTitle.textContent = "Default tool access for new chats";
+  const permissionHint = document.createElement("span");
+  permissionHint.className = "settings-hint";
+  permissionHint.textContent =
+    draft.defaultPermissionMode === "fullAccess"
+      ? "Warning: Atlas can run tools without asking. Your OS account permissions still apply."
+      : "Each saved chat keeps its own selection.";
+  permissionField.append(permissionTitle, permission, permissionHint);
+  form.append(permissionField);
+
   const history = inputFor(
     String(draft.historyLimit),
     (value) => store.updateSettingsDraft({ historyLimit: Number(value) }),

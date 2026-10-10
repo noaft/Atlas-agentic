@@ -5,6 +5,7 @@ export interface ChatComposer {
   element: HTMLFormElement;
   textarea: HTMLTextAreaElement;
   modelHost: HTMLElement;
+  permissionHost: HTMLElement;
   feedbackHost: HTMLElement;
   sendButton: HTMLButtonElement;
   updateState(state: Readonly<ChatState>): void;
@@ -19,6 +20,7 @@ function chatIsBusy(state: Readonly<ChatState>) {
     state.status === "streaming" ||
     state.status === "loading" ||
     state.workspaceBusy ||
+    state.permissionBusy ||
     state.modelListStatus === "saving"
   );
 }
@@ -39,7 +41,7 @@ export function createChatComposer(
     <div class="composer-box">
       <textarea rows="1" aria-label="Message Atlas" data-composer></textarea>
       <div class="composer-controls" data-composer-controls>
-        <div class="model-picker" data-model-picker></div>
+        <div class="composer-pickers"><div class="model-picker" data-model-picker></div><div class="permission-picker" data-permission-picker></div></div>
         <button type="submit" class="send-button" aria-label="Send message" data-send>↑</button>
       </div>
     </div>
@@ -48,6 +50,7 @@ export function createChatComposer(
 
   const textarea = element.querySelector<HTMLTextAreaElement>("[data-composer]")!;
   const modelHost = element.querySelector<HTMLElement>("[data-model-picker]")!;
+  const permissionHost = element.querySelector<HTMLElement>("[data-permission-picker]")!;
   const feedbackHost = element.querySelector<HTMLElement>("[data-model-feedback-host]")!;
   const sendButton = element.querySelector<HTMLButtonElement>("[data-send]")!;
   const note = element.querySelector<HTMLElement>("[data-composer-note]")!;
@@ -95,6 +98,7 @@ export function createChatComposer(
     element,
     textarea,
     modelHost,
+    permissionHost,
     feedbackHost,
     sendButton,
     updateState(state) {

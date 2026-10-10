@@ -1,4 +1,5 @@
 export type MessageRole = "user" | "assistant";
+export type PermissionMode = "ask" | "workspace" | "fullAccess";
 
 export interface Workspace {
   path: string;
@@ -13,6 +14,7 @@ export interface ConversationMetadata {
   updatedAt: string;
   messageCount: number;
   workspace: Workspace | null;
+  permissionMode: PermissionMode | null;
 }
 
 export interface ConversationMessage {
@@ -37,10 +39,25 @@ export interface ModelInfo {
   name: string;
 }
 
-export type ChatEvent = {
-  event: "delta";
-  data: { content: string };
-};
+export interface AuthorizationRequest {
+  id: string;
+  tool: string;
+  arguments: string;
+  reason: string;
+}
+
+export type ChatEvent =
+  | { event: "delta"; data: { content: string } }
+  | { event: "approvalRequested"; data: { request: AuthorizationRequest } }
+  | { event: "approvalWaiting"; data: { id: string } }
+  | { event: "toolStarted"; data: { tool: string } }
+  | { event: "toolFinished"; data: { tool: string; success: boolean } };
+
+export interface ToolActivity {
+  id: number;
+  tool: string;
+  status: "running" | "succeeded" | "failed";
+}
 
 export type ChatStatus = "idle" | "loading" | "streaming" | "error";
 export type ConversationListStatus = "idle" | "loading" | "error";
@@ -66,6 +83,10 @@ export interface ChatState {
   listErrorMessage: string | null;
   activeWorkspace: Workspace | null;
   workspaceBusy: boolean;
+  activePermissionMode: PermissionMode;
+  permissionBusy: boolean;
+  pendingApproval: AuthorizationRequest | null;
+  toolActivity: ToolActivity[];
   screen: "chat" | "settings";
   settings: SettingsView | null;
   settingsDraft: SettingsDraft | null;
@@ -96,6 +117,7 @@ export interface SettingsView {
   defaultWorkspace: Workspace | null;
   defaultWorkspaceAutomatic: boolean;
   defaultWorkspaceError: string | null;
+  defaultPermissionMode: PermissionMode;
   environmentOverrides: Array<"apiKey" | "baseUrl" | "model" | "historyLimit">;
 }
 
@@ -106,6 +128,7 @@ export interface SettingsDraft {
   model: string;
   historyLimit: number;
   defaultWorkspace: Workspace | null;
+  defaultPermissionMode: PermissionMode;
 }
 
 export interface SaveSettingsInput {
@@ -115,4 +138,5 @@ export interface SaveSettingsInput {
   model: string;
   historyLimit: number;
   defaultWorkspacePath: string | null;
+  defaultPermissionMode: PermissionMode;
 }

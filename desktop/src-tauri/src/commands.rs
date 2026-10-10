@@ -1,16 +1,21 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{mpsc, Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use atlas_agentic::conversations::{
-    validate_workspace as validate_workspace_path, Conversation, ConversationAskResult,
-    ConversationId, ConversationMessage, ConversationMetadata, ConversationService,
-    ConversationStore, MessageRole,
+    validate_workspace as validate_workspace_path, AskCallbacks, Conversation,
+    ConversationAskResult, ConversationId, ConversationMessage, ConversationMetadata,
+    ConversationService, ConversationStore, MessageRole,
 };
 use atlas_agentic::{
     app::{build_runtime_with_settings, list_available_models_with_settings},
     models::ModelInfo,
+    permissions::{
+        AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolAuthorizer, ToolEvent,
+    },
     settings::{AtlasSettings, EffectiveSettings, SettingField, SettingsStore},
     workspace::automatic_workspace,
     Runtime,
@@ -29,6 +34,7 @@ pub struct DesktopState {
     agent_file: PathBuf,
     runtime_factory: RuntimeFactory,
     automatic_workspace_resolver: AutomaticWorkspaceResolver,
+    pending_approvals: Arc<PendingApprovals>,
 }
 
 impl DesktopState {
@@ -109,6 +115,7 @@ impl DesktopState {
             agent_file,
             runtime_factory,
             automatic_workspace_resolver,
+            pending_approvals: Arc::new(PendingApprovals::default()),
         }
     }
 
@@ -131,6 +138,7 @@ impl DesktopState {
         )
     }
 
+    #[cfg(test)]
     fn ask_with_workspace_and_fallible_sink(
         &self,
         prompt: &str,
@@ -138,15 +146,38 @@ impl DesktopState {
         workspace_path: Option<&Path>,
         on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
     ) -> Result<ConversationAskResultDto, String> {
+        let mut on_tool_event = |_: &ToolEvent| {};
+        self.ask_with_workspace_permission_authorizer_and_fallible_sink(
+            prompt,
+            conversation_id,
+            workspace_path,
+            PermissionMode::Ask,
+            AskCallbacks {
+                authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                on_delta,
+                on_tool_event: &mut on_tool_event,
+            },
+        )
+    }
+
+    fn ask_with_workspace_permission_authorizer_and_fallible_sink(
+        &self,
+        prompt: &str,
+        conversation_id: Option<&ConversationId>,
+        workspace_path: Option<&Path>,
+        permission_mode: PermissionMode,
+        callbacks: AskCallbacks<'_>,
+    ) -> Result<ConversationAskResultDto, String> {
         let effective = self.settings_store.load()?.resolve_from_env()?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
         ConversationService::new(&runtime, &self.store, effective.history_limit)
-            .ask_with_workspace_and_fallible_sink(
+            .ask_with_workspace_permission_authorizer_and_fallible_sink(
                 prompt,
                 conversation_id,
                 Some(workspace.as_path()),
-                on_delta,
+                permission_mode,
+                callbacks,
             )
             .map(Into::into)
     }
@@ -234,6 +265,7 @@ pub struct ConversationMetadataDto {
     pub updated_at: String,
     pub message_count: usize,
     pub workspace: Option<WorkspaceDto>,
+    pub permission_mode: Option<PermissionMode>,
 }
 
 impl From<ConversationMetadata> for ConversationMetadataDto {
@@ -246,6 +278,7 @@ impl From<ConversationMetadata> for ConversationMetadataDto {
             updated_at: metadata.updated_at.to_rfc3339(),
             message_count: metadata.message_count,
             workspace: metadata.workspace_path.as_deref().map(workspace_dto),
+            permission_mode: metadata.permission_mode,
         }
     }
 }
@@ -314,6 +347,127 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
     Delta { content: String },
+    ApprovalRequested { request: AuthorizationRequest },
+    ApprovalWaiting { id: String },
+    ToolStarted { tool: String },
+    ToolFinished { tool: String, success: bool },
+}
+
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[derive(Default)]
+struct PendingApprovals {
+    senders: Mutex<HashMap<String, mpsc::Sender<AuthorizationDecision>>>,
+}
+
+impl PendingApprovals {
+    fn register(&self, id: &str) -> Result<mpsc::Receiver<AuthorizationDecision>, String> {
+        let (sender, receiver) = mpsc::channel();
+        let mut senders = self
+            .senders
+            .lock()
+            .map_err(|_| "tool approval registry lock was poisoned".to_string())?;
+        match senders.entry(id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(format!("tool approval is already pending: {id}"));
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(sender);
+            }
+        }
+        Ok(receiver)
+    }
+
+    fn resolve(&self, id: &str, decision: AuthorizationDecision) -> Result<(), String> {
+        let sender = self
+            .senders
+            .lock()
+            .map_err(|_| "tool approval registry lock was poisoned".to_string())?
+            .remove(id)
+            .ok_or_else(|| format!("unknown or expired tool approval: {id}"))?;
+        sender
+            .send(decision)
+            .map_err(|_| format!("tool approval is no longer active: {id}"))
+    }
+
+    fn cancel(&self, id: &str) {
+        if let Ok(mut senders) = self.senders.lock() {
+            senders.remove(id);
+        }
+    }
+
+    fn cancel_all(&self) -> Result<(), String> {
+        self.senders
+            .lock()
+            .map_err(|_| "tool approval registry lock was poisoned".to_string())?
+            .clear();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn wait(
+        &self,
+        id: &str,
+        receiver: mpsc::Receiver<AuthorizationDecision>,
+        timeout: Duration,
+    ) -> Result<AuthorizationDecision, String> {
+        let result = receiver.recv_timeout(timeout);
+        self.cancel(id);
+        match result {
+            Ok(decision) => Ok(decision),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("tool approval timed out: {id}")),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(format!("tool approval was cancelled: {id}"))
+            }
+        }
+    }
+}
+
+struct DesktopAuthorizer {
+    approvals: Arc<PendingApprovals>,
+    channel: Channel<ChatEvent>,
+}
+
+impl ToolAuthorizer for DesktopAuthorizer {
+    fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
+        let receiver = self.approvals.register(&request.id)?;
+        if let Err(error) = self.channel.send(ChatEvent::ApprovalRequested {
+            request: request.clone(),
+        }) {
+            self.approvals.cancel(&request.id);
+            return Err(format!("failed to send tool approval request: {error}"));
+        }
+        let deadline = Instant::now() + APPROVAL_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.approvals.cancel(&request.id);
+                return Err(format!("tool approval timed out: {}", request.id));
+            }
+            match receiver.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(decision) => {
+                    self.approvals.cancel(&request.id);
+                    return Ok(decision);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.approvals.cancel(&request.id);
+                    return Err(format!("tool approval was cancelled: {}", request.id));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self
+                        .channel
+                        .send(ChatEvent::ApprovalWaiting {
+                            id: request.id.clone(),
+                        })
+                        .is_err()
+                    {
+                        self.approvals.cancel(&request.id);
+                        return Err(format!("tool approval channel closed: {}", request.id));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -327,6 +481,7 @@ pub struct SettingsViewDto {
     pub default_workspace: Option<WorkspaceDto>,
     pub default_workspace_automatic: bool,
     pub default_workspace_error: Option<String>,
+    pub default_permission_mode: PermissionMode,
     pub environment_overrides: Vec<&'static str>,
 }
 
@@ -339,6 +494,7 @@ pub struct SaveSettingsInput {
     pub model: String,
     pub history_limit: usize,
     pub default_workspace_path: Option<String>,
+    pub default_permission_mode: PermissionMode,
 }
 
 fn load_settings_impl(state: &DesktopState) -> Result<SettingsViewDto, String> {
@@ -403,6 +559,7 @@ fn settings_view(
         default_workspace,
         default_workspace_automatic,
         default_workspace_error,
+        default_permission_mode: saved.permissions.default_mode,
         environment_overrides,
     }
 }
@@ -432,6 +589,7 @@ fn save_settings_impl(
             .map(Path::new)
             .map(validate_workspace_path)
             .transpose()?;
+        saved.permissions.default_mode = input.default_permission_mode;
         Ok(())
     })?;
     load_settings_impl(state)
@@ -479,6 +637,17 @@ fn assign_workspace_impl(
     state
         .store
         .assign_workspace(&parse_id(id)?, Path::new(path))
+        .map(Into::into)
+}
+
+fn set_permission_mode_impl(
+    id: &str,
+    permission_mode: PermissionMode,
+    state: &DesktopState,
+) -> Result<ConversationMetadataDto, String> {
+    state
+        .store
+        .set_permission_mode(&parse_id(id)?, permission_mode)
         .map(Into::into)
 }
 
@@ -584,23 +753,72 @@ pub fn assign_conversation_workspace(
     assign_workspace_impl(&id, &path, &state)
 }
 
-async fn ask_in_background<F>(
+#[tauri::command]
+pub fn set_conversation_permission_mode(
+    id: String,
+    permission_mode: PermissionMode,
+    state: State<'_, DesktopState>,
+) -> Result<ConversationMetadataDto, String> {
+    set_permission_mode_impl(&id, permission_mode, &state)
+}
+
+#[tauri::command]
+pub fn resolve_tool_approval(
+    id: String,
+    allow: bool,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    state.pending_approvals.resolve(
+        &id,
+        if allow {
+            AuthorizationDecision::Allow
+        } else {
+            AuthorizationDecision::Deny
+        },
+    )
+}
+
+#[tauri::command]
+pub fn cancel_tool_approvals(state: State<'_, DesktopState>) -> Result<(), String> {
+    state.pending_approvals.cancel_all()
+}
+
+struct DesktopAskCallbacks<A, F, E> {
+    authorizer: A,
+    on_delta: F,
+    on_tool_event: E,
+}
+
+async fn ask_in_background<A, F, E>(
     prompt: String,
     conversation_id: Option<String>,
     workspace_path: Option<String>,
+    permission_mode: PermissionMode,
     state: DesktopState,
-    mut on_delta: F,
+    callbacks: DesktopAskCallbacks<A, F, E>,
 ) -> Result<ConversationAskResultDto, String>
 where
+    A: ToolAuthorizer + Send + 'static,
     F: FnMut(&str) -> Result<(), String> + Send + 'static,
+    E: FnMut(&ToolEvent) + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(move || {
+        let DesktopAskCallbacks {
+            authorizer,
+            mut on_delta,
+            mut on_tool_event,
+        } = callbacks;
         let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
-        state.ask_with_workspace_and_fallible_sink(
+        state.ask_with_workspace_permission_authorizer_and_fallible_sink(
             &prompt,
             conversation_id.as_ref(),
             workspace_path.as_deref().map(Path::new),
-            &mut on_delta,
+            permission_mode,
+            AskCallbacks {
+                authorizer: &authorizer,
+                on_delta: &mut on_delta,
+                on_tool_event: &mut on_tool_event,
+            },
         )
     })
     .await
@@ -612,20 +830,41 @@ pub async fn ask(
     prompt: String,
     conversation_id: Option<String>,
     workspace_path: Option<String>,
+    permission_mode: PermissionMode,
     channel: Channel<ChatEvent>,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationAskResultDto, String> {
+    let authorizer = DesktopAuthorizer {
+        approvals: state.pending_approvals.clone(),
+        channel: channel.clone(),
+    };
+    let delta_channel = channel.clone();
     ask_in_background(
         prompt,
         conversation_id,
         workspace_path,
+        permission_mode,
         state.inner().clone(),
-        move |delta| {
-            channel
-                .send(ChatEvent::Delta {
-                    content: delta.to_string(),
-                })
-                .map_err(|error| format!("failed to stream response: {error}"))
+        DesktopAskCallbacks {
+            authorizer,
+            on_delta: move |delta: &str| {
+                delta_channel
+                    .send(ChatEvent::Delta {
+                        content: delta.to_string(),
+                    })
+                    .map_err(|error| format!("failed to stream response: {error}"))
+            },
+            on_tool_event: move |event: &ToolEvent| {
+                let event = match event {
+                    ToolEvent::ApprovalRequested { .. } => return,
+                    ToolEvent::Started { tool } => ChatEvent::ToolStarted { tool: tool.clone() },
+                    ToolEvent::Finished { tool, success } => ChatEvent::ToolFinished {
+                        tool: tool.clone(),
+                        success: *success,
+                    },
+                };
+                let _ = channel.send(event);
+            },
         },
     )
     .await
@@ -643,12 +882,16 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc, Mutex, MutexGuard, OnceLock,
         },
+        time::Duration,
     };
 
     use atlas_agentic::{
         agents::{Agent, AgentRegistry, LocalAgent, LocalAgentDefinition},
         conversations::{ConversationId, ConversationMessage, ConversationStore},
         models::deepseek::{DeepSeekConfig, DeepSeekProvider},
+        permissions::{
+            AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolEvent, ToolRisk,
+        },
         settings::{AtlasSettings, SettingsStore},
         tools::ToolDefinition,
         Runtime,
@@ -658,12 +901,92 @@ mod tests {
     use super::{
         ask_in_background, delete_impl, list_impl, list_models_in_background, load_impl,
         load_settings_impl, rename_impl, save_settings_impl, set_model_impl, settings_view,
-        validate_workspace_impl, DesktopState, SaveSettingsInput,
+        validate_workspace_impl, ChatEvent, DesktopAskCallbacks, DesktopState, PendingApprovals,
+        SaveSettingsInput,
     };
 
     fn environment_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn approval_events_serialize_with_the_desktop_contract() {
+        let request = AuthorizationRequest::new(
+            "delete_file",
+            r#"{"path":"note.txt"}"#.to_string(),
+            ToolRisk::Destructive,
+        );
+        let json = serde_json::to_value(ChatEvent::ApprovalRequested {
+            request: request.clone(),
+        })
+        .unwrap();
+
+        assert_eq!(json["event"], "approvalRequested");
+        assert_eq!(json["data"]["request"]["id"], request.id);
+        assert_eq!(json["data"]["request"]["tool"], "delete_file");
+        assert_eq!(
+            serde_json::to_value(ChatEvent::ToolStarted {
+                tool: "delete_file".to_string()
+            })
+            .unwrap()["event"],
+            "toolStarted"
+        );
+    }
+
+    #[test]
+    fn pending_approval_ids_are_single_use_and_time_out_cleanly() {
+        let approvals = PendingApprovals::default();
+        let receiver = approvals.register("first").unwrap();
+        assert!(approvals.register("first").is_err());
+
+        approvals
+            .resolve("first", AuthorizationDecision::Allow)
+            .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_millis(10)).unwrap(),
+            AuthorizationDecision::Allow
+        );
+        assert!(approvals
+            .resolve("first", AuthorizationDecision::Deny)
+            .unwrap_err()
+            .contains("unknown or expired"));
+
+        let receiver = approvals.register("timeout").unwrap();
+        assert!(approvals
+            .wait("timeout", receiver, Duration::from_millis(1))
+            .unwrap_err()
+            .contains("timed out"));
+        assert!(approvals
+            .resolve("timeout", AuthorizationDecision::Allow)
+            .is_err());
+
+        let receiver = approvals.register("cancelled").unwrap();
+        approvals.cancel_all().unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_millis(10)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn permission_mode_updates_only_the_selected_conversation() {
+        let (_data, store, state) = fixture();
+        let first = store.create_turn("first", "answer").unwrap();
+        let second = store.create_turn("second", "answer").unwrap();
+
+        let updated = super::set_permission_mode_impl(
+            &first.id.to_string(),
+            PermissionMode::Workspace,
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(updated.permission_mode, Some(PermissionMode::Workspace));
+        assert_eq!(
+            store.load(&second.id).unwrap().metadata.permission_mode,
+            None
+        );
     }
 
     struct EnvironmentRestore(Vec<(&'static str, Option<OsString>)>);
@@ -1338,8 +1661,13 @@ conversation_title_prompt = "Return a short title."
             "hello".to_string(),
             None,
             Some(data.path().display().to_string()),
+            PermissionMode::Ask,
             state,
-            |_| Ok(()),
+            DesktopAskCallbacks {
+                authorizer: atlas_agentic::permissions::AllowAllAuthorizer,
+                on_delta: |_: &str| Ok(()),
+                on_tool_event: |_: &ToolEvent| {},
+            },
         ))
         .unwrap_err();
 
@@ -1470,6 +1798,7 @@ conversation_title_prompt = "Return a short title."
             model: saved.deepseek.model.clone(),
             history_limit: saved.conversation.history_limit,
             default_workspace_path: None,
+            default_permission_mode: PermissionMode::Ask,
         };
 
         save_settings_impl(input.clone(), &state).unwrap();
@@ -1512,6 +1841,7 @@ conversation_title_prompt = "Return a short title."
                 model: defaults.deepseek.model,
                 history_limit: defaults.conversation.history_limit,
                 default_workspace_path: None,
+                default_permission_mode: PermissionMode::Ask,
             },
             &state,
         );
@@ -1563,6 +1893,7 @@ conversation_title_prompt = "Return a short title."
                 model: saved.deepseek.model.clone(),
                 history_limit: 0,
                 default_workspace_path: None,
+                default_permission_mode: PermissionMode::Ask,
             },
             &state,
         )
@@ -1729,6 +2060,7 @@ conversation_title_prompt = "Return a short title."
                 model: "deepseek-flash".to_string(),
                 history_limit: 40,
                 default_workspace_path: None,
+                default_permission_mode: PermissionMode::Ask,
             },
             &state,
         )

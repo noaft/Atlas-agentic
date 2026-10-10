@@ -6,8 +6,16 @@ import { mountChat } from "./chat-view";
 const root = document.querySelector<HTMLElement>("#app");
 
 if (root) {
-  const store = new ChatStore(createTauriAtlasApi());
+  const api = createTauriAtlasApi();
+  const store = new ChatStore(api);
   const unmount = mountChat(root, store);
   void store.initialize();
-  window.addEventListener("beforeunload", unmount, { once: true });
+  window.addEventListener(
+    "beforeunload",
+    () => {
+      void api.cancelToolApprovals();
+      unmount();
+    },
+    { once: true },
+  );
 }

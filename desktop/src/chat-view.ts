@@ -23,6 +23,7 @@ function chatIsBusy(state: Readonly<ChatState>) {
     state.status === "streaming" ||
     state.status === "loading" ||
     state.workspaceBusy ||
+    state.permissionBusy ||
     state.modelListStatus === "saving"
   );
 }
@@ -121,6 +122,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = chatIsBusy(state);
+    const navigationBusy = isBusy && !state.pendingApproval;
 
     shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
     sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
@@ -158,7 +160,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     workspaceAction.addEventListener("click", chooseWorkspace);
 
     const newChat = sidebar.querySelector<HTMLButtonElement>("[data-new-chat]")!;
-    newChat.disabled = isBusy;
+    newChat.disabled = navigationBusy;
     newChat.addEventListener("click", async () => {
       actionsOpen = false;
       renameOpen = false;
@@ -216,7 +218,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         for (const conversation of group.conversations) {
           const item = button(conversation.title, "conversation-item");
           item.dataset.conversationId = conversation.id;
-          item.disabled = isBusy;
+          item.disabled = navigationBusy;
           item.classList.toggle("active", conversation.id === state.activeConversationId);
           item.addEventListener("click", async () => {
             actionsOpen = false;
@@ -320,6 +322,30 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     notices.replaceChildren();
+    if (state.pendingApproval) {
+      const approval = document.createElement("section");
+      approval.className = "approval-card";
+      approval.dataset.approvalId = state.pendingApproval.id;
+      approval.setAttribute("role", "alertdialog");
+      approval.setAttribute("aria-label", `Allow ${state.pendingApproval.tool}?`);
+      const title = document.createElement("strong");
+      title.textContent = `Allow ${state.pendingApproval.tool}?`;
+      const reason = document.createElement("p");
+      reason.textContent = state.pendingApproval.reason;
+      const argumentsText = document.createElement("code");
+      argumentsText.textContent = state.pendingApproval.arguments;
+      const actions = document.createElement("div");
+      actions.className = "approval-actions";
+      const deny = button("Deny", "secondary-button");
+      deny.dataset.denyApproval = "";
+      deny.addEventListener("click", () => void store.resolveToolApproval(false));
+      const allow = button("Allow once", "primary-button");
+      allow.dataset.allowApproval = "";
+      allow.addEventListener("click", () => void store.resolveToolApproval(true));
+      actions.append(deny, allow);
+      approval.append(title, reason, argumentsText, actions);
+      notices.append(approval);
+    }
     if (state.errorMessage) {
       const error = document.createElement("div");
       error.className = "error-notice";
@@ -332,6 +358,18 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       status.setAttribute("role", "status");
       status.textContent = isStreaming ? "Atlas is responding…" : "Loading conversation…";
       notices.append(status);
+    }
+    if (state.toolActivity.length) {
+      const tools = document.createElement("div");
+      tools.className = "tool-activity";
+      tools.setAttribute("role", "status");
+      for (const activity of state.toolActivity) {
+        const row = document.createElement("span");
+        row.dataset.toolStatus = activity.status;
+        row.textContent = `${activity.tool}: ${activity.status}`;
+        tools.append(row);
+      }
+      notices.append(tools);
     }
 
     messages.replaceChildren();
@@ -364,6 +402,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     composer.modelHost.replaceChildren();
+    composer.permissionHost.replaceChildren();
     composer.feedbackHost.replaceChildren();
     if (state.settings && state.settings.apiKeySource !== "missing") {
       const label = document.createElement("label");
@@ -416,6 +455,35 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         }
         composer.feedbackHost.append(feedback);
       }
+    }
+    const permissionLabel = document.createElement("label");
+    const permissionSelect = document.createElement("select");
+    permissionSelect.dataset.permissionSelect = "";
+    permissionSelect.setAttribute("aria-label", "Tool access");
+    for (const [value, label] of [
+      ["ask", "Ask"],
+      ["workspace", "Workspace"],
+      ["fullAccess", "Full access"],
+    ] as const) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      permissionSelect.append(option);
+    }
+    permissionSelect.value = state.activePermissionMode;
+    permissionSelect.disabled = isBusy || state.permissionBusy;
+    permissionSelect.addEventListener("change", () =>
+      void store.selectPermissionMode(
+        permissionSelect.value as import("./types").PermissionMode,
+      ),
+    );
+    permissionLabel.append(permissionSelect);
+    composer.permissionHost.append(permissionLabel);
+    if (state.activePermissionMode === "fullAccess") {
+      const warning = document.createElement("span");
+      warning.className = "permission-warning";
+      warning.textContent = "No confirmations";
+      composer.permissionHost.append(warning);
     }
     composer.updateState(state);
 

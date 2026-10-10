@@ -9,6 +9,8 @@ import type {
   ConversationMetadata,
   SaveSettingsInput,
   SettingsView,
+  ChatEvent,
+  PermissionMode,
 } from "./types";
 
 const workspace = { path: "/work/atlas", name: "atlas" };
@@ -22,6 +24,7 @@ const settings: SettingsView = {
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
   defaultWorkspaceError: null,
+  defaultPermissionMode: "ask",
   environmentOverrides: [],
 };
 
@@ -52,6 +55,7 @@ const metadata: ConversationMetadata = {
   updatedAt: "2026-10-04T10:00:01Z",
   messageCount: 2,
   workspace,
+  permissionMode: "ask",
 };
 
 const conversation = (title = metadata.title): Conversation => ({
@@ -98,6 +102,9 @@ class ViewApi implements AtlasApi {
   loadSettingsImpl = async () => this.settings;
   chosenWorkspace: string | null = workspace.path;
   fullscreenCalls = 0;
+  eventSink: ((event: ChatEvent) => void) | null = null;
+  approvalResolutions: Array<{ id: string; allow: boolean }> = [];
+  approvalCancellations = 0;
 
   listConversations() {
     return this.list;
@@ -112,10 +119,14 @@ class ViewApi implements AtlasApi {
     prompt: string,
     id: string | null,
     workspacePath: string | null,
-    onDelta: (text: string) => void,
+    _permissionMode: PermissionMode,
+    onEvent: (event: ChatEvent) => void,
   ) {
     this.askCount += 1;
-    return this.askImpl(prompt, id, workspacePath, onDelta);
+    this.eventSink = onEvent;
+    return this.askImpl(prompt, id, workspacePath, (text) =>
+      onEvent({ event: "delta", data: { content: text } }),
+    );
   }
 
   renameConversation(id: string, title: string) {
@@ -158,6 +169,18 @@ class ViewApi implements AtlasApi {
     return { ...metadata, id, workspace: await this.validateWorkspace(path) };
   }
 
+  async setConversationPermissionMode(id: string, permissionMode: PermissionMode) {
+    return { ...metadata, id, permissionMode };
+  }
+
+  async resolveToolApproval(id: string, allow: boolean) {
+    this.approvalResolutions.push({ id, allow });
+  }
+
+  async cancelToolApprovals() {
+    this.approvalCancellations += 1;
+  }
+
   async toggleFullscreen() {
     this.fullscreenCalls += 1;
     return this.fullscreenCalls % 2 === 1;
@@ -184,6 +207,55 @@ function click(root: HTMLElement, selector: string) {
 function composer(root: HTMLElement) {
   return root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
 }
+
+test("composer permission picker shows all modes and warns for full access", async () => {
+  const { root, store } = setup();
+  await store.initialize();
+
+  let select = root.querySelector<HTMLSelectElement>("[data-permission-select]")!;
+  expect([...select.options].map((option) => option.textContent)).toEqual([
+    "Ask",
+    "Workspace",
+    "Full access",
+  ]);
+  select.value = "fullAccess";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await Promise.resolve();
+  select = root.querySelector<HTMLSelectElement>("[data-permission-select]")!;
+  expect(select.value).toBe("fullAccess");
+  expect(root.textContent).toContain("No confirmations");
+});
+
+test("approval card exposes keyboard buttons and sends the selected decision", async () => {
+  const { api, root, store } = setup();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  await store.initialize();
+  store.setDraft("delete note");
+  const sending = store.send();
+  await Promise.resolve();
+
+  api.eventSink!({
+    event: "approvalRequested",
+    data: {
+      request: {
+        id: "approval-1",
+        tool: "delete_file",
+        arguments: '{"path":"note.txt"}',
+        reason: "deletes or overwrites data",
+      },
+    },
+  });
+  expect(root.querySelector("[role=alertdialog]")?.textContent).toContain(
+    "Allow delete_file?",
+  );
+  click(root, "[data-deny-approval]");
+  await Promise.resolve();
+  expect(api.approvalResolutions).toEqual([{ id: "approval-1", allow: false }]);
+
+  pending.resolve({ answer: "Denied", metadata, created: true });
+  await sending;
+});
 
 function typeRawText(input: HTMLTextAreaElement, text: string) {
   for (const character of text) {

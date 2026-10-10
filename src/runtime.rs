@@ -1,7 +1,13 @@
 use serde::Serialize;
 
 use crate::{
-    agent_output::AgentOutput, agents::AgentRegistry, conversations::ConversationMessage,
+    agent_output::AgentOutput,
+    agents::AgentRegistry,
+    conversations::ConversationMessage,
+    permissions::{
+        requires_confirmation, AuthorizationDecision, AuthorizationRequest, MissingAuthorizer,
+        PermissionMode, ToolAuthorizer, ToolEvent,
+    },
     tools::ToolRegistry,
 };
 
@@ -70,6 +76,25 @@ impl Runtime {
         history: &[ConversationMessage],
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
+        self.ask_stream_with_history_and_authorization(
+            prompt,
+            history,
+            PermissionMode::Ask,
+            &MissingAuthorizer,
+            on_delta,
+            &mut |_| {},
+        )
+    }
+
+    pub fn ask_stream_with_history_and_authorization(
+        &self,
+        prompt: &str,
+        history: &[ConversationMessage],
+        permission_mode: PermissionMode,
+        authorizer: &dyn ToolAuthorizer,
+        on_delta: &mut dyn FnMut(&str),
+        on_tool_event: &mut dyn FnMut(&ToolEvent),
+    ) -> Result<String, String> {
         let agent = self
             .agents
             .default_agent()
@@ -115,11 +140,33 @@ impl Runtime {
                         ));
                     }
 
+                    let (risk, arguments) = self.tools.authorization(&tool, &args)?;
+                    if requires_confirmation(permission_mode, risk) {
+                        let request = AuthorizationRequest::new(&tool, arguments, risk);
+                        on_tool_event(&ToolEvent::ApprovalRequested {
+                            request: request.clone(),
+                        });
+                        if authorizer.authorize(&request)? == AuthorizationDecision::Deny {
+                            tool_results.push(ToolExecutionRecord {
+                                tool: tool.clone(),
+                                args,
+                                output: format!("Tool {tool} was denied by the user."),
+                            });
+                            input = render_tool_continuation(prompt, &tool_results)?;
+                            continue;
+                        }
+                    }
+                    on_tool_event(&ToolEvent::Started { tool: tool.clone() });
                     let tool_call = AgentOutput::ToolCall {
                         tool: tool.clone(),
                         args: args.clone(),
                     };
-                    let result = self.tools.execute(&tool_call)?;
+                    let result = self.tools.execute(&tool_call);
+                    on_tool_event(&ToolEvent::Finished {
+                        tool: tool.clone(),
+                        success: result.is_ok(),
+                    });
+                    let result = result?;
                     tool_results.push(ToolExecutionRecord {
                         tool,
                         args,

@@ -39,9 +39,11 @@ from an automatic Atlas home starting directory, while an optional project folde
 can provide task-specific context.
 
 The starting folder organizes tools and conversations; it does not confine shell
-access. On supported Unix-like systems, `exec_command` can reach other locations
-allowed by the current user's OS permissions. Structured file helpers remain
-scoped to the selected starting folder.
+access. On Linux, WSL, macOS, and Windows, `exec_command` can reach other
+locations allowed by the current user's OS permissions. Structured file helpers
+remain scoped to the selected starting folder. Per-conversation permission modes
+decide when Atlas must ask before changing files, launching applications, or
+executing commands; they do not grant OS privileges.
 
 The current repo starts with a Rust CLI because it is the simplest runtime foundation. The CLI lets us build and test the agent core before adding the desktop interface.
 

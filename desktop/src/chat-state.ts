@@ -6,6 +6,7 @@ import type {
   ConversationMetadata,
   DisplayMessage,
   ModelInfo,
+  PermissionMode,
   SettingsDraft,
   SettingsView,
   Workspace,
@@ -44,6 +45,10 @@ const initialState = (): ChatState => ({
   activeConversationId: null,
   activeWorkspace: null,
   workspaceBusy: false,
+  activePermissionMode: "ask",
+  permissionBusy: false,
+  pendingApproval: null,
+  toolActivity: [],
   messages: [],
   draftText: "",
   status: "idle",
@@ -84,6 +89,7 @@ const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
   model: settings.model,
   historyLimit: settings.historyLimit,
   defaultWorkspace: settings.defaultWorkspaceAutomatic ? null : settings.defaultWorkspace,
+  defaultPermissionMode: settings.defaultPermissionMode,
 });
 
 const usableDefaultWorkspace = (settings: SettingsView | null): Workspace | null =>
@@ -154,6 +160,9 @@ export class ChatStore {
       const settings = await this.api.loadSettings();
       if (token !== this.settingsToken) return;
       this.update({ settings, settingsStatus: "idle", settingsErrorMessage: null });
+      if (!this.state.activeConversationId && this.state.messages.length === 0) {
+        this.update({ activePermissionMode: settings.defaultPermissionMode });
+      }
       if (!this.state.activeWorkspace) {
         const active = this.state.activeConversationId
           ? this.state.conversations.find(
@@ -185,7 +194,9 @@ export class ChatStore {
   }
 
   async newChat(): Promise<void> {
-    if (this.state.status === "streaming" || this.state.workspaceBusy) return;
+    if (this.state.status === "streaming" && !this.state.pendingApproval) return;
+    if (this.state.workspaceBusy) return;
+    if (this.state.pendingApproval) await this.api.cancelToolApprovals();
     this.selectionToken += 1;
     this.askToken += 1;
     this.mutationToken += 1;
@@ -195,6 +206,10 @@ export class ChatStore {
       screen: "chat",
       activeConversationId: null,
       activeWorkspace: null,
+      activePermissionMode: this.state.settings?.defaultPermissionMode ?? "ask",
+      permissionBusy: false,
+      pendingApproval: null,
+      toolActivity: [],
       messages: [],
       draftText: "",
       status: "idle",
@@ -205,7 +220,9 @@ export class ChatStore {
   }
 
   async selectConversation(id: string): Promise<void> {
-    if (this.state.status === "streaming" || this.state.workspaceBusy) return;
+    if (this.state.status === "streaming" && !this.state.pendingApproval) return;
+    if (this.state.workspaceBusy) return;
+    if (this.state.pendingApproval) await this.api.cancelToolApprovals();
     const token = ++this.selectionToken;
     this.workspaceToken += 1;
     this.mutationToken += 1;
@@ -218,6 +235,11 @@ export class ChatStore {
         activeConversationId: conversation.metadata.id,
         activeWorkspace:
           conversation.metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
+        activePermissionMode:
+          conversation.metadata.permissionMode ?? "ask",
+        permissionBusy: false,
+        pendingApproval: null,
+        toolActivity: [],
         messages: conversation.messages.map(displaySavedMessage),
         status: "idle",
         errorMessage: null,
@@ -289,6 +311,7 @@ export class ChatStore {
       this.state.status === "streaming" ||
       this.state.status === "loading" ||
       this.state.workspaceBusy ||
+      this.state.permissionBusy ||
       this.state.modelListStatus === "saving"
     )
       return;
@@ -301,6 +324,7 @@ export class ChatStore {
     }
     const token = ++this.askToken;
     const conversationId = this.state.activeConversationId;
+    const permissionMode = this.state.activePermissionMode;
     const stableMessages = this.state.messages.filter(
       (message) => message.delivery !== "failed",
     );
@@ -322,13 +346,16 @@ export class ChatStore {
       draftText: "",
       status: "streaming",
       errorMessage: null,
+      pendingApproval: null,
+      toolActivity: [],
     });
     try {
       const completed = await this.api.ask(
         prompt,
         conversationId,
         conversationId ? null : workspace.path,
-        (delta) => this.appendDelta(token, delta),
+        permissionMode,
+        (event) => this.handleChatEvent(token, event),
       );
       if (token !== this.askToken) return;
       const messages = this.state.messages.map((message, index, all) => ({
@@ -345,9 +372,11 @@ export class ChatStore {
         conversations: moveToTop(this.state.conversations, completed.metadata),
         activeConversationId: completed.metadata.id,
         activeWorkspace: completed.metadata.workspace ?? workspace,
+        activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
         messages,
         status: "idle",
         errorMessage: null,
+        pendingApproval: null,
       });
     } catch (error) {
       if (token !== this.askToken) return;
@@ -360,7 +389,52 @@ export class ChatStore {
         draftText: this.state.draftText || prompt,
         status: "error",
         errorMessage: errorMessage(error),
+        pendingApproval: null,
       });
+    }
+  }
+
+  async selectPermissionMode(permissionMode: PermissionMode): Promise<void> {
+    if (
+      permissionMode === this.state.activePermissionMode ||
+      this.state.status === "streaming" ||
+      this.state.status === "loading" ||
+      this.state.permissionBusy
+    )
+      return;
+    const id = this.state.activeConversationId;
+    if (!id) {
+      this.update({ activePermissionMode: permissionMode });
+      return;
+    }
+    const token = ++this.mutationToken;
+    this.update({ permissionBusy: true, errorMessage: null });
+    try {
+      const metadata = await this.api.setConversationPermissionMode(id, permissionMode);
+      if (token !== this.mutationToken || id !== this.state.activeConversationId) return;
+      this.update({
+        activePermissionMode: metadata.permissionMode ?? permissionMode,
+        conversations: moveToTop(this.state.conversations, metadata),
+        permissionBusy: false,
+      });
+    } catch (error) {
+      if (token !== this.mutationToken) return;
+      this.update({ permissionBusy: false, errorMessage: errorMessage(error) });
+    }
+  }
+
+  async resolveToolApproval(allow: boolean): Promise<void> {
+    const approval = this.state.pendingApproval;
+    if (!approval) return;
+    try {
+      await this.api.resolveToolApproval(approval.id, allow);
+      if (this.state.pendingApproval?.id === approval.id) {
+        this.update({ pendingApproval: null });
+      }
+    } catch (error) {
+      if (this.state.pendingApproval?.id === approval.id) {
+        this.update({ errorMessage: errorMessage(error) });
+      }
     }
   }
 
@@ -441,6 +515,7 @@ export class ChatStore {
         model: draft.model,
         historyLimit: draft.historyLimit,
         defaultWorkspacePath: draft.defaultWorkspace?.path ?? null,
+        defaultPermissionMode: draft.defaultPermissionMode,
       });
       if (token !== this.settingsToken) return;
       const nextDefault = usableDefaultWorkspace(settings);
@@ -599,6 +674,10 @@ export class ChatStore {
         ),
         activeConversationId: null,
         activeWorkspace: usableDefaultWorkspace(this.state.settings),
+        activePermissionMode: this.state.settings?.defaultPermissionMode ?? "ask",
+        permissionBusy: false,
+        pendingApproval: null,
+        toolActivity: [],
         messages: [],
         draftText: "",
         status: "idle",
@@ -625,6 +704,44 @@ export class ChatStore {
     if (!last || last.role !== "assistant" || last.delivery !== "pending") return;
     messages[messages.length - 1] = { ...last, content: last.content + delta };
     this.update({ messages });
+  }
+
+  private handleChatEvent(token: number, event: import("./types").ChatEvent): void {
+    if (token !== this.askToken || this.state.status !== "streaming") return;
+    if (event.event === "delta") {
+      this.appendDelta(token, event.data.content);
+      return;
+    }
+    if (event.event === "approvalRequested") {
+      this.update({ pendingApproval: event.data.request });
+      return;
+    }
+    if (event.event === "approvalWaiting") return;
+    if (event.event === "toolStarted") {
+      this.update({
+        toolActivity: [
+          ...this.state.toolActivity,
+          { id: this.state.toolActivity.length + 1, tool: event.data.tool, status: "running" },
+        ],
+      });
+      return;
+    }
+    const activities = [...this.state.toolActivity];
+    let index = -1;
+    for (let candidate = activities.length - 1; candidate >= 0; candidate -= 1) {
+      const activity = activities[candidate];
+      if (activity.tool === event.data.tool && activity.status === "running") {
+        index = candidate;
+        break;
+      }
+    }
+    if (index >= 0) {
+      activities[index] = {
+        ...activities[index],
+        status: event.data.success ? "succeeded" : "failed",
+      };
+    }
+    this.update({ toolActivity: activities });
   }
 
   private update(patch: Partial<ChatState>): void {

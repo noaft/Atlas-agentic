@@ -42,6 +42,9 @@ pub fn run() {
             commands::set_model,
             commands::validate_workspace,
             commands::assign_conversation_workspace,
+            commands::set_conversation_permission_mode,
+            commands::resolve_tool_approval,
+            commands::cancel_tool_approvals,
             commands::ask
         ])
         .run(tauri::generate_context!())

@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     fs, io,
     rc::Rc,
@@ -15,9 +15,53 @@ use atlas_agentic::{
         ConversationId, ConversationMessage, ConversationService, ConversationStore, MessageRole,
     },
     models::{ModelProvider, ModelRequest},
-    tools::{PwdTool, ToolRegistry},
+    permissions::{
+        AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolAuthorizer, ToolRisk,
+    },
+    tools::{PwdTool, Tool, ToolDefinition, ToolRegistry, ToolResult},
     Runtime,
 };
+
+struct CountingRiskyTool {
+    executions: Rc<Cell<usize>>,
+}
+
+impl Tool for CountingRiskyTool {
+    fn name(&self) -> &str {
+        "risky"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "test tool".to_string(),
+            input_schema: serde_json::json!({"type":"object"}),
+        }
+    }
+
+    fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
+        Ok(ToolRisk::ModifyWorkspace)
+    }
+
+    fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
+        self.executions.set(self.executions.get() + 1);
+        Ok(ToolResult {
+            message: "executed".to_string(),
+        })
+    }
+}
+
+struct FixedAuthorizer {
+    decision: AuthorizationDecision,
+    calls: Cell<usize>,
+}
+
+impl ToolAuthorizer for FixedAuthorizer {
+    fn authorize(&self, _request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(self.decision)
+    }
+}
 
 #[derive(Debug)]
 struct Request {
@@ -296,6 +340,127 @@ fn successful_first_turn_persists_the_selected_workspace() {
     assert_eq!(
         result.metadata.workspace_path,
         Some(workspace.canonicalize().unwrap())
+    );
+}
+
+#[test]
+fn successful_first_turn_persists_permission_but_model_failure_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let (first_runtime, _) = runtime(&store, vec![Response::success(vec!["answer"])], Ok("title"));
+
+    let result = ConversationService::new(&first_runtime, &store, 40)
+        .ask_with_workspace_and_permission(
+            "first input",
+            None,
+            None,
+            PermissionMode::Workspace,
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.metadata.permission_mode,
+        Some(PermissionMode::Workspace)
+    );
+
+    let failed_store = ConversationStore::at(temp.path().join("failed"));
+    let (failed_runtime, _) = runtime(&failed_store, vec![Response::failure()], Ok("unused"));
+    assert!(ConversationService::new(&failed_runtime, &failed_store, 40)
+        .ask_with_workspace_and_permission(
+            "first input",
+            None,
+            None,
+            PermissionMode::FullAccess,
+            &mut |_| {},
+        )
+        .is_err());
+    assert!(failed_store.list().unwrap().is_empty());
+}
+
+#[test]
+fn saved_permission_is_authoritative_and_legacy_chat_always_defaults_to_ask() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let saved = store
+        .create_turn_with_workspace_and_permission(
+            "old",
+            "answer",
+            None,
+            Some(PermissionMode::FullAccess),
+        )
+        .unwrap();
+    let executions = Rc::new(Cell::new(0));
+    let (saved_runtime, _) = runtime(
+        &store,
+        vec![
+            Response::success(vec![r#"{"type":"tool_call","tool":"risky","args":{}}"#]),
+            Response::success(vec![r#"{"type":"final","content":"done"}"#]),
+        ],
+        Ok("unused"),
+    );
+    let saved_runtime =
+        saved_runtime.with_tools(ToolRegistry::new(vec![Box::new(CountingRiskyTool {
+            executions: Rc::clone(&executions),
+        })]));
+    let authorizer = FixedAuthorizer {
+        decision: AuthorizationDecision::Deny,
+        calls: Cell::new(0),
+    };
+
+    ConversationService::new(&saved_runtime, &store, 40)
+        .ask_with_permission_authorizer(
+            "continue",
+            Some(&saved.id),
+            PermissionMode::FullAccess,
+            &authorizer,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(authorizer.calls.get(), 0);
+    assert_eq!(executions.get(), 1);
+    assert_eq!(
+        store.load(&saved.id).unwrap().metadata.permission_mode,
+        Some(PermissionMode::FullAccess)
+    );
+
+    let legacy = store.create_turn("legacy", "answer").unwrap();
+    let executions = Rc::new(Cell::new(0));
+    let (legacy_runtime, _) = runtime(
+        &store,
+        vec![
+            Response::success(vec![r#"{"type":"tool_call","tool":"risky","args":{}}"#]),
+            Response::success(vec![r#"{"type":"final","content":"denied"}"#]),
+        ],
+        Ok("unused"),
+    );
+    let legacy_runtime =
+        legacy_runtime.with_tools(ToolRegistry::new(vec![Box::new(CountingRiskyTool {
+            executions: Rc::clone(&executions),
+        })]));
+    let authorizer = FixedAuthorizer {
+        decision: AuthorizationDecision::Deny,
+        calls: Cell::new(0),
+    };
+
+    ConversationService::new(&legacy_runtime, &store, 40)
+        .ask_with_permission_authorizer(
+            "continue",
+            Some(&legacy.id),
+            PermissionMode::FullAccess,
+            &authorizer,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(authorizer.calls.get(), 1);
+    assert_eq!(executions.get(), 0);
+    assert_eq!(
+        store.load(&legacy.id).unwrap().metadata.permission_mode,
+        Some(PermissionMode::Ask)
     );
 }
 

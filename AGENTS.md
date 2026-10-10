@@ -54,15 +54,27 @@ The built-in runtime tools are:
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
+- `search_files`: search workspace filenames and UTF-8 contents
 - `create_file`: safely create a new file inside the workspace
-- `exec_command` (Unix-like systems): execute an unrestricted shell command from the workspace
+- `create_directory`: create directories inside the workspace
+- `copy_file`, `move_file`, `delete_file`: manage files inside the workspace
+- `open_file`: open a workspace file with the OS default application
+- `open_application`: launch an application
+- `exec_command`: execute an unrestricted platform shell command from the workspace
 
 The displayed workspace is a starting directory, not a shell sandbox.
-`exec_command` is available on Linux, WSL, and macOS and is intentionally
+`exec_command` is available on Linux, WSL, macOS, and Windows and is intentionally
 unrestricted. It supports shell operators, pipes, redirects, and paths outside
 the starting folder, and it runs with the same permissions as the Atlas process.
 The structured file helpers remain workspace-scoped. The command's default
 timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
+
+Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
+read-only tools automatically. Workspace also permits non-destructive structured
+workspace changes. Destructive actions, launches, and commands still require an
+approval in Workspace mode. Full access skips Atlas confirmations but never
+elevates beyond the Atlas process's OS-user permissions. The Settings default
+applies to new drafts; a saved conversation stores and restores its own mode.
 
 ## Configure and Run
 

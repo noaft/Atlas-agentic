@@ -12,6 +12,8 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::permissions::PermissionMode;
+
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
@@ -89,6 +91,16 @@ impl ConversationStore {
         assistant: &str,
         workspace: Option<&Path>,
     ) -> Result<ConversationMetadata, String> {
+        self.create_turn_with_workspace_and_permission(user, assistant, workspace, None)
+    }
+
+    pub fn create_turn_with_workspace_and_permission(
+        &self,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+    ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let workspace_path = workspace.map(validate_workspace).transpose()?;
@@ -134,6 +146,7 @@ impl ConversationStore {
                 updated_at: now,
                 message_count: messages.len(),
                 workspace_path,
+                permission_mode,
             };
             index.conversations.push(metadata.clone());
             if let Err(error) = self.write_index(&index) {
@@ -166,6 +179,16 @@ impl ConversationStore {
         })
     }
 
+    pub fn set_permission_mode(
+        &self,
+        id: &ConversationId,
+        permission_mode: PermissionMode,
+    ) -> Result<ConversationMetadata, String> {
+        self.update_metadata(id, |metadata| {
+            metadata.permission_mode = Some(permission_mode);
+        })
+    }
+
     pub fn append_turn(
         &self,
         id: &ConversationId,
@@ -181,6 +204,19 @@ impl ConversationStore {
         user: &str,
         assistant: &str,
         workspace: Option<&Path>,
+    ) -> Result<ConversationMetadata, String> {
+        self.append_turn_with_workspace_and_permission_if_missing(
+            id, user, assistant, workspace, None,
+        )
+    }
+
+    pub fn append_turn_with_workspace_and_permission_if_missing(
+        &self,
+        id: &ConversationId,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
@@ -212,6 +248,9 @@ impl ConversationStore {
             let metadata = &mut index.conversations[position];
             if metadata.workspace_path.is_none() {
                 metadata.workspace_path = workspace_path;
+            }
+            if metadata.permission_mode.is_none() {
+                metadata.permission_mode = permission_mode;
             }
             metadata.message_count = existing_messages.len() + messages.len();
             metadata.updated_at = now;

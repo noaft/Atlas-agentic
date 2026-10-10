@@ -3,7 +3,7 @@ mod store;
 mod title;
 mod types;
 
-pub use service::{ConversationAskResult, ConversationService};
+pub use service::{AskCallbacks, ConversationAskResult, ConversationService};
 pub use store::{validate_workspace, ConversationStore};
 pub use title::sanitize_title;
 pub use types::{

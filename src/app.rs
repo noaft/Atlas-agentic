@@ -7,11 +7,15 @@ use crate::{
         ModelInfo, ModelProvider,
     },
     settings::{EffectiveSettings, SettingsStore},
-    tools::{CreateFileTool, CurrentTimeTool, ListDirTool, PwdTool, ReadFileTool, ToolRegistry},
+    tools::{
+        CopyFileTool, CreateDirectoryTool, CreateFileTool, CurrentTimeTool, DeleteFileTool,
+        ListDirTool, MoveFileTool, OpenApplicationTool, OpenFileTool, PwdTool, ReadFileTool,
+        SearchFilesTool, ToolRegistry,
+    },
     Runtime,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::tools::ExecCommandTool;
 
 pub fn build_runtime(workspace_root: &Path, agent_file: &Path) -> Result<Runtime, String> {
@@ -45,9 +49,16 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(ListDirTool::new(workspace_root)),
         Box::new(ReadFileTool::new(workspace_root)),
         Box::new(CreateFileTool::new(workspace_root)),
+        Box::new(CreateDirectoryTool::new(workspace_root)),
+        Box::new(CopyFileTool::new(workspace_root)),
+        Box::new(MoveFileTool::new(workspace_root)),
+        Box::new(DeleteFileTool::new(workspace_root)),
+        Box::new(SearchFilesTool::new(workspace_root)),
+        Box::new(OpenFileTool::new(workspace_root)),
+        Box::new(OpenApplicationTool::new()),
         Box::new(CurrentTimeTool::new()),
     ]);
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let tools = {
         let mut tools = tools;
         tools.register(Box::new(ExecCommandTool::new(workspace_root)));
@@ -76,15 +87,34 @@ mod tests {
     use super::build_default_tools;
 
     #[test]
-    fn default_tools_include_the_machine_clock() {
+    fn default_tools_include_the_workspace_file_family_and_machine_clock() {
         let workspace = tempfile::tempdir().unwrap();
 
-        let names = build_default_tools(workspace.path())
+        let mut names = build_default_tools(workspace.path())
             .definitions()
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
+        names.sort();
 
-        assert!(names.iter().any(|name| name == "current_time"), "{names:?}");
+        let mut expected = vec![
+            "copy_file",
+            "create_directory",
+            "create_file",
+            "current_time",
+            "delete_file",
+            "ls",
+            "move_file",
+            "open_application",
+            "open_file",
+            "pwd",
+            "read_file",
+            "search_files",
+        ];
+        #[cfg(any(unix, windows))]
+        expected.push("exec_command");
+        expected.sort();
+
+        assert_eq!(names, expected);
     }
 }

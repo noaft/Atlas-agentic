@@ -9,6 +9,8 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::permissions::ToolRisk;
+
 use super::{Tool, ToolDefinition, ToolResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -62,6 +64,15 @@ impl Tool for ExecCommandTool {
                 }
             }),
         }
+    }
+
+    fn risk(&self, args: &serde_json::Value) -> Result<ToolRisk, String> {
+        let args: ExecCommandArgs = serde_json::from_value(args.clone())
+            .map_err(|error| format!("invalid exec_command args: {error}"))?;
+        if args.command.trim().is_empty() {
+            return Err("exec_command command is required".to_string());
+        }
+        Ok(ToolRisk::Command)
     }
 
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
@@ -290,7 +301,7 @@ fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), String> {
 }
 
 fn shell_command(command: &str) -> Command {
-    let mut shell = Command::new("sh");
+    let mut shell = Command::new("/bin/sh");
     shell.arg("-c").arg(command);
     shell
 }

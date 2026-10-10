@@ -151,3 +151,34 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
         "default Atlas prompt must not embed tool protocol JSON"
     );
 }
+
+#[test]
+fn readme_documents_the_complete_default_toolset_and_permission_modes() {
+    let readme = std::fs::read_to_string("README.md").unwrap();
+    for tool_name in [
+        "current_time",
+        "pwd",
+        "ls",
+        "read_file",
+        "search_files",
+        "create_file",
+        "create_directory",
+        "copy_file",
+        "move_file",
+        "delete_file",
+        "open_file",
+        "open_application",
+        "exec_command",
+    ] {
+        assert!(
+            readme.contains(&format!("`{tool_name}`")),
+            "README is missing default tool `{tool_name}`"
+        );
+    }
+    for mode in ["Ask", "Workspace", "Full access"] {
+        assert!(
+            readme.contains(&format!("**{mode}**")),
+            "README is missing permission mode `{mode}`"
+        );
+    }
+}

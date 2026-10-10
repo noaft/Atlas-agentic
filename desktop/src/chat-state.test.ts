@@ -8,6 +8,8 @@ import type {
   ConversationMetadata,
   SaveSettingsInput,
   SettingsView,
+  ChatEvent,
+  PermissionMode,
 } from "./types";
 
 const workspace = { path: "/work/atlas", name: "atlas" };
@@ -21,6 +23,7 @@ const settings: SettingsView = {
   defaultWorkspace: automaticWorkspace,
   defaultWorkspaceAutomatic: true,
   defaultWorkspaceError: null,
+  defaultPermissionMode: "ask",
   environmentOverrides: [],
 };
 
@@ -32,6 +35,7 @@ const first: ConversationMetadata = {
   updatedAt: "2026-10-04T10:00:01Z",
   messageCount: 2,
   workspace,
+  permissionMode: "ask",
 };
 
 const second: ConversationMetadata = {
@@ -42,6 +46,7 @@ const second: ConversationMetadata = {
   updatedAt: "2026-10-04T11:00:01Z",
   messageCount: 2,
   workspace: { path: "/work/second", name: "second" },
+  permissionMode: "workspace",
 };
 
 function savedConversation(metadata: ConversationMetadata): Conversation {
@@ -66,6 +71,8 @@ class FakeApi implements AtlasApi {
     conversationId: string | null;
     workspacePath: string | null;
   }> = [];
+  askPermissionModes: PermissionMode[] = [];
+  eventSinks: Array<(event: ChatEvent) => void> = [];
   renameCalls: Array<{ id: string; title: string }> = [];
   deleteCalls: string[] = [];
   conversations: ConversationMetadata[] = [];
@@ -93,6 +100,9 @@ class FakeApi implements AtlasApi {
   ];
   listModelCalls = 0;
   assignments: Array<{ id: string; path: string }> = [];
+  permissionUpdates: Array<{ id: string; permissionMode: PermissionMode }> = [];
+  approvalResolutions: Array<{ id: string; allow: boolean }> = [];
+  approvalCancellations = 0;
   chooseCalls = 0;
   validateCalls: string[] = [];
   save: (input: SaveSettingsInput) => Promise<SettingsView> = async () => this.settings;
@@ -121,12 +131,17 @@ class FakeApi implements AtlasApi {
     prompt: string,
     conversationId: string | null,
     workspacePath: string | null,
-    onDelta: (text: string) => void,
+    permissionMode: PermissionMode,
+    onEvent: (event: ChatEvent) => void,
   ): Promise<ConversationAskResult> {
     this.askCalls.push({ prompt, conversationId, workspacePath });
+    this.askPermissionModes.push(permissionMode);
+    this.eventSinks.push(onEvent);
     const ask = this.asks.shift();
     if (!ask) throw new Error("missing fake ask");
-    return ask(prompt, conversationId, workspacePath, onDelta);
+    return ask(prompt, conversationId, workspacePath, (text) =>
+      onEvent({ event: "delta", data: { content: text } }),
+    );
   }
 
   renameConversation(id: string, title: string): Promise<ConversationMetadata> {
@@ -173,10 +188,149 @@ class FakeApi implements AtlasApi {
     return this.assign(id, path);
   }
 
+  async setConversationPermissionMode(id: string, permissionMode: PermissionMode) {
+    this.permissionUpdates.push({ id, permissionMode });
+    const existing = this.conversations.find((item) => item.id === id) ?? first;
+    return { ...existing, permissionMode };
+  }
+
+  async resolveToolApproval(id: string, allow: boolean) {
+    this.approvalResolutions.push({ id, allow });
+  }
+
+  async cancelToolApprovals() {
+    this.approvalCancellations += 1;
+  }
+
   async toggleFullscreen() {
     return true;
   }
 }
+
+test("draft permission overrides stay local and new chats restore the settings default", async () => {
+  const api = new FakeApi();
+  api.settings = { ...settings, defaultPermissionMode: "workspace" };
+  const store = new ChatStore(api);
+  await store.initialize();
+
+  expect(store.getState().activePermissionMode).toBe("workspace");
+  await store.selectPermissionMode("fullAccess");
+  expect(store.getState().activePermissionMode).toBe("fullAccess");
+  expect(api.permissionUpdates).toEqual([]);
+
+  await store.newChat();
+  expect(store.getState().activePermissionMode).toBe("workspace");
+});
+
+test("saved chats restore and persist their own permission mode", async () => {
+  const api = new FakeApi();
+  api.conversations = [second];
+  api.loads.set(second.id, async () => savedConversation(second));
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(second.id);
+
+  expect(store.getState().activePermissionMode).toBe("workspace");
+  await store.selectPermissionMode("fullAccess");
+
+  expect(api.permissionUpdates).toEqual([
+    { id: second.id, permissionMode: "fullAccess" },
+  ]);
+  expect(store.getState().activePermissionMode).toBe("fullAccess");
+});
+
+test("legacy saved chats fall back to ask instead of the settings default", async () => {
+  const api = new FakeApi();
+  const legacy = { ...second, permissionMode: null };
+  api.settings = { ...settings, defaultPermissionMode: "fullAccess" };
+  api.conversations = [legacy];
+  api.loads.set(legacy.id, async () => savedConversation(legacy));
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(legacy.id);
+
+  expect(store.getState().activePermissionMode).toBe("ask");
+});
+
+test("approval and tool events are scoped to the active ask", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("remove note");
+  const sending = store.send();
+  await Promise.resolve();
+  const sink = api.eventSinks[0]!;
+
+  sink({ event: "toolStarted", data: { tool: "delete_file" } });
+  sink({
+    event: "approvalRequested",
+    data: {
+      request: {
+        id: "approval-1",
+        tool: "delete_file",
+        arguments: '{"path":"note.txt"}',
+        reason: "deletes or overwrites data",
+      },
+    },
+  });
+  expect(store.getState().pendingApproval?.id).toBe("approval-1");
+  expect(store.getState().toolActivity[0]).toMatchObject({ status: "running" });
+
+  await store.resolveToolApproval(false);
+  expect(api.approvalResolutions).toEqual([{ id: "approval-1", allow: false }]);
+  expect(store.getState().pendingApproval).toBeNull();
+
+  sink({ event: "toolFinished", data: { tool: "delete_file", success: false } });
+  expect(store.getState().toolActivity[0]).toMatchObject({ status: "failed" });
+  pending.resolve(result(first, "Denied", true));
+  await sending;
+  expect(api.askPermissionModes).toEqual(["ask"]);
+  sink({
+    event: "approvalRequested",
+    data: {
+      request: {
+        id: "stale",
+        tool: "delete_file",
+        arguments: "{}",
+        reason: "stale",
+      },
+    },
+  });
+  expect(store.getState().pendingApproval).toBeNull();
+});
+
+test("leaving a pending approval cancels the ask and clears unsaved messages", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("remove note");
+  const sending = store.send();
+  await Promise.resolve();
+  api.eventSinks[0]!({
+    event: "approvalRequested",
+    data: {
+      request: {
+        id: "approval-cancel",
+        tool: "delete_file",
+        arguments: "{}",
+        reason: "deletes data",
+      },
+    },
+  });
+
+  await store.newChat();
+  expect(api.approvalCancellations).toBe(1);
+  expect(store.getState().messages).toEqual([]);
+  expect(store.getState().activeConversationId).toBeNull();
+
+  pending.reject(new Error("tool approval was cancelled"));
+  await sending;
+  expect(store.getState().messages).toEqual([]);
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

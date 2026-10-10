@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::permissions::PermissionMode;
+
 pub const DEFAULT_HISTORY_MESSAGES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -58,6 +60,8 @@ pub struct ConversationMetadata {
     pub message_count: usize,
     #[serde(rename = "workspacePath", default)]
     pub workspace_path: Option<PathBuf>,
+    #[serde(rename = "permissionMode", default)]
+    pub permission_mode: Option<PermissionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

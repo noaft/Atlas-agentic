@@ -13,6 +13,7 @@ use std::{
 use atlas_agentic::conversations::{
     ConversationId, ConversationMessage, ConversationStore, MessageRole,
 };
+use atlas_agentic::permissions::PermissionMode;
 use chrono::{Duration as ChronoDuration, Utc};
 use fs2::FileExt;
 use serde_json::{json, Value};
@@ -71,6 +72,7 @@ fn create_turn_writes_versioned_index_and_two_jsonl_messages() {
     assert_eq!(metadata.message_count, 2);
     assert_eq!(metadata.created_at, metadata.updated_at);
     assert_eq!(metadata.workspace_path, None);
+    assert_eq!(metadata.permission_mode, None);
 
     let index = read_index(data.path());
     assert_eq!(index["version"], 1);
@@ -112,6 +114,69 @@ fn version_one_index_without_workspace_path_loads_as_unassigned() {
 
     assert_eq!(
         store.load(&metadata.id).unwrap().metadata.workspace_path,
+        None
+    );
+    assert_eq!(
+        store.load(&metadata.id).unwrap().metadata.permission_mode,
+        None
+    );
+}
+
+#[test]
+fn permission_mode_is_assigned_on_success_and_updates_only_one_conversation() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let first = store
+        .create_turn_with_workspace_and_permission(
+            "user",
+            "assistant",
+            None,
+            Some(PermissionMode::Workspace),
+        )
+        .unwrap();
+    let second = store.create_turn("other", "answer").unwrap();
+
+    assert_eq!(first.permission_mode, Some(PermissionMode::Workspace));
+    let updated = store
+        .set_permission_mode(&first.id, PermissionMode::FullAccess)
+        .unwrap();
+
+    assert_eq!(updated.permission_mode, Some(PermissionMode::FullAccess));
+    assert_eq!(
+        store.load(&second.id).unwrap().metadata.permission_mode,
+        None
+    );
+}
+
+#[test]
+fn legacy_append_assigns_permission_only_after_successful_publication() {
+    let data = tempdir().unwrap();
+    let root = data.path().join("data");
+    let initial = ConversationStore::at(root.clone())
+        .create_turn("user", "assistant")
+        .unwrap();
+    let failing = store_failing_index_publication(&root, 1);
+
+    let error = failing
+        .append_turn_with_workspace_and_permission_if_missing(
+            &initial.id,
+            "next",
+            "answer",
+            None,
+            Some(PermissionMode::Workspace),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.contains("injected index publication failure"),
+        "{error}"
+    );
+    assert_eq!(
+        ConversationStore::at(root)
+            .load(&initial.id)
+            .unwrap()
+            .metadata
+            .permission_mode,
         None
     );
 }
