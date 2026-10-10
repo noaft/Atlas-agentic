@@ -435,10 +435,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       compositionSettleTimer = setTimeout(() => {
         compositionSettleTimer = null;
         compositionSettling = false;
-        const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
-        pendingState = null;
-        renderNow(store.getState());
-        focusComposer(selection);
+        if (pendingState) {
+          const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
+          pendingState = null;
+          renderNow(store.getState());
+          focusComposer(selection);
+          return;
+        }
+        send.disabled = isBusy || !state.activeWorkspace || !textarea.value.trim();
       }, 0);
     });
     textarea.addEventListener("input", () => {

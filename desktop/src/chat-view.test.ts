@@ -452,6 +452,7 @@ test("composition fallback enables sending when no final input event arrives", a
     vi.runAllTimers();
 
     const rendered = composer(root);
+    expect(rendered).toBe(input);
     expect(rendered.value).toBe("á");
     expect(document.activeElement).toBe(rendered);
     expect(rendered.selectionStart).toBe(1);
