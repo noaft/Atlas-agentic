@@ -86,15 +86,23 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   dialog.className = "rename-dialog";
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-labelledby", "rename-title");
+  dialog.addEventListener("close", () => {
+    renameOpen = false;
+  });
 
   const composer = createChatComposer(store, async () => {
     const sending = store.send();
-    composer.replaceDraft(store.getState().draftText);
+    const clearedDraft = store.getState().draftText;
+    composer.replaceDraft(clearedDraft);
     await sending;
-    composer.replaceDraft(store.getState().draftText);
+    if (composer.textarea.value === clearedDraft) {
+      composer.replaceDraft(store.getState().draftText);
+    } else {
+      store.setDraft(composer.textarea.value);
+    }
   });
-  composer.replaceDraft(store.getState().draftText);
   chatScreen.append(composer.element, dialog);
+  composer.replaceDraft(store.getState().draftText);
 
   const isCompactSidebar = () =>
     typeof window.matchMedia === "function" &&
@@ -214,9 +222,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
             actionsOpen = false;
             renameOpen = false;
             sidebarOpen = false;
-            await store.selectConversation(conversation.id);
-            composer.replaceDraft(store.getState().draftText);
             focusComposer();
+            await store.selectConversation(conversation.id);
           });
           list.append(item);
         }
@@ -224,7 +231,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     if (state.screen === "settings") {
+      chatScreen.hidden = true;
       chatScreen.style.display = "none";
+      settingsScreen.hidden = false;
       settingsScreen.style.display = "contents";
       main.className = "settings-main";
       settingsScreen.replaceChildren();
@@ -243,8 +252,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       return;
     }
 
+    const returningFromSettings = chatScreen.hidden;
+    settingsScreen.hidden = true;
     settingsScreen.style.display = "none";
+    chatScreen.hidden = false;
     chatScreen.style.display = "contents";
+    if (returningFromSettings) composer.refreshLayout();
     main.className = "chat-main";
 
     header.innerHTML = `
@@ -418,7 +431,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         .querySelector<HTMLButtonElement>("[data-cancel-rename]")!
         .addEventListener("click", () => {
           renameOpen = false;
-          dialog.removeAttribute("open");
+          if (dialog.open) dialog.close();
           renderNow(store.getState());
         });
       dialog.querySelector<HTMLFormElement>(".dialog-card")!.addEventListener(
@@ -429,13 +442,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
           await store.renameActive(renameValue);
           if (store.getState().status !== "error") {
             renameOpen = false;
-            dialog.removeAttribute("open");
+            if (dialog.open) dialog.close();
           }
           renderNow(store.getState());
         },
       );
     } else {
-      dialog.removeAttribute("open");
+      if (dialog.open) dialog.close();
     }
   };
 

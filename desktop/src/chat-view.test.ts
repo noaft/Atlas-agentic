@@ -34,6 +34,16 @@ if (!("showModal" in HTMLDialogElement.prototype)) {
   });
 }
 
+if (!("close" in HTMLDialogElement.prototype)) {
+  Object.defineProperty(HTMLDialogElement.prototype, "close", {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.removeAttribute("open");
+      this.dispatchEvent(new Event("close"));
+    },
+  });
+}
+
 const metadata: ConversationMetadata = {
   id: "00000000-0000-4000-8000-000000000001",
   title: "Atlas runtime",
@@ -450,6 +460,31 @@ test("failed send restores the live draft", async () => {
   expect(composer(root)).toBe(input);
   expect(input.parentElement).toBe(parent);
   expect(input.value).toBe("xin chào");
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(false);
+});
+
+test("failed send does not overwrite text entered while streaming", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async () => pending.promise;
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
+  const input = inputComposer(root, "original request");
+
+  click(root, "[data-send]");
+  await flush();
+  input.focus();
+  input.value = "new draft typed during streaming";
+  input.setSelectionRange(9, 9);
+  input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  pending.reject(new Error("send failed"));
+  await flush();
+
+  expect(input.value).toBe("new draft typed during streaming");
+  expect(store.getState().draftText).toBe("new draft typed during streaming");
+  expect(input.selectionStart).toBe(9);
+  expect(document.activeElement).toBe(input);
 });
 
 test("conversation selection shows loading then its saved messages", async () => {
@@ -467,6 +502,30 @@ test("conversation selection shows loading then its saved messages", async () =>
 
   expect(root.textContent).toContain("How does it work?");
   expect(root.textContent).toContain("Through the runtime.");
+});
+
+test("delayed conversation loading does not overwrite resumed composition", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  const pending = deferred<Conversation>();
+  api.load = () => pending.promise;
+  const { root, store } = setup(api);
+  await store.initialize();
+  const input = composer(root);
+
+  click(root, `[data-conversation-id="${metadata.id}"]`);
+  input.value = "đang soạn tiếng Việt";
+  input.setSelectionRange(8, 8);
+  input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  const valueSetter = vi.spyOn(HTMLTextAreaElement.prototype, "value", "set");
+  pending.resolve(conversation());
+  await flush();
+
+  expect(input.value).toBe("đang soạn tiếng Việt");
+  expect(input.selectionStart).toBe(8);
+  expect(document.activeElement).toBe(input);
+  expect(valueSetter).not.toHaveBeenCalled();
 });
 
 test("Enter sends while Shift Enter keeps a newline", async () => {
@@ -637,6 +696,38 @@ test("composer height follows its content", async () => {
   expect(input.style.height).toBe("28px");
 });
 
+test("composer measures only after it is attached", () => {
+  const measuredHeight = vi
+    .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+    .mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.isConnected ? 28 : 0;
+    });
+
+  const { root } = setup();
+
+  expect(measuredHeight).toHaveBeenCalled();
+  expect(composer(root).style.height).toBe("28px");
+});
+
+test("hidden settings resize cannot collapse the composer", async () => {
+  let measuredHeight = 28;
+  vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(
+    () => measuredHeight,
+  );
+  const { root, store } = setup();
+  await store.initialize();
+  expect(composer(root).style.height).toBe("28px");
+
+  click(root, "[data-open-settings]");
+  measuredHeight = 0;
+  window.dispatchEvent(new Event("resize"));
+  expect(composer(root).style.height).toBe("28px");
+
+  measuredHeight = 72;
+  root.querySelector<HTMLButtonElement>(".settings-actions .secondary-button")!.click();
+  expect(composer(root).style.height).toBe("72px");
+});
+
 test("composer recalculates its height when the window resizes", async () => {
   const measuredHeight = vi
     .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
@@ -795,6 +886,39 @@ test("rename keeps the dialog on failure and updates title on success", async ()
   click(root, "[data-save-rename]");
   await flush();
   expect(root.querySelector("[data-active-title]")?.textContent).toBe("Renamed");
+});
+
+test("rename closes through the dialog API and Escape does not reopen it", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.selectConversation(metadata.id);
+  const showModal = vi
+    .spyOn(HTMLDialogElement.prototype, "showModal")
+    .mockImplementation(function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    });
+  const close = vi
+    .spyOn(HTMLDialogElement.prototype, "close")
+    .mockImplementation(function (this: HTMLDialogElement) {
+      this.removeAttribute("open");
+      this.dispatchEvent(new Event("close"));
+    });
+
+  click(root, "[data-conversation-menu]");
+  click(root, "[data-rename]");
+  const dialog = root.querySelector<HTMLDialogElement>("[role='dialog']")!;
+  dialog.removeAttribute("open");
+  dialog.dispatchEvent(new Event("close"));
+  click(root, "[data-sidebar-toggle]");
+
+  expect(showModal).toHaveBeenCalledTimes(1);
+
+  click(root, "[data-conversation-menu]");
+  click(root, "[data-rename]");
+  click(root, "[data-cancel-rename]");
+  expect(close).toHaveBeenCalledOnce();
 });
 
 test("delete requires confirmation and returns the active view to a draft", async () => {

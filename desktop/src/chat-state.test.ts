@@ -257,6 +257,22 @@ test("failed first send stays unsaved, marks partial failed, and restores prompt
   });
 });
 
+test("failed send preserves a new draft typed while the request is pending", async () => {
+  const api = new FakeApi();
+  const asking = deferred<ConversationAskResult>();
+  api.asks.push(async () => asking.promise);
+  const store = new ChatStore(api);
+  await store.chooseWorkspaceForDraft();
+  store.setDraft("original request");
+
+  const sending = store.send();
+  store.setDraft("new draft typed during streaming");
+  asking.reject(new Error("provider failed"));
+  await sending;
+
+  expect(store.getState().draftText).toBe("new draft typed during streaming");
+});
+
 test("retry removes the previous failed attempt", async () => {
   const api = new FakeApi();
   api.asks.push(async (_prompt, _id, _workspace, onDelta) => {

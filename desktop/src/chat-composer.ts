@@ -9,6 +9,7 @@ export interface ChatComposer {
   sendButton: HTMLButtonElement;
   updateState(state: Readonly<ChatState>): void;
   replaceDraft(text: string): void;
+  refreshLayout(): void;
   focus(): void;
   destroy(): void;
 }
@@ -51,12 +52,19 @@ export function createChatComposer(
   const sendButton = element.querySelector<HTMLButtonElement>("[data-send]")!;
   const note = element.querySelector<HTMLElement>("[data-composer-note]")!;
 
-  textarea.addEventListener("input", () => {
-    resize(textarea);
-    store.setDraft(textarea.value);
-    const state = store.getState();
+  const updateSendAvailability = (state: Readonly<ChatState>) => {
     sendButton.disabled =
       chatIsBusy(state) || !state.activeWorkspace || !textarea.value.trim();
+  };
+  const refreshLayout = () => {
+    if (!element.isConnected || element.closest("[hidden]")) return;
+    resize(textarea);
+  };
+
+  textarea.addEventListener("input", () => {
+    refreshLayout();
+    store.setDraft(textarea.value);
+    updateSendAvailability(store.getState());
   });
   textarea.addEventListener("keydown", (event) => {
     if (
@@ -80,7 +88,7 @@ export function createChatComposer(
       return;
     void onSubmit();
   });
-  const resizeOnWindowChange = () => resize(textarea);
+  const resizeOnWindowChange = () => refreshLayout();
   window.addEventListener("resize", resizeOnWindowChange);
 
   return {
@@ -93,15 +101,18 @@ export function createChatComposer(
       textarea.placeholder = state.activeWorkspace
         ? "Message Atlas…"
         : "Starting folder unavailable";
-      sendButton.disabled =
-        chatIsBusy(state) || !state.activeWorkspace || !textarea.value.trim();
+      updateSendAvailability(state);
       note.textContent = state.activeWorkspace
         ? `Commands use ${state.activeWorkspace.path} as their starting folder and can access other locations allowed by your OS account.`
         : "Atlas needs an accessible starting folder before it can run tools.";
     },
     replaceDraft(text) {
       textarea.value = text;
-      resize(textarea);
+      refreshLayout();
+      updateSendAvailability(store.getState());
+    },
+    refreshLayout() {
+      refreshLayout();
     },
     focus() {
       textarea.focus();

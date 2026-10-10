@@ -149,6 +149,17 @@ test("composer stays editable while send availability follows state", async () =
   expect(composer.sendButton.disabled).toBe(true);
 });
 
+test("explicit draft replacement refreshes send availability", async () => {
+  const { composer, store } = await setup();
+
+  composer.replaceDraft("xin chào");
+
+  expect(composer.sendButton.disabled).toBe(false);
+  composer.replaceDraft("");
+  expect(composer.sendButton.disabled).toBe(true);
+  expect(store.getState().activeWorkspace).toEqual(workspace);
+});
+
 test("composition keys never submit", async () => {
   const { composer, submit } = await setup();
   composer.textarea.value = "đang gõ";

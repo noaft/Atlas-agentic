@@ -357,7 +357,7 @@ export class ChatStore {
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
         })),
-        draftText: prompt,
+        draftText: this.state.draftText || prompt,
         status: "error",
         errorMessage: errorMessage(error),
       });
