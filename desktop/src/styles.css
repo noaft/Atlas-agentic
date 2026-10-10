@@ -261,7 +261,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .message-assistant .message-content td { padding: 7px 10px; border: 1px solid var(--border); text-align: left; }
 .message-assistant .message-content th { background: #f3eff8; }
 
-.message-user { max-width: 76%; margin-left: auto; padding: 13px 16px; border: 1px solid #cbbce9; border-radius: 16px 16px 4px 16px; background: linear-gradient(135deg, #e4d9ff, #d9eaff); color: #3f3657; box-shadow: 0 8px 22px rgba(116, 96, 170, .12); }
+.message-user { width: fit-content; max-width: 76%; margin-left: auto; padding: 13px 16px; border: 1px solid #cbbce9; border-radius: 16px 16px 4px 16px; background: linear-gradient(135deg, #e4d9ff, #d9eaff); color: #3f3657; box-shadow: 0 8px 22px rgba(116, 96, 170, .12); }
 
 .message-user .message-label { color: #71658e; }
 

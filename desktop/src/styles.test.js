@@ -73,7 +73,9 @@ test("chat content expands with the available window width", () => {
   expect(getComputedStyle(document.querySelector(".message-assistant")).maxWidth).toBe(
     "none",
   );
-  expect(getComputedStyle(document.querySelector(".message-user")).maxWidth).toBe("76%");
+  const userMessage = getComputedStyle(document.querySelector(".message-user"));
+  expect(userMessage.width).toBe("fit-content");
+  expect(userMessage.maxWidth).toBe("76%");
   expect(getComputedStyle(document.querySelector(".composer-box")).maxWidth).toBe("none");
   expect(getComputedStyle(document.querySelector(".model-picker-feedback")).maxWidth).toBe(
     "none",
