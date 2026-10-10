@@ -57,3 +57,48 @@ test("chat messages and settings use the available height as scroll regions", ()
   expect(settingsScroll.minHeight).toBe("0px");
   expect(settingsScroll.overflowY).toBe("auto");
 });
+
+test("chat content expands with the available window width", () => {
+  document.body.innerHTML = `
+    <section class="messages">
+      <article class="message message-assistant">Assistant</article>
+      <article class="message message-user">User</article>
+    </section>
+    <form class="composer-wrap">
+      <div class="composer-box">Composer</div>
+      <div class="model-picker-feedback">Feedback</div>
+      <p class="composer-note">Note</p>
+    </form>`;
+
+  expect(getComputedStyle(document.querySelector(".message-assistant")).maxWidth).toBe(
+    "none",
+  );
+  expect(getComputedStyle(document.querySelector(".message-user")).maxWidth).toBe("76%");
+  expect(getComputedStyle(document.querySelector(".composer-box")).maxWidth).toBe("none");
+  expect(getComputedStyle(document.querySelector(".model-picker-feedback")).maxWidth).toBe(
+    "none",
+  );
+  expect(getComputedStyle(document.querySelector(".composer-note")).maxWidth).toBe("none");
+});
+
+test("model picker is visually borderless while keeping an accessible label", () => {
+  document.body.innerHTML = `
+    <div class="model-picker"><label><select aria-label="Model"><option>DeepSeek</option></select></label></div>`;
+
+  const select = document.querySelector("select");
+  const style = getComputedStyle(select);
+  expect(select.getAttribute("aria-label")).toBe("Model");
+  expect(style.borderStyle).toBe("none");
+  expect(style.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+});
+
+test("sidebar controls remain visible on desktop", () => {
+  document.body.innerHTML = `
+    <button class="sidebar-toggle">Toggle</button>
+    <header class="settings-mobile-header">Settings</header>`;
+
+  expect(getComputedStyle(document.querySelector(".sidebar-toggle")).display).toBe("grid");
+  expect(getComputedStyle(document.querySelector(".settings-mobile-header")).display).toBe(
+    "flex",
+  );
+});

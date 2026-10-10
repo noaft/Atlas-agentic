@@ -184,6 +184,8 @@ test("chat model picker shows discovered models and saves the selection", async 
     "DeepSeek Flash",
     "DeepSeek V4 Pro",
   ]);
+  expect(picker!.getAttribute("aria-label")).toBe("Model");
+  expect(picker!.parentElement?.firstChild).toBe(picker);
 
   picker!.value = "deepseek-v4-pro";
   picker!.dispatchEvent(new Event("change", { bubbles: true }));
@@ -292,6 +294,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
 
@@ -594,6 +597,7 @@ test("delete requires confirmation and returns the active view to a draft", asyn
 });
 
 test("mobile sidebar toggle and composer focus remain keyboard accessible", async () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
   const { root } = setup();
   const toggle = root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -605,6 +609,34 @@ test("mobile sidebar toggle and composer focus remain keyboard accessible", asyn
   click(root, "[data-new-chat]");
   await flush();
   expect(document.activeElement).toBe(composer(root));
+});
+
+test("desktop sidebar toggle collapses and restores the sidebar", () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const { root } = setup();
+
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(
+    false,
+  );
+  expect(root.querySelector("[data-sidebar-toggle]")?.getAttribute("aria-expanded")).toBe(
+    "true",
+  );
+
+  click(root, "[data-sidebar-toggle]");
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(
+    true,
+  );
+  expect(root.querySelector("[data-sidebar-toggle]")?.getAttribute("aria-expanded")).toBe(
+    "false",
+  );
+  expect(root.querySelector("[data-sidebar-toggle]")?.getAttribute("aria-label")).toBe(
+    "Show sidebar",
+  );
+
+  click(root, "[data-sidebar-toggle]");
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(
+    false,
+  );
 });
 
 test("fullscreen_control_and_f11_toggle_the_native_window", async () => {
@@ -718,6 +750,7 @@ test("cancelled and successful folder choices preserve composer focus", async ()
 });
 
 test("mobile sidebar contains workspace and Settings controls", () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
   const { root } = setup();
   click(root, "[data-sidebar-toggle]");
 

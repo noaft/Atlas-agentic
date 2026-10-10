@@ -45,6 +45,7 @@ function renderMessage(message: DisplayMessage): HTMLElement {
 
 export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let sidebarOpen = false;
+  let sidebarCollapsed = false;
   let actionsOpen = false;
   let renameOpen = false;
   let renameValue = "";
@@ -53,6 +54,19 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
   let renderedState: Readonly<ChatState> | null = null;
+
+  const isCompactSidebar = () =>
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(max-width: 820px)").matches;
+
+  const sidebarExpanded = () =>
+    isCompactSidebar() ? sidebarOpen : !sidebarCollapsed;
+
+  const toggleSidebar = () => {
+    if (isCompactSidebar()) sidebarOpen = !sidebarOpen;
+    else sidebarCollapsed = !sidebarCollapsed;
+    renderNow(store.getState());
+  };
 
   const focusComposer = (selection?: [number, number]) => {
     const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
@@ -81,7 +95,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       state.modelListStatus === "saving";
 
     root.innerHTML = `
-      <div class="atlas-shell">
+      <div class="atlas-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}">
         <aside class="sidebar${sidebarOpen ? " open" : ""}" data-sidebar>
           <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
           <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
@@ -192,12 +206,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       mobileHeader.className = "settings-mobile-header";
       const toggle = button("☰", "sidebar-toggle");
       toggle.dataset.sidebarToggle = "";
-      toggle.setAttribute("aria-label", "Toggle conversations");
-      toggle.setAttribute("aria-expanded", String(sidebarOpen));
-      toggle.addEventListener("click", () => {
-        sidebarOpen = !sidebarOpen;
-        renderNow(store.getState());
-      });
+      toggle.setAttribute("aria-label", sidebarExpanded() ? "Hide sidebar" : "Show sidebar");
+      toggle.setAttribute("aria-expanded", String(sidebarExpanded()));
+      toggle.addEventListener("click", toggleSidebar);
       mobileHeader.append(toggle);
       const settingsHost = document.createElement("div");
       settingsHost.className = "settings-scroll";
@@ -208,7 +219,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
     main.innerHTML = `
       <header class="chat-header">
-        <button type="button" class="sidebar-toggle" aria-label="Toggle conversations" aria-expanded="${sidebarOpen}" data-sidebar-toggle>☰</button>
+        <button type="button" class="sidebar-toggle" aria-label="${sidebarExpanded() ? "Hide sidebar" : "Show sidebar"}" aria-expanded="${sidebarExpanded()}" data-sidebar-toggle>☰</button>
         <div class="header-title"><h1 data-active-title></h1><button type="button" data-header-workspace></button></div>
         <div class="conversation-actions"><button type="button" class="icon-button" aria-label="Toggle fullscreen" title="Toggle fullscreen (F11)" data-toggle-fullscreen>⛶</button><button type="button" class="icon-button" aria-label="Conversation actions" data-conversation-menu>•••</button><div class="action-menu" data-action-menu></div></div>
       </header>
@@ -227,10 +238,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       <dialog class="rename-dialog" role="dialog" aria-labelledby="rename-title"><form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form></dialog>`;
 
     const toggle = root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!;
-    toggle.addEventListener("click", () => {
-      sidebarOpen = !sidebarOpen;
-      renderNow(store.getState());
-    });
+    toggle.addEventListener("click", toggleSidebar);
     const title = root.querySelector<HTMLElement>("[data-active-title]")!;
     title.textContent = metadata?.title ?? "New chat";
     const headerWorkspace = root.querySelector<HTMLButtonElement>("[data-header-workspace]")!;
@@ -326,7 +334,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const modelPicker = root.querySelector<HTMLElement>("[data-model-picker]")!;
     if (state.settings && state.settings.apiKeySource !== "missing") {
       const label = document.createElement("label");
-      label.textContent = "Model";
       const select = document.createElement("select");
       select.dataset.modelSelect = "";
       select.setAttribute("aria-label", "Model");
