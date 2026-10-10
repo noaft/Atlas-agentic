@@ -13,7 +13,6 @@
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-dialog": "^2.8.1",
     "dompurify": "3.4.16",
-    "gotiengviet": "1.1.1",
     "marked": "18.1.0"
   },
   "devDependencies": {

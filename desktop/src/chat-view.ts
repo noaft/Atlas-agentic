@@ -1,5 +1,3 @@
-import { VietnameseInput } from "gotiengviet";
-
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
 import { renderSettings } from "./settings-view";
@@ -17,6 +15,11 @@ function button(label: string, className?: string): HTMLButtonElement {
   element.textContent = label;
   if (className) element.className = className;
   return element;
+}
+
+function resizeComposer(textarea: HTMLTextAreaElement) {
+  textarea.style.height = "0px";
+  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 function renderMessage(message: DisplayMessage): HTMLElement {
@@ -46,7 +49,6 @@ function renderMessage(message: DisplayMessage): HTMLElement {
 }
 
 export function mountChat(root: HTMLElement, store: ChatStore): () => void {
-  const vietnameseInput = new VietnameseInput({ inputMethod: "telex" });
   let sidebarOpen = false;
   let sidebarCollapsed = false;
   let actionsOpen = false;
@@ -57,18 +59,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
   let renderedState: Readonly<ChatState> | null = null;
-
-  const syncVietnameseDraft = (event: Event) => {
-    const target = event.target;
-    if (
-      !(target instanceof HTMLTextAreaElement) ||
-      !target.hasAttribute("data-composer") ||
-      !root.contains(target)
-    )
-      return;
-    store.setDraft(target.value);
-  };
-  document.addEventListener("input", syncVietnameseDraft);
 
   const isCompactSidebar = () =>
     typeof window.matchMedia === "function" &&
@@ -90,6 +80,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const start = Math.min(selection?.[0] ?? composer.value.length, composer.value.length);
     const end = Math.min(selection?.[1] ?? start, composer.value.length);
     composer.setSelectionRange(start, end);
+  };
+
+  const resizeVisibleComposer = () => {
+    const composer = root.querySelector<HTMLTextAreaElement>("[data-composer]");
+    if (composer) resizeComposer(composer);
   };
 
   const renderNow = (state: Readonly<ChatState>) => {
@@ -216,7 +211,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     if (state.screen === "settings") {
-      vietnameseInput.disable();
       main.classList.add("settings-main");
       const mobileHeader = document.createElement("header");
       mobileHeader.className = "settings-mobile-header";
@@ -232,8 +226,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       renderSettings(settingsHost, state, store);
       return;
     }
-
-    vietnameseInput.enable();
 
     main.innerHTML = `
       <header class="chat-header">
@@ -412,6 +404,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
     const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
     textarea.value = state.draftText;
+    resizeComposer(textarea);
     textarea.placeholder = state.activeWorkspace
       ? "Message Atlas…"
       : "Starting folder unavailable";
@@ -429,6 +422,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
     textarea.addEventListener("compositionend", () => {
       const value = textarea.value;
+      resizeComposer(textarea);
       store.setDraft(value);
       composing = false;
       compositionSettling = true;
@@ -447,6 +441,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
     textarea.addEventListener("input", () => {
       if (composing) return;
+      resizeComposer(textarea);
       store.setDraft(textarea.value);
       if (compositionSettling) {
         if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
@@ -569,12 +564,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     event.preventDefault();
     void store.toggleFullscreen();
   };
+  window.addEventListener("resize", resizeVisibleComposer);
   window.addEventListener("keydown", onWindowKeydown);
   const unsubscribe = store.subscribe(render);
   return () => {
     if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
-    document.removeEventListener("input", syncVietnameseDraft);
-    vietnameseInput.destroy();
+    window.removeEventListener("resize", resizeVisibleComposer);
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();
     root.replaceChildren();

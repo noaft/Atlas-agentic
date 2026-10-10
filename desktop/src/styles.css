@@ -279,7 +279,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .composer-box:focus-within { border-color: #9c86d2; box-shadow: 0 10px 30px var(--shadow), 0 0 0 3px rgba(156,134,210,.16); }
 
-.composer-box textarea { width: 100%; max-height: 180px; padding: 7px 0; resize: none; border: 0; outline: 0; color: var(--ink); background: transparent; line-height: 1.45; }
+.composer-box textarea { width: 100%; max-height: min(40dvh, 18rem); padding: 7px 0; resize: none; overflow-y: auto; border: 0; outline: 0; color: var(--ink); background: transparent; line-height: 1.45; }
 
 .composer-controls { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; }
 .model-picker { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }

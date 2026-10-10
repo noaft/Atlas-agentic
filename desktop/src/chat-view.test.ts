@@ -425,7 +425,7 @@ test("composition end keeps the composer mounted for the final Vietnamese input"
   expect(store.getState().draftText).toBe("á");
 });
 
-test("composer converts raw Telex when the system IME is unavailable", async () => {
+test("composer leaves raw Telex unchanged when the system IME is off", async () => {
   const { root, store } = setup();
   await store.chooseWorkspaceForDraft();
   const input = composer(root);
@@ -433,8 +433,37 @@ test("composer converts raw Telex when the system IME is unavailable", async () 
 
   typeRawText(input, "tieengs vieetj");
 
-  expect(input.value).toBe("tiếng việt");
-  expect(store.getState().draftText).toBe("tiếng việt");
+  expect(input.value).toBe("tieengs vieetj");
+  expect(store.getState().draftText).toBe("tieengs vieetj");
+});
+
+test("composer height follows its content", async () => {
+  const measuredHeight = vi
+    .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+    .mockReturnValue(28);
+  const { root, store } = setup();
+  await store.chooseWorkspaceForDraft();
+
+  measuredHeight.mockReturnValue(96);
+  let input = inputComposer(root, "first line\nsecond line\nthird line");
+  expect(input.style.height).toBe("96px");
+
+  measuredHeight.mockReturnValue(28);
+  input = inputComposer(root, "short");
+  expect(input.style.height).toBe("28px");
+});
+
+test("composer recalculates its height when the window resizes", async () => {
+  const measuredHeight = vi
+    .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+    .mockReturnValue(28);
+  const { root, store } = setup();
+  await store.chooseWorkspaceForDraft();
+
+  measuredHeight.mockReturnValue(72);
+  window.dispatchEvent(new Event("resize"));
+
+  expect(composer(root).style.height).toBe("72px");
 });
 
 test("composition fallback enables sending when no final input event arrives", async () => {
