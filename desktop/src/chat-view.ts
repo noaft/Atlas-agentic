@@ -88,7 +88,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   dialog.setAttribute("aria-labelledby", "rename-title");
 
   const composer = createChatComposer(store, async () => {
-    await store.send();
+    const sending = store.send();
+    composer.replaceDraft(store.getState().draftText);
+    await sending;
     composer.replaceDraft(store.getState().draftText);
   });
   composer.replaceDraft(store.getState().draftText);

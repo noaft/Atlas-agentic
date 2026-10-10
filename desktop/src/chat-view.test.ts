@@ -373,6 +373,85 @@ test("new chat clears locally without a backend create call", async () => {
   expect(root.querySelector("[data-active-title]")?.textContent).toBe("New chat");
 });
 
+test("new chat and conversation selection replace the draft without replacing the composer", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  api.load = async () => conversation();
+  const { root, store } = setup(api);
+  await store.initialize();
+  const input = inputComposer(root, "draft for next chat");
+  const parent = input.parentElement;
+
+  click(root, "[data-new-chat]");
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.value).toBe("");
+
+  input.value = "draft kept while selecting";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  click(root, `[data-conversation-id="${metadata.id}"]`);
+  await flush();
+
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.value).toBe("draft kept while selecting");
+});
+
+test("Settings round trip preserves the live draft", async () => {
+  const { root, store } = setup();
+  await store.initialize();
+  const input = inputComposer(root, "tiếng Việt draft");
+  const parent = input.parentElement;
+
+  click(root, "[data-open-settings]");
+  root.querySelector<HTMLButtonElement>(".settings-actions .secondary-button")!.click();
+
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.value).toBe("tiếng Việt draft");
+});
+
+test("successful send clears the live draft", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async () => pending.promise;
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
+  const input = inputComposer(root, "xin chào");
+  const parent = input.parentElement;
+
+  click(root, "[data-send]");
+  await flush();
+
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.value).toBe("");
+
+  pending.resolve({ answer: "Done", metadata, created: true });
+  await flush();
+  expect(input.value).toBe("");
+});
+
+test("failed send restores the live draft", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async () => pending.promise;
+  const { root, store } = setup(api);
+  await store.chooseWorkspaceForDraft();
+  const input = inputComposer(root, "xin chào");
+  const parent = input.parentElement;
+
+  click(root, "[data-send]");
+  await flush();
+  expect(input.value).toBe("");
+
+  pending.reject(new Error("send failed"));
+  await flush();
+  expect(composer(root)).toBe(input);
+  expect(input.parentElement).toBe(parent);
+  expect(input.value).toBe("xin chào");
+});
+
 test("conversation selection shows loading then its saved messages", async () => {
   const api = new ViewApi();
   api.list = Promise.resolve([metadata]);
