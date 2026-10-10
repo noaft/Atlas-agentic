@@ -22,6 +22,28 @@ function resizeComposer(textarea: HTMLTextAreaElement) {
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
+function chatIsBusy(state: Readonly<ChatState>) {
+  return (
+    state.status === "streaming" ||
+    state.status === "loading" ||
+    state.workspaceBusy ||
+    state.modelListStatus === "saving"
+  );
+}
+
+type AtomicMoveElement = Element & {
+  moveBefore(node: Node, child: Node | null): void;
+};
+
+function supportsAtomicMove(element: Element): element is AtomicMoveElement {
+  return "moveBefore" in element && typeof element.moveBefore === "function";
+}
+
+function moveAtomically(parent: Element, node: Node, child: Node | null) {
+  if (!supportsAtomicMove(parent)) throw new Error("Atomic DOM moves are unavailable");
+  parent.moveBefore(node, child);
+}
+
 function renderMessage(message: DisplayMessage): HTMLElement {
   const article = document.createElement("article");
   article.className = `message message-${message.role} delivery-${message.delivery}`;
@@ -57,6 +79,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let composing = false;
   let compositionSettling = false;
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  let composerBlurTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
   let renderedState: Readonly<ChatState> | null = null;
 
@@ -88,21 +111,45 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   };
 
   const renderNow = (state: Readonly<ChatState>) => {
-    const focusedComposer =
+    const activeComposer =
       document.activeElement instanceof HTMLTextAreaElement &&
-      document.activeElement.hasAttribute("data-composer")
+      document.activeElement.hasAttribute("data-composer") &&
+      root.contains(document.activeElement)
         ? document.activeElement
         : null;
-    const composerSelection: [number, number] | undefined = focusedComposer
-      ? [focusedComposer.selectionStart, focusedComposer.selectionEnd]
+    const parkingParent = root.parentElement;
+    if (
+      activeComposer &&
+      activeComposer.value !== "" &&
+      state.screen === "chat" &&
+      (!parkingParent || !supportsAtomicMove(parkingParent))
+    ) {
+      const isBusy = chatIsBusy(state);
+      activeComposer.disabled = isBusy;
+      const send = root.querySelector<HTMLButtonElement>("[data-send]");
+      if (send) {
+        send.disabled = isBusy || !state.activeWorkspace || !activeComposer.value.trim();
+      }
+      pendingState = state;
+      return;
+    }
+    const focusedComposer =
+      state.screen === "chat" &&
+      activeComposer &&
+      parkingParent &&
+      supportsAtomicMove(parkingParent)
+        ? activeComposer
+        : null;
+    const composerSelection: [number, number] | undefined =
+      state.screen === "chat" && activeComposer
+      ? [activeComposer.selectionStart, activeComposer.selectionEnd]
       : undefined;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
-    const isBusy =
-      isStreaming ||
-      state.status === "loading" ||
-      state.workspaceBusy ||
-      state.modelListStatus === "saving";
+    const isBusy = chatIsBusy(state);
+
+    if (focusedComposer && parkingParent)
+      moveAtomically(parkingParent, focusedComposer, root.nextSibling);
 
     root.innerHTML = `
       <div class="atlas-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}">
@@ -401,7 +448,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       modelPicker.remove();
     }
 
-    const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+    const renderedTextarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+    const textarea = focusedComposer ?? renderedTextarea;
+    if (focusedComposer) {
+      const composerParent = renderedTextarea.parentElement!;
+      moveAtomically(composerParent, focusedComposer, renderedTextarea);
+      renderedTextarea.remove();
+    }
     const send = root.querySelector<HTMLButtonElement>("[data-send]")!;
     textarea.value = state.draftText;
     resizeComposer(textarea);
@@ -413,66 +466,86 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     root.querySelector<HTMLElement>("[data-composer-note]")!.textContent = state.activeWorkspace
       ? `Commands use ${state.activeWorkspace.path} as their starting folder and can access other locations allowed by your OS account.`
       : "Atlas needs an accessible starting folder before it can run tools.";
-    textarea.addEventListener("compositionstart", () => {
-      if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
-      compositionSettleTimer = null;
-      composing = true;
-      compositionSettling = false;
-      pendingState = null;
-    });
-    textarea.addEventListener("compositionend", () => {
-      const value = textarea.value;
-      resizeComposer(textarea);
-      store.setDraft(value);
-      composing = false;
-      compositionSettling = true;
-      compositionSettleTimer = setTimeout(() => {
-        compositionSettleTimer = null;
-        compositionSettling = false;
-        if (pendingState) {
-          const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
-          pendingState = null;
-          renderNow(store.getState());
-          focusComposer(selection);
-          return;
-        }
-        send.disabled = isBusy || !state.activeWorkspace || !textarea.value.trim();
-      }, 0);
-    });
-    textarea.addEventListener("input", () => {
-      if (composing) return;
-      resizeComposer(textarea);
-      store.setDraft(textarea.value);
-      if (compositionSettling) {
+    if (!focusedComposer) {
+      const updateSendAvailability = () => {
+        const currentState = store.getState();
+        const currentSend = root.querySelector<HTMLButtonElement>("[data-send]");
+        if (!currentSend) return;
+        currentSend.disabled =
+          chatIsBusy(currentState) ||
+          !currentState.activeWorkspace ||
+          !textarea.value.trim();
+      };
+      textarea.addEventListener("compositionstart", () => {
         if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
         compositionSettleTimer = null;
+        composing = true;
         compositionSettling = false;
-        if (pendingState) {
-          const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
-          pendingState = null;
-          renderNow(store.getState());
-          focusComposer(selection);
-          return;
+      });
+      textarea.addEventListener("compositionend", () => {
+        const value = textarea.value;
+        resizeComposer(textarea);
+        store.setDraft(value);
+        composing = false;
+        compositionSettling = true;
+        compositionSettleTimer = setTimeout(() => {
+          compositionSettleTimer = null;
+          compositionSettling = false;
+          if (pendingState) {
+            const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
+            pendingState = null;
+            renderNow(store.getState());
+            focusComposer(selection);
+            return;
+          }
+          updateSendAvailability();
+        }, 0);
+      });
+      textarea.addEventListener("input", () => {
+        if (composing) return;
+        resizeComposer(textarea);
+        store.setDraft(textarea.value);
+        if (compositionSettling) {
+          if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+          compositionSettleTimer = null;
+          compositionSettling = false;
+          if (pendingState) {
+            const selection: [number, number] = [textarea.selectionStart, textarea.selectionEnd];
+            pendingState = null;
+            renderNow(store.getState());
+            focusComposer(selection);
+            return;
+          }
         }
-      }
-      send.disabled = isBusy || !state.activeWorkspace || !textarea.value.trim();
-    });
-    textarea.addEventListener("keydown", (event) => {
-      if (
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        !event.isComposing &&
-        !composing &&
-        event.keyCode !== 229
-      ) {
-        event.preventDefault();
-        root.querySelector<HTMLFormElement>("[data-composer-form]")?.requestSubmit();
-      }
-    });
+        updateSendAvailability();
+      });
+      textarea.addEventListener("blur", () => {
+        if (composerBlurTimer !== null) clearTimeout(composerBlurTimer);
+        composerBlurTimer = setTimeout(() => {
+          composerBlurTimer = null;
+          if (!pendingState || document.activeElement === textarea) return;
+          pendingState = null;
+          render(store.getState());
+        }, 0);
+      });
+      textarea.addEventListener("keydown", (event) => {
+        if (
+          event.key === "Enter" &&
+          !event.shiftKey &&
+          !event.isComposing &&
+          !composing &&
+          event.keyCode !== 229
+        ) {
+          event.preventDefault();
+          root.querySelector<HTMLFormElement>("[data-composer-form]")?.requestSubmit();
+        }
+      });
+    }
     root.querySelector<HTMLFormElement>("[data-composer-form]")!.addEventListener(
       "submit",
       async (event) => {
         event.preventDefault();
+        textarea.blur();
         await store.send();
         focusComposer();
       },
@@ -507,7 +580,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         },
       );
     }
-    if (composerSelection && !textarea.disabled) focusComposer(composerSelection);
+    if (
+      composerSelection &&
+      !textarea.disabled &&
+      document.activeElement !== textarea
+    )
+      focusComposer(composerSelection);
   };
 
   const patchStreamingDelta = (
@@ -557,7 +635,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       return;
     }
     renderNow(state);
-    renderedState = state;
+    if (!pendingState) renderedState = state;
   };
   const onWindowKeydown = (event: KeyboardEvent) => {
     if (event.key !== "F11" || event.repeat) return;
@@ -569,6 +647,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   const unsubscribe = store.subscribe(render);
   return () => {
     if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+    if (composerBlurTimer !== null) clearTimeout(composerBlurTimer);
     window.removeEventListener("resize", resizeVisibleComposer);
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();

@@ -310,8 +310,30 @@ function inputComposer(root: HTMLElement, value: string) {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+let restoreMoveBefore: (() => void) | null = null;
+
+function emulateAtomicMoveBefore() {
+  const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "moveBefore");
+  Object.defineProperty(Element.prototype, "moveBefore", {
+    configurable: true,
+    value(this: Element, node: Node, child: Node | null) {
+      const active = document.activeElement;
+      this.insertBefore(node, child);
+      if (active === node && node instanceof HTMLElement) {
+        HTMLElement.prototype.focus.call(node);
+      }
+    },
+  });
+  restoreMoveBefore = () => {
+    if (descriptor) Object.defineProperty(Element.prototype, "moveBefore", descriptor);
+    else Reflect.deleteProperty(Element.prototype, "moveBefore");
+  };
+}
+
 afterEach(() => {
   for (const unmount of mountedViews.splice(0)) unmount();
+  restoreMoveBefore?.();
+  restoreMoveBefore = null;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
@@ -406,6 +428,54 @@ test("typing preserves the composer's caret position", async () => {
   expect(document.activeElement).toBe(rendered);
   expect(rendered.selectionStart).toBe(3);
   expect(rendered.selectionEnd).toBe(3);
+});
+
+test("background renders keep the focused composer mounted for Windows IME", async () => {
+  emulateAtomicMoveBefore();
+  const api = new ViewApi();
+  const listing = deferred<ConversationMetadata[]>();
+  api.list = listing.promise;
+  const { root, store } = setup(api);
+  const initializing = store.initialize();
+  await flush();
+  const input = composer(root);
+  input.focus();
+  input.value = "tiếng Việt";
+  input.setSelectionRange(5, 5);
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
+  const refocus = vi.spyOn(input, "focus");
+
+  listing.resolve([metadata]);
+  await initializing;
+
+  expect(composer(root)).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect(refocus).not.toHaveBeenCalled();
+  expect(input.value).toBe("tiếng Việt");
+  expect(input.selectionStart).toBe(5);
+});
+
+test("IME fallback updates send availability and flushes background renders on blur", async () => {
+  const api = new ViewApi();
+  const listing = deferred<ConversationMetadata[]>();
+  api.list = listing.promise;
+  const { root, store } = setup(api);
+  const initializing = store.initialize();
+  const input = composer(root);
+  input.focus();
+  input.value = "tiếng Việt";
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
+
+  listing.resolve([metadata]);
+  await initializing;
+
+  expect(composer(root)).toBe(input);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")?.disabled).toBe(false);
+  expect(root.textContent).not.toContain("Atlas runtime");
+
+  input.blur();
+  await flush();
+  expect(root.textContent).toContain("Atlas runtime");
 });
 
 test("composition end keeps the composer mounted for the final Vietnamese input", async () => {
@@ -843,11 +913,18 @@ test("composition defers async renders and preserves Vietnamese text and caret",
   original.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
   original.dispatchEvent(new InputEvent("input", { bubbles: true, data: "ệ" }));
   const rendered = composer(root);
-  expect(rendered).not.toBe(original);
+  expect(rendered).toBe(original);
   expect(rendered.value).toBe("tiếng Việt");
   expect(store.getState().draftText).toBe("tiếng Việt");
   expect(rendered.selectionStart).toBe(5);
   expect(document.activeElement).toBe(rendered);
+  expect(root.textContent).not.toContain("Atlas runtime");
+
+  rendered.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  rendered.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  await flush();
+  rendered.blur();
+  await flush();
   expect(root.textContent).toContain("Atlas runtime");
 });
 
