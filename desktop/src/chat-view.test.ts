@@ -154,11 +154,14 @@ class ViewApi implements AtlasApi {
   }
 }
 
+const mountedViews: Array<() => void> = [];
+
 function setup(api = new ViewApi()) {
   const root = document.createElement("div");
   document.body.replaceChildren(root);
   const store = new ChatStore(api);
   const unmount = mountChat(root, store);
+  mountedViews.push(unmount);
   return { api, root, store, unmount };
 }
 
@@ -170,6 +173,21 @@ function click(root: HTMLElement, selector: string) {
 
 function composer(root: HTMLElement) {
   return root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+}
+
+function typeRawText(input: HTMLTextAreaElement, text: string) {
+  for (const character of text) {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.setRangeText(character, start, end, "end");
+    input.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: character,
+        inputType: "insertText",
+      }),
+    );
+  }
 }
 
 test("chat model picker shows discovered models and saves the selection", async () => {
@@ -293,6 +311,7 @@ function inputComposer(root: HTMLElement, value: string) {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
+  for (const unmount of mountedViews.splice(0)) unmount();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
@@ -404,6 +423,18 @@ test("composition end keeps the composer mounted for the final Vietnamese input"
   expect(composer(root)).toBe(input);
   expect(input.value).toBe("á");
   expect(store.getState().draftText).toBe("á");
+});
+
+test("composer converts raw Telex when the system IME is unavailable", async () => {
+  const { root, store } = setup();
+  await store.chooseWorkspaceForDraft();
+  const input = composer(root);
+  input.focus();
+
+  typeRawText(input, "tieengs vieetj");
+
+  expect(input.value).toBe("tiếng việt");
+  expect(store.getState().draftText).toBe("tiếng việt");
 });
 
 test("composition fallback enables sending when no final input event arrives", async () => {

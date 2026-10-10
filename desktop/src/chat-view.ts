@@ -1,3 +1,5 @@
+import { VietnameseInput } from "gotiengviet";
+
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
 import { renderSettings } from "./settings-view";
@@ -44,6 +46,7 @@ function renderMessage(message: DisplayMessage): HTMLElement {
 }
 
 export function mountChat(root: HTMLElement, store: ChatStore): () => void {
+  const vietnameseInput = new VietnameseInput({ inputMethod: "telex" });
   let sidebarOpen = false;
   let sidebarCollapsed = false;
   let actionsOpen = false;
@@ -54,6 +57,18 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   let compositionSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingState: Readonly<ChatState> | null = null;
   let renderedState: Readonly<ChatState> | null = null;
+
+  const syncVietnameseDraft = (event: Event) => {
+    const target = event.target;
+    if (
+      !(target instanceof HTMLTextAreaElement) ||
+      !target.hasAttribute("data-composer") ||
+      !root.contains(target)
+    )
+      return;
+    store.setDraft(target.value);
+  };
+  document.addEventListener("input", syncVietnameseDraft);
 
   const isCompactSidebar = () =>
     typeof window.matchMedia === "function" &&
@@ -201,6 +216,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     if (state.screen === "settings") {
+      vietnameseInput.disable();
       main.classList.add("settings-main");
       const mobileHeader = document.createElement("header");
       mobileHeader.className = "settings-mobile-header";
@@ -216,6 +232,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       renderSettings(settingsHost, state, store);
       return;
     }
+
+    vietnameseInput.enable();
 
     main.innerHTML = `
       <header class="chat-header">
@@ -551,6 +569,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   const unsubscribe = store.subscribe(render);
   return () => {
     if (compositionSettleTimer !== null) clearTimeout(compositionSettleTimer);
+    document.removeEventListener("input", syncVietnameseDraft);
+    vietnameseInput.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();
     root.replaceChildren();
