@@ -38,8 +38,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .atlas-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: clamp(220px, 22vw, 280px) minmax(0, 1fr);
+  min-height: 0;
   height: 100dvh;
+  overflow: hidden;
   background: var(--canvas);
 }
 
@@ -47,7 +49,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 18px 14px;
+  overflow: hidden;
   border-right: 1px solid var(--border);
   background: linear-gradient(165deg, var(--sidebar) 0%, #edf8ff 58%, #f0faf5 100%);
   z-index: 5;
@@ -109,7 +113,19 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .workspace-card-action { width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
 .workspace-card-action:hover:not(:disabled) { background: var(--lavender); }
 
-.conversation-list { overflow-y: auto; }
+.brand,
+.new-chat,
+.workspace-card,
+.section-label,
+.sidebar-footer { flex: 0 0 auto; }
+
+.conversation-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .workspace-group-title { margin: 12px 10px 5px; color: #8a849d; font-size: 10px; font-weight: 760; letter-spacing: .04em; }
 
 .conversation-item {
@@ -146,7 +162,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   line-height: 1.45;
 }
 
-.chat-main { display: grid; grid-template-rows: 62px auto minmax(0, 1fr) auto; min-width: 0; height: 100%; }
+.chat-main { display: grid; grid-template-rows: 62px auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 
 .chat-header {
   display: grid;
@@ -202,7 +218,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .status-notice { background: var(--sky); color: #536f83; }
 
-.messages { overflow-y: auto; padding: 36px max(28px, calc((100% - 760px) / 2)); scroll-behavior: smooth; }
+.messages { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 36px max(28px, calc((100% - 760px) / 2)); scroll-behavior: smooth; }
 
 .welcome { max-width: 520px; margin: 18vh auto 0; text-align: center; }
 .welcome > span { display: inline-block; margin-bottom: 12px; padding: 5px 9px; border-radius: 999px; background: var(--mint); color: #507661; font-size: 10px; font-weight: 760; letter-spacing: .07em; text-transform: uppercase; }
@@ -298,9 +314,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .secondary-button { border: 1px solid #d5cce3; background: var(--surface); color: #574f68; }
 
-.settings-main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; height: 100%; }
+.settings-main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 .settings-mobile-header { display: none; height: 58px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.settings-scroll { overflow-y: auto; }
+.settings-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .settings-panel { width: min(720px, calc(100% - 48px)); margin: 0 auto; padding: 52px 0 64px; }
 .settings-heading h1 { margin: 0; font-size: 28px; letter-spacing: -.03em; }
 .settings-heading p { margin: 8px 0 30px; color: var(--muted); }
