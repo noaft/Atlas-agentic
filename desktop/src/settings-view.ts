@@ -105,18 +105,20 @@ export function renderSettings(
     ),
   );
 
-  const model = inputFor(
-    draft.model,
-    (value) => store.updateSettingsDraft({ model: value }),
-    saving || overridden.has("model"),
-  );
-  form.append(
-    field(
-      "Model",
-      model,
-      overridden.has("model") ? "Controlled by DEEPSEEK_MODEL." : undefined,
-    ),
-  );
+  const modelSummary = document.createElement("div");
+  modelSummary.className = "settings-model-summary";
+  const modelLabel = document.createElement("span");
+  modelLabel.className = "settings-label";
+  modelLabel.textContent = "Active model";
+  const modelValue = document.createElement("strong");
+  modelValue.textContent = settings.activeModel;
+  const modelHint = document.createElement("span");
+  modelHint.className = "settings-hint";
+  modelHint.textContent = overridden.has("model")
+    ? "Controlled by DEEPSEEK_MODEL. Remove that environment setting to choose a model in chat."
+    : "Choose the active model from the chat composer after saving settings.";
+  modelSummary.append(modelLabel, modelValue, modelHint);
+  form.append(modelSummary);
 
   const history = inputFor(
     String(draft.historyLimit),

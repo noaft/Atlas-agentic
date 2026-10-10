@@ -215,8 +215,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       <div class="notice-area" data-notices></div>
       <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
       <form class="composer-wrap" data-composer-form>
-        <div class="model-picker" data-model-picker></div>
-        <div class="composer-box"><textarea rows="1" aria-label="Message Atlas" data-composer></textarea><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
+        <div class="composer-box">
+          <textarea rows="1" aria-label="Message Atlas" data-composer></textarea>
+          <div class="composer-controls" data-composer-controls>
+            <div class="model-picker" data-model-picker></div>
+            <button type="submit" class="send-button" aria-label="Send message" data-send>↑</button>
+          </div>
+        </div>
         <p class="composer-note" data-composer-note></p>
       </form>
       <dialog class="rename-dialog" role="dialog" aria-labelledby="rename-title"><form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form></dialog>`;
@@ -342,19 +347,38 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       select.addEventListener("change", () => void store.selectModel(select.value));
       label.append(select);
       modelPicker.append(label);
+      const modelControlledByEnvironment =
+        state.settings.environmentOverrides.includes("model");
+      if (modelControlledByEnvironment || state.modelListStatus === "loading") {
+        const status = document.createElement("span");
+        status.className = "model-picker-status";
+        status.dataset.modelStatus = "";
+        status.textContent = modelControlledByEnvironment
+          ? "Controlled by DEEPSEEK_MODEL"
+          : "Loading models…";
+        modelPicker.append(status);
+      }
       if (state.modelListErrorMessage) {
+        const feedback = document.createElement("div");
+        feedback.className = "model-picker-feedback";
+        feedback.dataset.modelFeedback = "";
         const error = document.createElement("span");
         error.className = "model-picker-error";
         error.setAttribute("role", "alert");
         error.textContent = state.modelListErrorMessage;
-        modelPicker.append(error);
+        feedback.append(error);
         if (state.modelListRetryAvailable) {
           const retry = button("Retry", "model-picker-retry");
           retry.type = "button";
+          retry.dataset.retryModels = "";
           retry.disabled = isBusy || state.modelListStatus === "loading";
           retry.addEventListener("click", () => void store.retryModels());
-          modelPicker.append(retry);
+          feedback.append(retry);
         }
+        root.querySelector<HTMLElement>(".composer-box")!.insertAdjacentElement(
+          "afterend",
+          feedback,
+        );
       }
     } else {
       modelPicker.remove();

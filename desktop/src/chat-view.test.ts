@@ -193,6 +193,68 @@ test("chat model picker shows discovered models and saves the selection", async 
   expect(store.getState().settings?.model).toBe("deepseek-v4-pro");
 });
 
+test("chat composer explains when the model is locked by the environment", async () => {
+  const api = new ViewApi();
+  api.settings = {
+    ...settings,
+    apiKeySource: "environment",
+    environmentOverrides: ["apiKey", "model"],
+  };
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  const picker = root.querySelector<HTMLSelectElement>("[data-model-select]");
+  expect(picker?.disabled).toBe(true);
+  expect(root.querySelector("[data-model-status]")?.textContent).toBe(
+    "Controlled by DEEPSEEK_MODEL",
+  );
+});
+
+test("chat composer shows model loading without turning it into an error", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const pending = deferred<typeof api.availableModels>();
+  api.listModels = () => pending.promise;
+  const { root, store } = setup(api);
+  const initializing = store.initialize();
+  await flush();
+
+  expect(root.querySelector("[data-model-status]")?.textContent).toBe(
+    "Loading models…",
+  );
+  expect(root.querySelector("[data-model-feedback]")).toBeNull();
+
+  pending.resolve(api.availableModels);
+  await initializing;
+});
+
+test("model catalog errors render below the composer controls", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.listModels = async () => {
+    throw new Error("A very long model catalog error that must wrap on narrow windows");
+  };
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  const feedback = root.querySelector<HTMLElement>("[data-model-feedback]");
+  expect(feedback?.textContent).toContain("A very long model catalog error");
+  expect(feedback?.querySelector("[data-retry-models]")).not.toBeNull();
+  expect(root.querySelector(".composer-box")?.contains(feedback!)).toBe(false);
+});
+
+test("model picker is integrated into the composer controls", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const { root, store } = setup(api);
+  await store.initialize();
+
+  const controls = root.querySelector("[data-composer-controls]");
+  expect(controls).not.toBeNull();
+  expect(controls?.querySelector("[data-model-picker]")).not.toBeNull();
+  expect(controls?.querySelector("[data-send]")).not.toBeNull();
+});
+
 test("chat controls stay disabled while a model selection is being saved", async () => {
   const api = new ViewApi();
   api.settings = { ...settings, apiKeySource: "settings" };

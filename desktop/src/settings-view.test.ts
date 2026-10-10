@@ -75,6 +75,23 @@ test("settings renders a blank masked key and explains environment authority", a
   expect(root.querySelector("img")).toBeNull();
 });
 
+test("settings directs model selection to the chat composer", async () => {
+  const { root, store } = fixture();
+  await store.initialize();
+  store.openSettings();
+
+  renderSettings(root, store.getState(), store);
+
+  expect(root.textContent).toContain(
+    "Choose the active model from the chat composer after saving settings.",
+  );
+  expect(
+    [...root.querySelectorAll<HTMLInputElement>(".settings-field input")].some(
+      (input) => input.value === settings.model,
+    ),
+  ).toBe(false);
+});
+
 test("settings Enter saves null for a blank key and Escape cancels", async () => {
   const { root, saves, store } = fixture();
   await store.initialize();
