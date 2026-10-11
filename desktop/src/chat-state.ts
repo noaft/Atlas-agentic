@@ -71,6 +71,19 @@ const displaySavedMessage = (message: ConversationMessage): DisplayMessage => ({
   delivery: "saved",
 });
 
+const displaySavedMessages = (conversation: import("./types").Conversation): DisplayMessage[] => {
+  const activityByMessage = new Map(
+    (conversation.activities ?? []).map((turn) => [
+      turn.assistantMessageIndex,
+      turn.records,
+    ]),
+  );
+  return conversation.messages.map((message, index) => ({
+    ...displaySavedMessage(message),
+    activity: activityByMessage.get(index),
+  }));
+};
+
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -240,7 +253,7 @@ export class ChatStore {
         permissionBusy: false,
         pendingApproval: null,
         toolActivity: [],
-        messages: conversation.messages.map(displaySavedMessage),
+        messages: displaySavedMessages(conversation),
         status: "idle",
         errorMessage: null,
       });
@@ -358,15 +371,19 @@ export class ChatStore {
         (event) => this.handleChatEvent(token, event),
       );
       if (token !== this.askToken) return;
-      const messages = this.state.messages.map((message, index, all) => ({
-        ...message,
-        content:
-          index === all.length - 1 && message.role === "assistant"
-            ? completed.answer
-            : message.content,
-        delivery:
-          message.delivery === "pending" ? ("saved" as const) : message.delivery,
-      }));
+      const messages = this.state.messages.map((message, index, all) => {
+        const completedAssistant =
+          index === all.length - 1 && message.role === "assistant";
+        return {
+          ...message,
+          content: completedAssistant ? completed.answer : message.content,
+          delivery:
+            message.delivery === "pending" ? ("saved" as const) : message.delivery,
+          activity: completedAssistant
+            ? (completed.activities ?? [])
+            : message.activity,
+        };
+      });
       this.replace({
         ...this.state,
         conversations: moveToTop(this.state.conversations, completed.metadata),
@@ -377,6 +394,7 @@ export class ChatStore {
         status: "idle",
         errorMessage: null,
         pendingApproval: null,
+        toolActivity: [],
       });
     } catch (error) {
       if (token !== this.askToken) return;
@@ -712,36 +730,89 @@ export class ChatStore {
       this.appendDelta(token, event.data.content);
       return;
     }
-    if (event.event === "approvalRequested") {
-      this.update({ pendingApproval: event.data.request });
-      return;
-    }
-    if (event.event === "approvalWaiting") return;
-    if (event.event === "toolStarted") {
+    if (event.event === "runtimeStatus") {
       this.update({
         toolActivity: [
           ...this.state.toolActivity,
-          { id: this.state.toolActivity.length + 1, tool: event.data.tool, status: "running" },
+          {
+            id: `status-${this.state.toolActivity.length}`,
+            sequence: null,
+            kind: "status",
+            tool: null,
+            arguments: null,
+            summary: event.data.status === "thinking" ? "Thinking" : "Preparing answer",
+            details: null,
+            status: "status",
+          },
         ],
       });
       return;
     }
-    const activities = [...this.state.toolActivity];
-    let index = -1;
-    for (let candidate = activities.length - 1; candidate >= 0; candidate -= 1) {
-      const activity = activities[candidate];
-      if (activity.tool === event.data.tool && activity.status === "running") {
-        index = candidate;
-        break;
-      }
+    if (event.event === "toolRequested") {
+      this.update({
+        toolActivity: [
+          ...this.state.toolActivity,
+          {
+            id: `tool-${event.data.sequence}`,
+            sequence: event.data.sequence,
+            kind: "tool",
+            tool: event.data.tool,
+            arguments: event.data.arguments,
+            summary: `Requested ${event.data.tool}`,
+            details: null,
+            status: "requested",
+          },
+        ],
+      });
+      return;
     }
-    if (index >= 0) {
-      activities[index] = {
-        ...activities[index],
+    if (event.event === "approvalRequested") {
+      this.update({
+        pendingApproval: event.data.request,
+        toolActivity: this.updateToolActivity(event.data.sequence, {
+          status: "waiting",
+          summary: `Waiting for approval: ${event.data.request.tool}`,
+        }),
+      });
+      return;
+    }
+    if (event.event === "approvalWaiting") return;
+    if (event.event === "toolDenied") {
+      this.update({
+        pendingApproval: null,
+        toolActivity: this.updateToolActivity(event.data.sequence, {
+          status: "denied",
+          summary: event.data.summary,
+        }),
+      });
+      return;
+    }
+    if (event.event === "toolStarted") {
+      this.update({
+        pendingApproval: null,
+        toolActivity: this.updateToolActivity(event.data.sequence, {
+          status: "running",
+          summary: `Running ${event.data.tool}`,
+        }),
+      });
+      return;
+    }
+    this.update({
+      toolActivity: this.updateToolActivity(event.data.sequence, {
         status: event.data.success ? "succeeded" : "failed",
-      };
-    }
-    this.update({ toolActivity: activities });
+        summary: event.data.summary,
+        details: event.data.details,
+      }),
+    });
+  }
+
+  private updateToolActivity(
+    sequence: number,
+    patch: Partial<import("./types").ToolActivity>,
+  ): import("./types").ToolActivity[] {
+    return this.state.toolActivity.map((activity) =>
+      activity.sequence === sequence ? { ...activity, ...patch } : activity,
+    );
   }
 
   private update(patch: Partial<ChatState>): void {

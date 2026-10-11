@@ -105,3 +105,19 @@ test("sidebar controls remain visible on desktop", () => {
     "flex",
   );
 });
+
+test("activity details stay inside narrow message layouts", () => {
+  document.body.innerHTML = `
+    <article class="message message-assistant">
+      <details class="activity-disclosure">
+        <div class="activity-row"><pre>very long bounded tool output</pre></div>
+      </details>
+    </article>`;
+
+  const disclosure = getComputedStyle(document.querySelector(".activity-disclosure"));
+  const output = getComputedStyle(document.querySelector(".activity-row pre"));
+  expect(disclosure.maxWidth).toBe("100%");
+  expect(output.maxWidth).toBe("100%");
+  expect(output.whiteSpace).toBe("pre-wrap");
+  expect(output.overflowWrap).toBe("anywhere");
+});

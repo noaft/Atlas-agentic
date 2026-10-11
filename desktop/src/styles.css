@@ -280,6 +280,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .message-failed { margin-top: 9px; color: #9c4a60; font-size: 12px; }
 
+.activity-disclosure { max-width: 100%; min-width: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(243, 239, 255, .42); color: var(--muted); font-size: 12px; }
+.activity-disclosure summary { padding: 8px 10px; cursor: pointer; color: #5e5870; font-weight: 700; }
+.activity-timeline { display: grid; gap: 8px; padding: 0 10px 10px; }
+.activity-row { min-width: 0; padding: 8px; border-left: 3px solid #b8a8d5; border-radius: 6px; background: rgba(255, 255, 255, .58); }
+.activity-row[data-activity-outcome="succeeded"] { border-left-color: #63957d; }
+.activity-row[data-activity-outcome="failed"], .activity-row[data-activity-outcome="denied"] { border-left-color: #ba7183; }
+.activity-row strong { display: block; color: var(--ink); overflow-wrap: anywhere; }
+.activity-detail-label { display: block; margin-top: 7px; color: var(--subtle); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.activity-row pre { max-width: 100%; margin: 3px 0 0; padding: 7px; overflow-x: auto; border-radius: 6px; background: rgba(62, 53, 79, .06); color: var(--ink); font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .composer-wrap { padding: 12px clamp(18px, 4vw, 64px) 20px; background: linear-gradient(to top, var(--canvas) 78%, rgba(251,248,255,0)); }
 
 .composer-box { display: grid; gap: 6px; width: 100%; max-width: none; margin: 0; padding: 10px 10px 9px 16px; border: 1px solid #d3c8e6; border-radius: 17px; background: rgba(255, 253, 251, .94); box-shadow: 0 10px 30px var(--shadow); }

@@ -114,6 +114,7 @@ describe("Tauri Atlas API", () => {
         args.channel.onmessage({
           event: "approvalRequested",
           data: {
+            sequence: 0,
             request: {
               id: "approval-1",
               tool: "delete_file",

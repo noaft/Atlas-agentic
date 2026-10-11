@@ -26,12 +26,34 @@ export interface ConversationMessage {
 export interface Conversation {
   metadata: ConversationMetadata;
   messages: ConversationMessage[];
+  activities?: ActivityTurn[];
 }
 
 export interface ConversationAskResult {
   answer: string;
   metadata: ConversationMetadata;
+  activities?: ActivityRecord[];
   created: boolean;
+}
+
+export type ActivityKind = "status" | "toolCall" | "toolResult";
+export type ActivityOutcome = "succeeded" | "failed" | "denied";
+
+export interface ActivityRecord {
+  sequence: number;
+  kind: ActivityKind;
+  tool: string | null;
+  arguments: string | null;
+  outcome: ActivityOutcome | null;
+  summary: string;
+  details: string | null;
+  createdAt: string;
+}
+
+export interface ActivityTurn {
+  turnId: string;
+  assistantMessageIndex: number;
+  records: ActivityRecord[];
 }
 
 export interface ModelInfo {
@@ -48,15 +70,41 @@ export interface AuthorizationRequest {
 
 export type ChatEvent =
   | { event: "delta"; data: { content: string } }
-  | { event: "approvalRequested"; data: { request: AuthorizationRequest } }
+  | { event: "runtimeStatus"; data: { status: "thinking" | "preparingAnswer" } }
+  | {
+      event: "toolRequested";
+      data: { sequence: number; tool: string; arguments: string };
+    }
+  | {
+      event: "approvalRequested";
+      data: { sequence: number; request: AuthorizationRequest };
+    }
   | { event: "approvalWaiting"; data: { id: string } }
-  | { event: "toolStarted"; data: { tool: string } }
-  | { event: "toolFinished"; data: { tool: string; success: boolean } };
+  | {
+      event: "toolDenied";
+      data: { sequence: number; tool: string; summary: string };
+    }
+  | { event: "toolStarted"; data: { sequence: number; tool: string } }
+  | {
+      event: "toolFinished";
+      data: {
+        sequence: number;
+        tool: string;
+        success: boolean;
+        summary: string;
+        details: string | null;
+      };
+    };
 
 export interface ToolActivity {
-  id: number;
-  tool: string;
-  status: "running" | "succeeded" | "failed";
+  id: string;
+  sequence: number | null;
+  kind: "status" | "tool";
+  tool: string | null;
+  arguments: string | null;
+  summary: string;
+  details: string | null;
+  status: "status" | "requested" | "waiting" | "running" | ActivityOutcome;
 }
 
 export type ChatStatus = "idle" | "loading" | "streaming" | "error";
@@ -70,6 +118,7 @@ export interface DisplayMessage {
   content: string;
   createdAt: string | null;
   delivery: MessageDelivery;
+  activity?: ActivityRecord[];
 }
 
 export interface ChatState {

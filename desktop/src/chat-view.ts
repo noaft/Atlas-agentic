@@ -2,7 +2,12 @@ import { createChatComposer } from "./chat-composer";
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
 import { renderSettings } from "./settings-view";
-import type { ChatState, ConversationMetadata, DisplayMessage } from "./types";
+import type {
+  ActivityRecord,
+  ChatState,
+  ConversationMetadata,
+  DisplayMessage,
+} from "./types";
 
 function activeMetadata(state: Readonly<ChatState>): ConversationMetadata | undefined {
   return state.conversations.find(
@@ -28,6 +33,46 @@ function chatIsBusy(state: Readonly<ChatState>) {
   );
 }
 
+function outcomeLabel(record: ActivityRecord): string {
+  if (!record.outcome) return record.summary;
+  const outcome = `${record.outcome[0].toUpperCase()}${record.outcome.slice(1)}`;
+  return `${outcome}: ${record.summary}`;
+}
+
+function renderActivity(records: ActivityRecord[]): HTMLDetailsElement {
+  const details = document.createElement("details");
+  details.className = "activity-disclosure";
+  details.dataset.activity = "";
+  details.setAttribute("aria-label", "Atlas activity");
+  const summary = document.createElement("summary");
+  summary.textContent = `Activity (${records.length})`;
+  const timeline = document.createElement("div");
+  timeline.className = "activity-timeline";
+  for (const record of records) {
+    const row = document.createElement("section");
+    row.className = "activity-row";
+    row.dataset.activityOutcome = record.outcome ?? "status";
+    const heading = document.createElement("strong");
+    heading.textContent = outcomeLabel(record);
+    row.append(heading);
+    for (const [label, value] of [
+      ["Arguments", record.arguments],
+      ["Details", record.details],
+    ] as const) {
+      if (!value) continue;
+      const caption = document.createElement("span");
+      caption.className = "activity-detail-label";
+      caption.textContent = label;
+      const pre = document.createElement("pre");
+      pre.textContent = value;
+      row.append(caption, pre);
+    }
+    timeline.append(row);
+  }
+  details.append(summary, timeline);
+  return details;
+}
+
 function renderMessage(message: DisplayMessage): HTMLElement {
   const article = document.createElement("article");
   article.className = `message message-${message.role} delivery-${message.delivery}`;
@@ -45,6 +90,9 @@ function renderMessage(message: DisplayMessage): HTMLElement {
     content.textContent = renderedContent;
   }
   article.append(label, content);
+  if (message.role === "assistant" && message.activity?.length) {
+    article.append(renderActivity(message.activity));
+  }
   if (message.delivery === "failed") {
     const failed = document.createElement("div");
     failed.className = "message-failed";
@@ -363,10 +411,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       const tools = document.createElement("div");
       tools.className = "tool-activity";
       tools.setAttribute("role", "status");
+      tools.dataset.liveActivity = "";
       for (const activity of state.toolActivity) {
         const row = document.createElement("span");
         row.dataset.toolStatus = activity.status;
-        row.textContent = `${activity.tool}: ${activity.status}`;
+        row.textContent = activity.summary;
         tools.append(row);
       }
       notices.append(tools);

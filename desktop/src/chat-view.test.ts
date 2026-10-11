@@ -238,6 +238,7 @@ test("approval card exposes keyboard buttons and sends the selected decision", a
   api.eventSink!({
     event: "approvalRequested",
     data: {
+      sequence: 0,
       request: {
         id: "approval-1",
         tool: "delete_file",
@@ -254,6 +255,125 @@ test("approval card exposes keyboard buttons and sends the selected decision", a
   expect(api.approvalResolutions).toEqual([{ id: "approval-1", allow: false }]);
 
   pending.resolve({ answer: "Denied", metadata, created: true });
+  await sending;
+});
+
+test("saved assistant activity renders as an accessible expandable timeline", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  api.load = async () => ({
+    ...conversation(),
+    activities: [
+      {
+        turnId: "turn-1",
+        assistantMessageIndex: 1,
+        records: [
+          {
+            sequence: 0,
+            kind: "status",
+            tool: null,
+            arguments: null,
+            outcome: null,
+            summary: "Thinking",
+            details: null,
+            createdAt: metadata.createdAt,
+          },
+          {
+            sequence: 1,
+            kind: "toolResult",
+            tool: "search_files",
+            arguments: '{"query":"ToolEvent"}',
+            outcome: "succeeded",
+            summary: "Search succeeded",
+            details: "Found 14 matches",
+            createdAt: metadata.updatedAt,
+          },
+          {
+            sequence: 2,
+            kind: "toolResult",
+            tool: "read_file",
+            arguments: null,
+            outcome: "failed",
+            summary: "Read failed",
+            details: "File missing",
+            createdAt: metadata.updatedAt,
+          },
+          {
+            sequence: 3,
+            kind: "toolResult",
+            tool: "delete_file",
+            arguments: null,
+            outcome: "denied",
+            summary: "Delete denied",
+            details: null,
+            createdAt: metadata.updatedAt,
+          },
+          {
+            sequence: 4,
+            kind: "toolResult",
+            tool: "capture_screen",
+            arguments: null,
+            outcome: "succeeded",
+            summary: "Captured primary display (1920x1080)",
+            details: null,
+            createdAt: metadata.updatedAt,
+          },
+        ],
+      },
+    ],
+  });
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.selectConversation(metadata.id);
+
+  const disclosure = root.querySelector<HTMLDetailsElement>("[data-activity]")!;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.querySelector("summary")?.textContent).toContain("Activity");
+  expect(disclosure.textContent).toContain("Thinking");
+  expect(disclosure.textContent).toContain("Succeeded");
+  expect(disclosure.textContent).toContain("Failed");
+  expect(disclosure.textContent).toContain("Denied");
+  expect(disclosure.querySelector("pre")?.textContent).toContain("ToolEvent");
+  expect(disclosure.textContent).not.toContain("base64");
+  expect(disclosure.getAttribute("aria-label")).toBe("Atlas activity");
+});
+
+test("live activity has a status region while approvals stay prominent", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async () => pending.promise;
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.chooseWorkspaceForDraft();
+  store.setDraft("search");
+  const sending = store.send();
+  await flush();
+
+  api.eventSink!({ event: "runtimeStatus", data: { status: "thinking" } });
+  api.eventSink!({
+    event: "toolRequested",
+    data: { sequence: 0, tool: "search_files", arguments: '{"query":"x"}' },
+  });
+  api.eventSink!({
+    event: "approvalRequested",
+    data: {
+      sequence: 0,
+      request: {
+        id: "approval-live",
+        tool: "search_files",
+        arguments: '{"query":"x"}',
+        reason: "reads sensitive data",
+      },
+    },
+  });
+
+  expect(root.querySelector("[data-live-activity][role='status']")?.textContent).toContain(
+    "Thinking",
+  );
+  expect(root.querySelector("[role='alertdialog']")?.textContent).toContain(
+    "Allow search_files?",
+  );
+  pending.resolve({ answer: "done", metadata, created: true, activities: [] });
   await sending;
 });
 

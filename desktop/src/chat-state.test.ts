@@ -9,6 +9,7 @@ import type {
   SaveSettingsInput,
   SettingsView,
   ChatEvent,
+  ActivityRecord,
   PermissionMode,
 } from "./types";
 
@@ -62,6 +63,17 @@ function savedConversation(metadata: ConversationMetadata): Conversation {
     ],
   };
 }
+
+const thinkingActivity: ActivityRecord = {
+  sequence: 0,
+  kind: "status",
+  tool: null,
+  arguments: null,
+  outcome: null,
+  summary: "Thinking",
+  details: null,
+  createdAt: "2026-10-04T10:00:00Z",
+};
 
 class FakeApi implements AtlasApi {
   listCalls = 0;
@@ -263,10 +275,14 @@ test("approval and tool events are scoped to the active ask", async () => {
   await Promise.resolve();
   const sink = api.eventSinks[0]!;
 
-  sink({ event: "toolStarted", data: { tool: "delete_file" } });
+  sink({
+    event: "toolRequested",
+    data: { sequence: 0, tool: "delete_file", arguments: '{"path":"note.txt"}' },
+  });
   sink({
     event: "approvalRequested",
     data: {
+      sequence: 0,
       request: {
         id: "approval-1",
         tool: "delete_file",
@@ -276,20 +292,24 @@ test("approval and tool events are scoped to the active ask", async () => {
     },
   });
   expect(store.getState().pendingApproval?.id).toBe("approval-1");
-  expect(store.getState().toolActivity[0]).toMatchObject({ status: "running" });
+  expect(store.getState().toolActivity[0]).toMatchObject({ status: "waiting" });
 
   await store.resolveToolApproval(false);
   expect(api.approvalResolutions).toEqual([{ id: "approval-1", allow: false }]);
   expect(store.getState().pendingApproval).toBeNull();
 
-  sink({ event: "toolFinished", data: { tool: "delete_file", success: false } });
-  expect(store.getState().toolActivity[0]).toMatchObject({ status: "failed" });
+  sink({
+    event: "toolDenied",
+    data: { sequence: 0, tool: "delete_file", summary: "delete_file was denied" },
+  });
+  expect(store.getState().toolActivity[0]).toMatchObject({ status: "denied" });
   pending.resolve(result(first, "Denied", true));
   await sending;
   expect(api.askPermissionModes).toEqual(["ask"]);
   sink({
     event: "approvalRequested",
     data: {
+      sequence: 0,
       request: {
         id: "stale",
         tool: "delete_file",
@@ -313,6 +333,7 @@ test("leaving a pending approval cancels the ask and clears unsaved messages", a
   api.eventSinks[0]!({
     event: "approvalRequested",
     data: {
+      sequence: 0,
       request: {
         id: "approval-cancel",
         tool: "delete_file",
@@ -330,6 +351,95 @@ test("leaving a pending approval cancels the ask and clears unsaved messages", a
   pending.reject(new Error("tool approval was cancelled"));
   await sending;
   expect(store.getState().messages).toEqual([]);
+});
+
+test("activity events update repeated tools by sequence and canonicalize on success", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("search twice");
+  const sending = store.send();
+  await Promise.resolve();
+  const sink = api.eventSinks[0]!;
+
+  sink({ event: "runtimeStatus", data: { status: "thinking" } });
+  sink({
+    event: "toolRequested",
+    data: { sequence: 0, tool: "search_files", arguments: '{"query":"one"}' },
+  });
+  sink({ event: "toolStarted", data: { sequence: 0, tool: "search_files" } });
+  sink({
+    event: "toolRequested",
+    data: { sequence: 1, tool: "search_files", arguments: '{"query":"two"}' },
+  });
+  sink({ event: "toolStarted", data: { sequence: 1, tool: "search_files" } });
+  sink({
+    event: "toolFinished",
+    data: {
+      sequence: 0,
+      tool: "search_files",
+      success: true,
+      summary: "first search succeeded",
+      details: "first result",
+    },
+  });
+
+  expect(store.getState().toolActivity).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ sequence: 0, status: "succeeded" }),
+      expect.objectContaining({ sequence: 1, status: "running" }),
+    ]),
+  );
+
+  pending.resolve({ answer: "Done", metadata: first, created: true, activities: [thinkingActivity] });
+  await sending;
+  expect(store.getState().messages.at(-1)?.activity).toEqual([thinkingActivity]);
+  expect(store.getState().toolActivity).toEqual([]);
+
+  sink({ event: "runtimeStatus", data: { status: "preparingAnswer" } });
+  expect(store.getState().messages.at(-1)?.activity).toEqual([thinkingActivity]);
+});
+
+test("restored activity is associated by assistant message index", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => ({
+    ...savedConversation(first),
+    activities: [
+      {
+        turnId: "turn-1",
+        assistantMessageIndex: 1,
+        records: [thinkingActivity],
+      },
+    ],
+  }));
+  const store = new ChatStore(api);
+  await store.initialize();
+
+  await store.selectConversation(first.id);
+
+  expect(store.getState().messages[1].activity).toEqual([thinkingActivity]);
+  expect(store.getState().messages[0].activity).toBeUndefined();
+});
+
+test("failed request keeps transient activity until the next chat action", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("fail after search");
+  const sending = store.send();
+  await Promise.resolve();
+  api.eventSinks[0]!({ event: "runtimeStatus", data: { status: "thinking" } });
+  pending.reject(new Error("model failed"));
+  await sending;
+
+  expect(store.getState().toolActivity).toHaveLength(1);
+  await store.newChat();
+  expect(store.getState().toolActivity).toEqual([]);
 });
 
 function deferred<T>() {
