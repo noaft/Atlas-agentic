@@ -61,6 +61,12 @@ The built-in runtime tools are:
 - `open_file`: open a workspace file with the OS default application
 - `open_application`: launch an application
 - `exec_command`: execute an unrestricted platform shell command from the workspace
+- `mouse_move`: move the pointer with absolute or relative coordinates
+- `mouse_click`: click left, middle, right, back, or forward in the active application
+- `mouse_scroll`: scroll horizontally or vertically in the active application
+- `type_text`: type bounded Unicode text into the active application
+- `key_press`: press named or Unicode keys with optional modifiers
+- `get_ui_state`: read pointer, primary-display, and active-window metadata
 
 The displayed workspace is a starting directory, not a shell sandbox.
 `exec_command` is available on Linux, WSL, macOS, and Windows and is intentionally
@@ -72,9 +78,18 @@ timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
 Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
 read-only tools automatically. Workspace also permits non-destructive structured
 workspace changes. Destructive actions, launches, and commands still require an
-approval in Workspace mode. Full access skips Atlas confirmations but never
+approval in Workspace mode. Desktop observation and mouse/keyboard control
+require approval in both Ask and Workspace modes because they can expose or
+change sensitive state. Full access skips Atlas confirmations but never
 elevates beyond the Atlas process's OS-user permissions. The Settings default
 applies to new drafts; a saved conversation stores and restores its own mode.
+
+Computer input targets the application active at execution time. Windows may
+reject input into a higher-integrity process, macOS requires user-granted
+Accessibility access, and Linux currently requires a usable X11 display.
+Wayland-only sessions return an actionable error. Keep these capabilities in
+the Rust backend; do not broaden frontend Tauri shell, process, accessibility,
+or filesystem permissions.
 
 ## Configure and Run
 

@@ -61,10 +61,12 @@ saving anything. After the first successful response, the selected mode belongs
 to that conversation; reopening it restores the same mode, and changing it does
 not affect other chats.
 
-- **Ask** automatically permits read-only tools and asks before file changes,
-  application launches, or commands.
+- **Ask** automatically permits ordinary workspace reads and asks before file
+  changes, application launches, commands, desktop observation, or mouse and
+  keyboard control.
 - **Workspace** also permits non-destructive changes inside the selected
-  workspace, but asks before deletion, overwrite, launch, or command execution.
+  workspace, but asks before deletion, overwrite, launch, command execution,
+  desktop observation, or mouse and keyboard control.
 - **Full access** runs all registered tools without an Atlas confirmation. It
   does not elevate privileges: every action still runs with the desktop process's
   current OS-user permissions.
@@ -228,6 +230,25 @@ Default runtime tools:
 - `open_file`: open a workspace file with the operating system's default application
 - `open_application`: launch an application by name or executable path
 - `exec_command`: execute an unrestricted platform shell command from the workspace
+- `mouse_move`: move the pointer with absolute or relative desktop coordinates
+- `mouse_click`: click a mouse button in the active application
+- `mouse_scroll`: scroll horizontally or vertically in the active application
+- `type_text`: type Unicode text into the active application
+- `key_press`: press a named or Unicode key with optional modifiers
+- `get_ui_state`: read pointer, primary-display, and active-window metadata
+
+Computer-control tools act on the application active when the tool executes;
+focus may change after approval, and a successful result means the OS accepted
+the input rather than proving the target application handled it. Windows blocks
+input into applications running at a higher integrity level. macOS requires the
+user to grant Atlas Accessibility access. Linux input currently requires a
+usable X11 display; unsupported Wayland-only sessions return an actionable
+connection error. Full access skips the Atlas confirmation but does not bypass
+these operating-system protections.
+
+Desktop control stays in the Rust backend. The frontend retains only its narrow
+dialog and fullscreen capabilities; it receives no shell, process,
+accessibility, or unrestricted filesystem permission.
 
 The workspace shown in the app is the tools' starting directory and conversation
 label. Structured path-based file helpers reject absolute paths, parent traversal,

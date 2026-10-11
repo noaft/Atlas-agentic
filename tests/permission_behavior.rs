@@ -107,6 +107,8 @@ fn permission_matrix_matches_the_three_modes() {
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
+        ToolRisk::ComputerObserve,
+        ToolRisk::ComputerControl,
     ] {
         assert!(!requires_confirmation(PermissionMode::FullAccess, risk));
     }
@@ -119,15 +121,32 @@ fn permission_matrix_matches_the_three_modes() {
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
+        ToolRisk::ComputerObserve,
+        ToolRisk::ComputerControl,
     ] {
         assert!(requires_confirmation(PermissionMode::Ask, risk));
     }
     for risk in [ToolRisk::ReadOnly, ToolRisk::ModifyWorkspace] {
         assert!(!requires_confirmation(PermissionMode::Workspace, risk));
     }
-    for risk in [ToolRisk::Destructive, ToolRisk::Launch, ToolRisk::Command] {
+    for risk in [
+        ToolRisk::Destructive,
+        ToolRisk::Launch,
+        ToolRisk::Command,
+        ToolRisk::ComputerObserve,
+        ToolRisk::ComputerControl,
+    ] {
         assert!(requires_confirmation(PermissionMode::Workspace, risk));
     }
+
+    assert_eq!(
+        ToolRisk::ComputerObserve.reason(),
+        "reads potentially sensitive information from the active desktop"
+    );
+    assert_eq!(
+        ToolRisk::ComputerControl.reason(),
+        "sends mouse or keyboard input to the active application"
+    );
 }
 
 #[test]

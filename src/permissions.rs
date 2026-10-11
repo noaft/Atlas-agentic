@@ -17,6 +17,8 @@ pub enum ToolRisk {
     Destructive,
     Launch,
     Command,
+    ComputerObserve,
+    ComputerControl,
 }
 
 impl ToolRisk {
@@ -27,6 +29,10 @@ impl ToolRisk {
             Self::Destructive => "deletes or overwrites data",
             Self::Launch => "opens a file or application on the computer",
             Self::Command => "executes a shell command with the Atlas process permissions",
+            Self::ComputerObserve => {
+                "reads potentially sensitive information from the active desktop"
+            }
+            Self::ComputerControl => "sends mouse or keyboard input to the active application",
         }
     }
 }
@@ -37,7 +43,11 @@ pub fn requires_confirmation(mode: PermissionMode, risk: ToolRisk) -> bool {
         PermissionMode::Ask => risk != ToolRisk::ReadOnly,
         PermissionMode::Workspace => matches!(
             risk,
-            ToolRisk::Destructive | ToolRisk::Launch | ToolRisk::Command
+            ToolRisk::Destructive
+                | ToolRisk::Launch
+                | ToolRisk::Command
+                | ToolRisk::ComputerObserve
+                | ToolRisk::ComputerControl
         ),
     }
 }

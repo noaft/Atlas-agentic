@@ -8,9 +8,10 @@ use crate::{
     },
     settings::{EffectiveSettings, SettingsStore},
     tools::{
-        CopyFileTool, CreateDirectoryTool, CreateFileTool, CurrentTimeTool, DeleteFileTool,
-        ListDirTool, MoveFileTool, OpenApplicationTool, OpenFileTool, PwdTool, ReadFileTool,
-        SearchFilesTool, ToolRegistry,
+        system_computer_controller, CopyFileTool, CreateDirectoryTool, CreateFileTool,
+        CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool, MouseClickTool,
+        MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool, OpenFileTool, PwdTool,
+        ReadFileTool, SearchFilesTool, ToolRegistry, TypeTextTool,
     },
     Runtime,
 };
@@ -44,6 +45,7 @@ pub fn build_runtime_with_settings(
 }
 
 fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
+    let computer = system_computer_controller();
     let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(workspace_root)),
         Box::new(ListDirTool::new(workspace_root)),
@@ -57,6 +59,12 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(OpenFileTool::new(workspace_root)),
         Box::new(OpenApplicationTool::new()),
         Box::new(CurrentTimeTool::new()),
+        Box::new(MouseMoveTool::new(computer.clone())),
+        Box::new(MouseClickTool::new(computer.clone())),
+        Box::new(MouseScrollTool::new(computer.clone())),
+        Box::new(TypeTextTool::new(computer.clone())),
+        Box::new(KeyPressTool::new(computer.clone())),
+        Box::new(GetUiStateTool::new(computer)),
     ]);
     #[cfg(any(unix, windows))]
     let tools = {
@@ -103,13 +111,19 @@ mod tests {
             "create_file",
             "current_time",
             "delete_file",
+            "get_ui_state",
+            "key_press",
             "ls",
             "move_file",
+            "mouse_click",
+            "mouse_move",
+            "mouse_scroll",
             "open_application",
             "open_file",
             "pwd",
             "read_file",
             "search_files",
+            "type_text",
         ];
         #[cfg(any(unix, windows))]
         expected.push("exec_command");

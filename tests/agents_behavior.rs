@@ -169,6 +169,12 @@ fn readme_documents_the_complete_default_toolset_and_permission_modes() {
         "open_file",
         "open_application",
         "exec_command",
+        "mouse_move",
+        "mouse_click",
+        "mouse_scroll",
+        "type_text",
+        "key_press",
+        "get_ui_state",
     ] {
         assert!(
             readme.contains(&format!("`{tool_name}`")),

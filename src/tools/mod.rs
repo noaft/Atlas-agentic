@@ -1,3 +1,4 @@
+mod computer;
 mod copy_file;
 mod create_directory;
 mod create_file;
@@ -19,6 +20,12 @@ mod read_file;
 mod search_files;
 mod workspace_path;
 
+pub use computer::{
+    system_computer_controller, ActiveWindowState, ComputerController, ComputerKey,
+    ComputerUiState, CoordinateMode, GetUiStateTool, KeyDirection, KeyPressTool, MouseButton,
+    MouseClickTool, MouseMoveTool, MouseScrollTool, Observation, Point, ScrollAxis,
+    SharedComputerController, Size, TypeTextTool, UnavailableState, WindowBounds,
+};
 pub use copy_file::CopyFileTool;
 pub use create_directory::CreateDirectoryTool;
 pub use create_file::CreateFileTool;

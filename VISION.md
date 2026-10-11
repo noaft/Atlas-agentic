@@ -43,7 +43,11 @@ access. On Linux, WSL, macOS, and Windows, `exec_command` can reach other
 locations allowed by the current user's OS permissions. Structured file helpers
 remain scoped to the selected starting folder. Per-conversation permission modes
 decide when Atlas must ask before changing files, launching applications, or
-executing commands; they do not grant OS privileges.
+executing commands; they do not grant OS privileges. Atlas can also observe
+basic desktop state and send mouse or keyboard input through runtime-controlled
+tools. Those sensitive computer operations require confirmation in Ask and
+Workspace modes and remain subject to native OS accessibility, integrity, and
+desktop-session protections even in Full access.
 
 The current repo starts with a Rust CLI because it is the simplest runtime foundation. The CLI lets us build and test the agent core before adding the desktop interface.
 
