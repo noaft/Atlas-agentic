@@ -45,6 +45,7 @@ pub struct ModelRequest<'a> {
     pub system_prompt: &'a str,
     pub user_prompt: &'a str,
     pub history: &'a [ConversationMessage],
+    pub activity_context: Option<&'a str>,
     pub tools: &'a [ToolDefinition],
     pub images: &'a [ImageData],
     pub temperature: Option<f32>,

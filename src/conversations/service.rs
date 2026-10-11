@@ -1,16 +1,20 @@
 use std::path::Path;
 
-use crate::permissions::{MissingAuthorizer, PermissionMode, ToolAuthorizer, ToolEvent};
+use crate::permissions::{
+    MissingAuthorizer, PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
+};
 use crate::Runtime;
 
 use super::{
-    sanitize_title, select_recent_history, ConversationId, ConversationMetadata, ConversationStore,
+    render_activity_context, sanitize_title, select_recent_history, ActivityCollector,
+    ActivityRecord, ConversationId, ConversationMetadata, ConversationStore,
 };
 
 #[derive(Debug)]
 pub struct ConversationAskResult {
     pub answer: String,
     pub metadata: ConversationMetadata,
+    pub activities: Vec<ActivityRecord>,
     pub created: bool,
 }
 
@@ -167,24 +171,57 @@ impl<'a> ConversationService<'a> {
         requested_permission_mode: PermissionMode,
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResult, String> {
-        let (history, permission_mode) = match id {
+        let (history, activity_context, permission_mode) = match id {
             Some(id) => {
                 let conversation = self.store.load(id)?;
                 let permission_mode = conversation
                     .metadata
                     .permission_mode
                     .unwrap_or(PermissionMode::Ask);
-                (
-                    select_recent_history(&conversation.messages, self.history_limit),
-                    permission_mode,
-                )
+                let history = select_recent_history(&conversation.messages, self.history_limit);
+                let first_message_index = conversation.messages.len().saturating_sub(history.len());
+                let activities = conversation
+                    .activities
+                    .into_iter()
+                    .filter(|turn| turn.assistant_message_index >= first_message_index)
+                    .collect::<Vec<_>>();
+                let activity_context = render_activity_context(&activities);
+                (history, activity_context, permission_mode)
             }
-            None => (Vec::new(), requested_permission_mode),
+            None => (Vec::new(), String::new(), requested_permission_mode),
         };
         let mut sink_error = None;
-        let answer = self.runtime.ask_stream_with_history_and_authorization(
+        let mut collector = ActivityCollector::new();
+        let mut capture_event = |event: &ToolEvent| {
+            match event {
+                ToolEvent::Status { status } => collector.status(match status {
+                    RuntimeStatus::Thinking => "Thinking",
+                    RuntimeStatus::PreparingAnswer => "Preparing answer",
+                }),
+                ToolEvent::Requested {
+                    tool, arguments, ..
+                } => collector.tool_requested_sanitized(tool, arguments.clone()),
+                ToolEvent::Denied { tool, .. } => collector.tool_denied(tool),
+                ToolEvent::Finished {
+                    tool,
+                    success,
+                    summary,
+                    details,
+                    ..
+                } => collector.tool_finished(
+                    tool,
+                    *success,
+                    summary,
+                    details.as_deref().unwrap_or_default(),
+                ),
+                ToolEvent::ApprovalRequested { .. } | ToolEvent::Started { .. } => {}
+            }
+            (callbacks.on_tool_event)(event);
+        };
+        let answer = self.runtime.ask_stream_with_context_and_authorization(
             prompt,
             &history,
+            (!activity_context.is_empty()).then_some(activity_context.as_str()),
             permission_mode,
             callbacks.authorizer,
             &mut |delta| {
@@ -192,29 +229,31 @@ impl<'a> ConversationService<'a> {
                     sink_error = (callbacks.on_delta)(delta).err();
                 }
             },
-            callbacks.on_tool_event,
+            &mut capture_event,
         );
         if let Some(error) = sink_error {
             return Err(error);
         }
         let answer = answer?;
+        let activity_turn = collector.into_unassociated_turn();
+        let activities = activity_turn.records.clone();
 
         let metadata = match id {
-            Some(id) => self
-                .store
-                .append_turn_with_workspace_and_permission_if_missing(
-                    id,
-                    prompt,
-                    &answer,
-                    new_workspace,
-                    Some(permission_mode),
-                )?,
+            Some(id) => self.store.append_turn_with_activity(
+                id,
+                prompt,
+                &answer,
+                new_workspace,
+                Some(permission_mode),
+                activity_turn,
+            )?,
             None => {
-                let metadata = self.store.create_turn_with_workspace_and_permission(
+                let metadata = self.store.create_turn_with_activity(
                     prompt,
                     &answer,
                     new_workspace,
                     Some(permission_mode),
+                    activity_turn,
                 )?;
                 let title = self
                     .runtime
@@ -229,6 +268,7 @@ impl<'a> ConversationService<'a> {
         Ok(ConversationAskResult {
             answer,
             metadata,
+            activities,
             created: id.is_none(),
         })
     }

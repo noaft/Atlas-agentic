@@ -14,6 +14,7 @@ struct CapturedRequest {
     history: Vec<ConversationMessage>,
     user_prompt: String,
     images: Vec<ImageData>,
+    activity_context: Option<String>,
 }
 
 struct CapturingModel {
@@ -30,6 +31,7 @@ impl ModelProvider for CapturingModel {
             history: request.history.to_vec(),
             user_prompt: request.user_prompt.to_string(),
             images: request.images.to_vec(),
+            activity_context: request.activity_context.map(str::to_string),
         });
         Ok("answer".to_string())
     }
@@ -78,8 +80,53 @@ conversation_title_prompt = "Write a short conversation title."
             history,
             user_prompt: "Newest question".to_string(),
             images: vec![],
+            activity_context: None,
         })
     );
+}
+
+#[test]
+fn local_agent_forwards_activity_context_separately_from_messages() {
+    let captured = Rc::new(RefCell::new(None));
+    let agent = LocalAgent::new(
+        LocalAgentDefinition::from_toml(
+            r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a title."
+"#,
+        )
+        .unwrap(),
+        Box::new(CapturingModel {
+            captured: Rc::clone(&captured),
+        }),
+    );
+    let mut sink = discard_delta;
+
+    agent
+        .process_stream_with_context_and_images(
+            "Newest question",
+            &[],
+            &[],
+            Some("Recent Atlas activity:\n- searched files"),
+            &[],
+            &mut sink,
+        )
+        .unwrap();
+
+    assert_eq!(
+        captured
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .activity_context
+            .as_deref(),
+        Some("Recent Atlas activity:\n- searched files")
+    );
+    assert!(captured.borrow().as_ref().unwrap().history.is_empty());
 }
 
 struct TextOnlyAgent;

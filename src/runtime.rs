@@ -95,6 +95,27 @@ impl Runtime {
         on_delta: &mut dyn FnMut(&str),
         on_tool_event: &mut dyn FnMut(&ToolEvent),
     ) -> Result<String, String> {
+        self.ask_stream_with_context_and_authorization(
+            prompt,
+            history,
+            None,
+            permission_mode,
+            authorizer,
+            on_delta,
+            on_tool_event,
+        )
+    }
+
+    pub fn ask_stream_with_context_and_authorization(
+        &self,
+        prompt: &str,
+        history: &[ConversationMessage],
+        activity_context: Option<&str>,
+        permission_mode: PermissionMode,
+        authorizer: &dyn ToolAuthorizer,
+        on_delta: &mut dyn FnMut(&str),
+        on_tool_event: &mut dyn FnMut(&ToolEvent),
+    ) -> Result<String, String> {
         let agent = self
             .agents
             .default_agent()
@@ -119,10 +140,11 @@ impl Runtime {
             });
             first_model_request = false;
             let mut final_stream = FinalContentStream::new(allow_plain_final);
-            let response = agent.process_stream_with_images(
+            let response = agent.process_stream_with_context_and_images(
                 &input,
                 history,
                 &tool_definitions,
+                activity_context,
                 &latest_images,
                 &mut |delta| {
                     final_stream.push(delta, on_delta);

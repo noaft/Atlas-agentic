@@ -79,11 +79,15 @@ impl ActivityCollector {
     }
 
     pub fn tool_requested(&mut self, tool: &str, args: &Value) {
+        self.tool_requested_sanitized(tool, sanitize_arguments(args));
+    }
+
+    pub fn tool_requested_sanitized(&mut self, tool: &str, arguments: String) {
         self.push(ActivityRecord {
             sequence: 0,
             kind: ActivityKind::ToolCall,
             tool: Some(tool.to_string()),
-            arguments: Some(sanitize_arguments(args)),
+            arguments: Some(arguments),
             outcome: None,
             summary: format!("Requested {tool}"),
             details: None,

@@ -51,6 +51,7 @@ impl Agent for LocalAgent {
             system_prompt: self.system_prompt(),
             user_prompt: input,
             history,
+            activity_context: None,
             tools,
             images: &[],
             temperature: self.definition.temperature,
@@ -70,6 +71,7 @@ impl Agent for LocalAgent {
                 system_prompt: self.system_prompt(),
                 user_prompt: input,
                 history,
+                activity_context: None,
                 tools,
                 images: &[],
                 temperature: self.definition.temperature,
@@ -92,6 +94,31 @@ impl Agent for LocalAgent {
                 system_prompt: self.system_prompt(),
                 user_prompt: input,
                 history,
+                activity_context: None,
+                tools,
+                images,
+                temperature: self.definition.temperature,
+                top_p: self.definition.top_p,
+            },
+            on_delta,
+        )
+    }
+
+    fn process_stream_with_context_and_images(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[ToolDefinition],
+        activity_context: Option<&str>,
+        images: &[ImageData],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.model.stream(
+            &ModelRequest {
+                system_prompt: self.system_prompt(),
+                user_prompt: input,
+                history,
+                activity_context,
                 tools,
                 images,
                 temperature: self.definition.temperature,
@@ -106,6 +133,7 @@ impl Agent for LocalAgent {
             system_prompt: &self.definition.conversation_title_prompt,
             user_prompt: first_input,
             history: &[],
+            activity_context: None,
             tools: &[],
             images: &[],
             temperature: self.definition.temperature,

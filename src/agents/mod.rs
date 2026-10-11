@@ -45,6 +45,17 @@ pub trait Agent {
             Err("model provider does not support image input".to_string())
         }
     }
+    fn process_stream_with_context_and_images(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[crate::tools::ToolDefinition],
+        _activity_context: Option<&str>,
+        images: &[ImageData],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.process_stream_with_images(input, history, tools, images, on_delta)
+    }
     fn generate_conversation_title(&self, first_input: &str) -> Result<String, String>;
 }
 

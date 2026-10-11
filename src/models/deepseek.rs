@@ -219,11 +219,17 @@ fn validate_image(image: &ImageData) -> Result<(), String> {
 }
 
 pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
-    if request.tools.is_empty() {
-        return request.system_prompt.to_string();
-    }
-
     let mut prompt = request.system_prompt.to_string();
+    if let Some(activity_context) = request
+        .activity_context
+        .filter(|value| !value.trim().is_empty())
+    {
+        prompt.push_str("\n\nAtlas memory from prior successful tool activity:\n");
+        prompt.push_str(activity_context);
+    }
+    if request.tools.is_empty() {
+        return prompt;
+    }
     prompt.push_str("\n\nAtlas runtime tools are available.");
     prompt.push_str("\nYou must respond with exactly one JSON object and no markdown.");
     prompt.push_str("\nThe type field must be the first field in the JSON object.");
@@ -402,6 +408,7 @@ mod tests {
             system_prompt: "You are Atlas.",
             user_prompt: "inspect this screen",
             history: &[],
+            activity_context: None,
             tools: &[],
             images,
             temperature: None,
@@ -489,6 +496,7 @@ mod tests {
             system_prompt: "You are Atlas.",
             user_prompt: "Create a file.",
             history: &[],
+            activity_context: None,
             tools: &tools,
             images: &[],
             temperature: Some(0.2),
@@ -503,6 +511,32 @@ mod tests {
         assert!(prompt.contains(r#"{"type":"tool_call","tool":"tool_name","args":{}}"#));
         assert!(prompt.contains("Use a tool name exactly as listed below"));
         assert!(prompt.contains("create_file"));
+    }
+
+    #[test]
+    fn activity_context_is_a_labeled_system_section_not_a_fake_message() {
+        let provider = provider();
+        let mut request = request(&[]);
+        request.activity_context =
+            Some("Recent Atlas activity (facts from earlier successful turns):\n- searched files");
+
+        let payload =
+            serde_json::to_value(provider.chat_request(&request, false).unwrap()).unwrap();
+        let messages = payload["messages"].as_array().unwrap();
+
+        assert_eq!(messages.len(), 2);
+        let system = messages[0]["content"].as_str().unwrap();
+        assert!(system.contains("Atlas memory from prior successful tool activity:"));
+        assert!(system.contains("searched files"));
+        assert!(!system.contains("RAW_PRIVATE_DETAIL"));
+        assert_eq!(messages[1]["role"], "user");
+    }
+
+    #[test]
+    fn empty_activity_context_adds_no_memory_section() {
+        let prompt = render_model_instructions(&request(&[]));
+
+        assert!(!prompt.contains("Atlas memory from prior successful tool activity:"));
     }
 
     #[test]
@@ -521,6 +555,7 @@ mod tests {
             system_prompt: "You are Atlas.",
             user_prompt: "Read README.md.",
             history: &[],
+            activity_context: None,
             tools: &tools,
             images: &[],
             temperature: None,
@@ -555,6 +590,7 @@ mod tests {
             system_prompt: "You are Atlas.",
             user_prompt: "Newest question",
             history: &history,
+            activity_context: None,
             tools: &[],
             images: &[],
             temperature: None,

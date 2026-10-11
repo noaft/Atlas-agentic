@@ -12,7 +12,8 @@ use std::{
 use atlas_agentic::{
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     conversations::{
-        ConversationId, ConversationMessage, ConversationService, ConversationStore, MessageRole,
+        ActivityCollector, ConversationId, ConversationMessage, ConversationService,
+        ConversationStore, MessageRole,
     },
     media::{ImageData, ImageDetail},
     models::{ModelProvider, ModelRequest},
@@ -168,6 +169,7 @@ impl ToolAuthorizer for FixedAuthorizer {
 struct Request {
     input: String,
     history: Vec<ConversationMessage>,
+    activity_context: Option<String>,
     title: bool,
     tool_count: usize,
 }
@@ -206,6 +208,7 @@ impl ScriptedModel {
         self.requests.borrow_mut().push(Request {
             input: request.user_prompt.to_string(),
             history: request.history.to_vec(),
+            activity_context: request.activity_context.map(str::to_string),
             title,
             tool_count: request.tools.len(),
         });
@@ -904,4 +907,187 @@ fn missing_conversation_is_reported_before_calling_model() {
 
     assert!(error.contains("conversation not found"), "{error}");
     assert!(requests.borrow().is_empty());
+}
+
+#[test]
+fn successful_service_turn_commits_activity_with_messages() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let (runtime, _) = runtime(
+        &store,
+        vec![Response::success(vec!["completed answer"])],
+        Ok("Activity title"),
+    );
+
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask("do work", None, &mut |_| {})
+        .unwrap();
+
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.activities.len(), 1);
+    assert_eq!(saved.activities[0].records, result.activities);
+    assert!(result
+        .activities
+        .iter()
+        .any(|record| record.summary == "Thinking"));
+}
+
+#[test]
+fn failed_service_turn_commits_neither_messages_nor_activity() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("data");
+    let store = ConversationStore::at(root.clone());
+    let (runtime, _) = runtime(&store, vec![Response::failure()], Ok("unused"));
+
+    assert!(ConversationService::new(&runtime, &store, 40)
+        .ask("fail", None, &mut |_| {})
+        .is_err());
+
+    assert!(store.list().unwrap().is_empty());
+    assert!(!root.join("activities").exists());
+}
+
+#[test]
+fn continuation_selects_activity_for_the_same_recent_message_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let mut old = ActivityCollector::new();
+    old.status("OLD_ACTIVITY");
+    let metadata = store
+        .create_turn_with_activity(
+            "old input",
+            "old answer",
+            None,
+            None,
+            old.into_unassociated_turn(),
+        )
+        .unwrap();
+    let mut recent = ActivityCollector::new();
+    recent.status("RECENT_ACTIVITY");
+    store
+        .append_turn_with_activity(
+            &metadata.id,
+            "recent input",
+            "recent answer",
+            None,
+            None,
+            recent.into_unassociated_turn(),
+        )
+        .unwrap();
+    let (runtime, requests) = runtime(
+        &store,
+        vec![Response::success(vec!["continued"])],
+        Ok("unused"),
+    );
+
+    ConversationService::new(&runtime, &store, 2)
+        .ask("next", Some(&metadata.id), &mut |_| {})
+        .unwrap();
+
+    let requests = requests.borrow();
+    let context = requests[0].activity_context.as_deref().unwrap();
+    assert!(context.contains("RECENT_ACTIVITY"));
+    assert!(!context.contains("OLD_ACTIVITY"));
+}
+
+#[test]
+fn later_turn_receives_summaries_not_raw_details() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let mut activity = ActivityCollector::new();
+    activity.tool_finished(
+        "search_files",
+        true,
+        "Searched files successfully",
+        "RAW_PRIVATE_DETAIL",
+    );
+    let metadata = store
+        .create_turn_with_activity(
+            "old input",
+            "old answer",
+            None,
+            None,
+            activity.into_unassociated_turn(),
+        )
+        .unwrap();
+    let (runtime, requests) = runtime(
+        &store,
+        vec![Response::success(vec!["continued"])],
+        Ok("unused"),
+    );
+
+    ConversationService::new(&runtime, &store, 40)
+        .ask("next", Some(&metadata.id), &mut |_| {})
+        .unwrap();
+
+    let context = requests.borrow()[0].activity_context.clone().unwrap();
+    assert!(context.contains("Searched files successfully"));
+    assert!(!context.contains("RAW_PRIVATE_DETAIL"));
+}
+
+#[test]
+fn failed_and_denied_tools_are_remembered_after_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let (runtime, _) = runtime(
+        &store,
+        vec![
+            Response::success(vec![r#"{"type":"tool_call","tool":"missing","args":{}}"#]),
+            Response::success(vec![r#"{"type":"tool_call","tool":"risky","args":{}}"#]),
+            Response::success(vec![r#"{"type":"final","content":"recovered"}"#]),
+        ],
+        Ok("Remembered attempts"),
+    );
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(CountingRiskyTool {
+        executions: Rc::new(Cell::new(0)),
+    })]));
+    let authorizer = FixedAuthorizer {
+        decision: AuthorizationDecision::Deny,
+        calls: Cell::new(0),
+    };
+
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask_with_permission_authorizer(
+            "try safely",
+            None,
+            PermissionMode::Ask,
+            &authorizer,
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+    let saved = store.load(&result.metadata.id).unwrap();
+    let summaries = saved.activities[0]
+        .records
+        .iter()
+        .map(|record| record.summary.as_str())
+        .collect::<Vec<_>>();
+    assert!(summaries.contains(&"missing failed"));
+    assert!(summaries.contains(&"risky was denied"));
+}
+
+#[test]
+fn failed_overall_turn_discards_collected_activity() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let metadata = store.create_turn("old", "answer").unwrap();
+    let (runtime, _) = runtime(
+        &store,
+        vec![
+            Response::success(vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#]),
+            Response::failure(),
+        ],
+        Ok("unused"),
+    );
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(temp.path()))]));
+
+    assert!(ConversationService::new(&runtime, &store, 40)
+        .ask("continue", Some(&metadata.id), &mut |_| {})
+        .is_err());
+
+    let saved = store.load(&metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert!(saved.activities.is_empty());
 }
