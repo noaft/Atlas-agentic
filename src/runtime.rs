@@ -198,7 +198,7 @@ impl Runtime {
                         arguments: sanitize_arguments(&args),
                     });
 
-                    let (risk, arguments) = match self.tools.authorization(&tool, &args) {
+                    let authorization = match self.tools.authorization(&tool, &args) {
                         Ok(authorization) => authorization,
                         Err(error) => {
                             on_tool_event(&ToolEvent::Finished {
@@ -218,8 +218,13 @@ impl Runtime {
                             continue;
                         }
                     };
+                    let risk = authorization.risk();
                     if requires_confirmation(permission_mode, risk) {
-                        let request = AuthorizationRequest::new(&tool, arguments, risk);
+                        let request = AuthorizationRequest::new(
+                            &tool,
+                            authorization.arguments().to_string(),
+                            risk,
+                        );
                         on_tool_event(&ToolEvent::ApprovalRequested {
                             sequence,
                             request: request.clone(),
@@ -248,7 +253,7 @@ impl Runtime {
                         tool: tool.clone(),
                         args: args.clone(),
                     };
-                    let result = self.tools.execute(&tool_call);
+                    let result = self.tools.execute_authorized(&tool_call, &authorization);
                     let (success, output) = match result {
                         Ok(result) => {
                             let images = result

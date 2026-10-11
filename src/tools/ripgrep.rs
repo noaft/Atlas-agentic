@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     fs::{self, File},
     path::{Path, PathBuf},
 };
@@ -79,22 +80,50 @@ impl Tool for RipgrepTool {
     }
 
     fn risk(&self, args: &serde_json::Value) -> Result<ToolRisk, String> {
+        self.authorize(args).map(|(risk, _)| risk)
+    }
+
+    fn authorize(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<(ToolRisk, Option<Box<dyn Any>>), String> {
         let args = parse(args)?;
         let root = self.resolve_root(args.path.as_deref())?;
         build_matcher(&args)?;
         build_overrides(&root, args.glob.as_deref())?;
-        Ok(
-            if root == self.workspace || root.starts_with(&self.workspace) {
-                ToolRisk::ReadOnly
-            } else {
-                ToolRisk::ReadOutsideWorkspace
-            },
-        )
+        let risk = if root == self.workspace || root.starts_with(&self.workspace) {
+            ToolRisk::ReadOnly
+        } else {
+            ToolRisk::ReadOutsideWorkspace
+        };
+        Ok((risk, Some(Box::new(root))))
     }
 
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
         let args = parse(args)?;
         let root = self.resolve_root(args.path.as_deref())?;
+        self.execute_resolved(args, root)
+    }
+
+    fn execute_authorized(
+        &self,
+        args: &serde_json::Value,
+        context: Option<&dyn Any>,
+    ) -> Result<ToolResult, String> {
+        let args = parse(args)?;
+        let root = self.resolve_root(args.path.as_deref())?;
+        let authorized_root = context
+            .and_then(|context| context.downcast_ref::<PathBuf>())
+            .ok_or_else(|| "ripgrep authorization context is missing".to_string())?;
+        if &root != authorized_root {
+            return Err("ripgrep path changed after authorization".to_string());
+        }
+        self.execute_resolved(args, root)
+    }
+}
+
+impl RipgrepTool {
+    fn execute_resolved(&self, args: Args, root: PathBuf) -> Result<ToolResult, String> {
         ensure_root_readable(&root)?;
         let matcher = build_matcher(&args)?;
         let overrides = build_overrides(&root, args.glob.as_deref())?;

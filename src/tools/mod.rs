@@ -47,7 +47,7 @@ pub use read_file::ReadFileTool;
 pub use ripgrep::RipgrepTool;
 pub use search_files::SearchFilesTool;
 
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap};
 
 use crate::agent_output::AgentOutput;
 use crate::media::ImageData;
@@ -92,10 +92,23 @@ pub trait Tool {
     fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
         Ok(ToolRisk::ReadOnly)
     }
+    fn authorize(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<(ToolRisk, Option<Box<dyn Any>>), String> {
+        Ok((self.risk(args)?, None))
+    }
     fn summarize(&self, args: &serde_json::Value) -> String {
         summarize_arguments(args)
     }
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String>;
+    fn execute_authorized(
+        &self,
+        args: &serde_json::Value,
+        _context: Option<&dyn Any>,
+    ) -> Result<ToolResult, String> {
+        self.execute(args)
+    }
 }
 
 pub fn summarize_arguments(args: &serde_json::Value) -> String {
@@ -147,6 +160,24 @@ pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
+pub struct ToolAuthorization {
+    tool: String,
+    args: serde_json::Value,
+    risk: ToolRisk,
+    arguments: String,
+    context: Option<Box<dyn Any>>,
+}
+
+impl ToolAuthorization {
+    pub fn risk(&self) -> ToolRisk {
+        self.risk
+    }
+
+    pub fn arguments(&self) -> &str {
+        &self.arguments
+    }
+}
+
 impl ToolRegistry {
     pub fn empty() -> Self {
         Self {
@@ -177,16 +208,42 @@ impl ToolRegistry {
         }
     }
 
+    pub fn execute_authorized(
+        &self,
+        output: &AgentOutput,
+        authorization: &ToolAuthorization,
+    ) -> Result<ToolResult, String> {
+        match output {
+            AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
+            AgentOutput::ToolCall { tool, args } => {
+                if tool != &authorization.tool || args != &authorization.args {
+                    return Err("tool call changed after authorization".to_string());
+                }
+                self.tools
+                    .get(tool)
+                    .ok_or_else(|| format!("unknown tool: {tool}"))?
+                    .execute_authorized(args, authorization.context.as_deref())
+            }
+        }
+    }
+
     pub fn authorization(
         &self,
         tool_name: &str,
         args: &serde_json::Value,
-    ) -> Result<(ToolRisk, String), String> {
+    ) -> Result<ToolAuthorization, String> {
         let tool = self
             .tools
             .get(tool_name)
             .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
-        Ok((tool.risk(args)?, tool.summarize(args)))
+        let (risk, context) = tool.authorize(args)?;
+        Ok(ToolAuthorization {
+            tool: tool_name.to_string(),
+            args: args.clone(),
+            risk,
+            arguments: tool.summarize(args),
+            context,
+        })
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

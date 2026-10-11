@@ -356,7 +356,7 @@ fn key_press_supports_named_character_function_keys_modifiers_and_repeats() {
 fn key_press_authorization_summary_shows_the_requested_shortcut() {
     let (controller, _) = controller(None);
     let registry = ToolRegistry::new(vec![Box::new(KeyPressTool::new(controller))]);
-    let (_, summary) = registry
+    let authorization = registry
         .authorization(
             "key_press",
             &serde_json::json!({
@@ -366,6 +366,7 @@ fn key_press_authorization_summary_shows_the_requested_shortcut() {
             }),
         )
         .unwrap();
+    let summary = authorization.arguments();
 
     assert!(summary.contains("Delete"));
     assert!(summary.contains("control"));

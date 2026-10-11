@@ -1,8 +1,9 @@
 use std::{fs, process::Command, time::Duration};
 
 use atlas_agentic::{
+    agent_output::AgentOutput,
     permissions::ToolRisk,
-    tools::{RipgrepTool, Tool},
+    tools::{RipgrepTool, Tool, ToolRegistry},
 };
 use serde_json::json;
 
@@ -263,6 +264,43 @@ fn relative_symlink_root_is_classified_outside() {
             .unwrap(),
         ToolRisk::ReadOutsideWorkspace
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_root_retargeted_after_authorization() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let inside = workspace.join("inside");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&inside).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(inside.join("note.txt"), "inside needle\n").unwrap();
+    fs::write(outside.join("secret.txt"), "outside needle\n").unwrap();
+    let link = workspace.join("linked");
+    symlink(&inside, &link).unwrap();
+
+    let registry = ToolRegistry::new(vec![Box::new(RipgrepTool::new(&workspace))]);
+    let args = json!({"pattern":"needle", "path":"linked"});
+    let authorization = registry.authorization("ripgrep", &args).unwrap();
+    assert_eq!(authorization.risk(), ToolRisk::ReadOnly);
+
+    fs::remove_file(&link).unwrap();
+    symlink(&outside, &link).unwrap();
+
+    let error = registry
+        .execute_authorized(
+            &AgentOutput::ToolCall {
+                tool: "ripgrep".to_string(),
+                args,
+            },
+            &authorization,
+        )
+        .err()
+        .expect("retargeted root was searched");
+    assert!(error.contains("changed after authorization"), "{error}");
 }
 
 #[cfg(unix)]
