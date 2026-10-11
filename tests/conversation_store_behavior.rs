@@ -11,7 +11,7 @@ use std::{
 };
 
 use atlas_agentic::conversations::{
-    ConversationId, ConversationMessage, ConversationStore, MessageRole,
+    ActivityTurn, ConversationId, ConversationMessage, ConversationStore, MessageRole,
 };
 use atlas_agentic::permissions::PermissionMode;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -20,6 +20,15 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 const FALLBACK_TITLE: &str = "Untitled conversation";
+
+fn activity_turn(id: &str) -> ActivityTurn {
+    ActivityTurn {
+        version: 1,
+        turn_id: id.to_string(),
+        assistant_message_index: usize::MAX,
+        records: Vec::new(),
+    }
+}
 
 fn read_index(root: &std::path::Path) -> Value {
     serde_json::from_str(&fs::read_to_string(root.join("conversations.json")).unwrap()).unwrap()
@@ -97,6 +106,139 @@ fn create_turn_writes_versioned_index_and_two_jsonl_messages() {
     );
     assert_eq!(conversation.messages[1].role, MessageRole::Assistant);
     assert_eq!(conversation.messages[1].content, "reply\n日本語");
+}
+
+#[test]
+fn successful_turn_persists_and_loads_ordered_activity() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store
+        .create_turn_with_activity("first", "answer", None, None, activity_turn("turn-1"))
+        .unwrap();
+    store
+        .append_turn_with_activity(
+            &metadata.id,
+            "second",
+            "answer",
+            None,
+            None,
+            activity_turn("turn-2"),
+        )
+        .unwrap();
+
+    let loaded = store.load(&metadata.id).unwrap();
+    assert_eq!(
+        loaded
+            .activities
+            .iter()
+            .map(|turn| (turn.turn_id.as_str(), turn.assistant_message_index))
+            .collect::<Vec<_>>(),
+        vec![("turn-1", 1), ("turn-2", 3)]
+    );
+    let path = data
+        .path()
+        .join("activities")
+        .join(format!("{}.jsonl", metadata.id));
+    assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 2);
+}
+
+#[test]
+fn missing_activity_sidecar_loads_as_empty() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("user", "assistant").unwrap();
+
+    assert!(store.load(&metadata.id).unwrap().activities.is_empty());
+}
+
+#[test]
+fn tool_free_turn_persists_an_empty_activity_batch_for_association() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store
+        .create_turn_with_activity("user", "assistant", None, None, activity_turn("tool-free"))
+        .unwrap();
+
+    let loaded = store.load(&metadata.id).unwrap();
+    assert_eq!(loaded.activities.len(), 1);
+    assert_eq!(loaded.activities[0].assistant_message_index, 1);
+    assert!(loaded.activities[0].records.is_empty());
+}
+
+#[test]
+fn activity_batch_beyond_durable_message_count_is_ignored() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store
+        .create_turn_with_activity("user", "assistant", None, None, activity_turn("durable"))
+        .unwrap();
+    let path = data
+        .path()
+        .join("activities")
+        .join(format!("{}.jsonl", metadata.id));
+    let mut orphan = activity_turn("orphan");
+    orphan.assistant_message_index = 99;
+    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{}", serde_json::to_string(&orphan).unwrap()).unwrap();
+
+    let loaded = store.load(&metadata.id).unwrap();
+    assert_eq!(loaded.activities.len(), 1);
+    assert_eq!(loaded.activities[0].turn_id, "durable");
+}
+
+#[test]
+fn activity_write_failure_leaves_messages_and_metadata_unchanged() {
+    let data = tempdir().unwrap();
+    fs::create_dir_all(data.path()).unwrap();
+    fs::write(data.path().join("activities"), "blocks the directory").unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+
+    let error = store
+        .create_turn_with_activity("user", "assistant", None, None, activity_turn("blocked"))
+        .unwrap_err();
+
+    assert!(error.contains("activities"), "{error}");
+    assert!(!data.path().join("conversations.json").exists());
+    assert_eq!(
+        fs::read_dir(data.path().join("conversations"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn delete_moves_activity_to_trash_when_present() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store
+        .create_turn_with_activity("user", "assistant", None, None, activity_turn("turn"))
+        .unwrap();
+    let source = data
+        .path()
+        .join("activities")
+        .join(format!("{}.jsonl", metadata.id));
+
+    store.delete(&metadata.id).unwrap();
+
+    assert!(!source.exists());
+    assert!(data
+        .path()
+        .join("trash")
+        .join(format!("{}.activity.jsonl", metadata.id))
+        .is_file());
+}
+
+#[test]
+fn delete_without_activity_remains_compatible() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store.create_turn("user", "assistant").unwrap();
+
+    let history = store.delete(&metadata.id).unwrap();
+
+    assert!(history.is_file());
+    assert!(store.list().unwrap().is_empty());
 }
 
 #[test]

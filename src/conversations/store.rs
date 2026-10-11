@@ -17,7 +17,10 @@ use crate::permissions::PermissionMode;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
-use super::{Conversation, ConversationId, ConversationMessage, ConversationMetadata, MessageRole};
+use super::{
+    ActivityTurn, Conversation, ConversationId, ConversationMessage, ConversationMetadata,
+    MessageRole, ACTIVITY_VERSION,
+};
 
 const INDEX_VERSION: u32 = 1;
 const FALLBACK_TITLE: &str = "Untitled conversation";
@@ -101,6 +104,28 @@ impl ConversationStore {
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
+        self.create_turn_inner(user, assistant, workspace, permission_mode, None)
+    }
+
+    pub fn create_turn_with_activity(
+        &self,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: ActivityTurn,
+    ) -> Result<ConversationMetadata, String> {
+        self.create_turn_inner(user, assistant, workspace, permission_mode, Some(activity))
+    }
+
+    fn create_turn_inner(
+        &self,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: Option<ActivityTurn>,
+    ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let workspace_path = workspace.map(validate_workspace).transpose()?;
@@ -136,7 +161,29 @@ impl ConversationStore {
                 },
             ];
             let history_path = self.history_path(&id);
-            self.write_new_history(&history_path, &messages)?;
+            let activity_path = self.activity_path(&id);
+            if let Some(mut activity) = activity {
+                activity.assistant_message_index = 1;
+                create_private_dir_all(&self.activities_dir()).map_err(|error| {
+                    format!(
+                        "failed to create {}: {error}",
+                        self.activities_dir().display()
+                    )
+                })?;
+                self.write_new_activity(&activity_path, &activity)?;
+            }
+            if let Err(error) = self.write_new_history(&history_path, &messages) {
+                if activity_path.exists() {
+                    return match fs::remove_file(&activity_path) {
+                        Ok(()) => Err(format!("{error}; activity creation rolled back")),
+                        Err(rollback_error) => Err(format!(
+                            "{error}; failed to remove {}: {rollback_error}",
+                            activity_path.display()
+                        )),
+                    };
+                }
+                return Err(error);
+            }
 
             let metadata = ConversationMetadata {
                 id,
@@ -218,6 +265,37 @@ impl ConversationStore {
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
+        self.append_turn_inner(id, user, assistant, workspace, permission_mode, None)
+    }
+
+    pub fn append_turn_with_activity(
+        &self,
+        id: &ConversationId,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: ActivityTurn,
+    ) -> Result<ConversationMetadata, String> {
+        self.append_turn_inner(
+            id,
+            user,
+            assistant,
+            workspace,
+            permission_mode,
+            Some(activity),
+        )
+    }
+
+    fn append_turn_inner(
+        &self,
+        id: &ConversationId,
+        user: &str,
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: Option<ActivityTurn>,
+    ) -> Result<ConversationMetadata, String> {
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
@@ -243,7 +321,31 @@ impl ConversationStore {
                     created_at: now,
                 },
             ];
-            self.append_history(&history_path, &messages)?;
+            let activity_path = self.activity_path(id);
+            let activity_original_len = if let Some(mut activity) = activity {
+                activity.assistant_message_index = existing_messages.len() + 1;
+                create_private_dir_all(&self.activities_dir()).map_err(|error| {
+                    format!(
+                        "failed to create {}: {error}",
+                        self.activities_dir().display()
+                    )
+                })?;
+                Some(self.append_activity(&activity_path, &activity)?)
+            } else {
+                None
+            };
+            if let Err(error) = self.append_history(&history_path, &messages) {
+                if let Some(original_len) = activity_original_len {
+                    return match rollback_file(&activity_path, original_len) {
+                        Ok(()) => Err(format!("{error}; activity append rolled back")),
+                        Err(rollback_error) => Err(format!(
+                            "{error}; failed to roll back {} to {original_len} bytes: {rollback_error}",
+                            activity_path.display()
+                        )),
+                    };
+                }
+                return Err(error);
+            }
 
             let metadata = &mut index.conversations[position];
             if metadata.workspace_path.is_none() {
@@ -265,9 +367,14 @@ impl ConversationStore {
             let index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
             let messages = self.read_history(&self.history_path(id))?;
+            let activities = self.read_activities(&self.activity_path(id), messages.len())?;
             let mut metadata = index.conversations[position].clone();
             reconcile_metadata(&mut metadata, &messages);
-            Ok(Conversation { metadata, messages })
+            Ok(Conversation {
+                metadata,
+                messages,
+                activities,
+            })
         })
     }
 
@@ -311,10 +418,12 @@ impl ConversationStore {
             let mut index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
             let history_path = self.history_path(id);
+            let activity_path = self.activity_path(id);
             let trash_dir = self.root.join("trash");
             create_private_dir_all(&trash_dir)
                 .map_err(|error| format!("failed to create {}: {error}", trash_dir.display()))?;
             let trash_path = trash_dir.join(format!("{id}.jsonl"));
+            let activity_trash_path = trash_dir.join(format!("{id}.activity.jsonl"));
             fs::rename(&history_path, &trash_path).map_err(|error| {
                 format!(
                     "failed to move {} to {}: {error}",
@@ -322,19 +431,42 @@ impl ConversationStore {
                     trash_path.display()
                 )
             })?;
+            let moved_activity = if activity_path.exists() {
+                if let Err(error) = fs::rename(&activity_path, &activity_trash_path) {
+                    return match fs::rename(&trash_path, &history_path) {
+                        Ok(()) => Err(format!(
+                            "failed to move {} to {}: {error}; history deletion rolled back",
+                            activity_path.display(),
+                            activity_trash_path.display()
+                        )),
+                        Err(rollback_error) => Err(format!(
+                            "failed to move {} to {}: {error}; failed to restore {}: {rollback_error}",
+                            activity_path.display(),
+                            activity_trash_path.display(),
+                            history_path.display()
+                        )),
+                    };
+                }
+                true
+            } else {
+                false
+            };
 
             index.conversations.remove(position);
             if let Err(publication_error) = self.write_index(&index) {
-                return match fs::rename(&trash_path, &history_path) {
-                    Ok(()) => Err(format!(
+                let activity_rollback = if moved_activity {
+                    fs::rename(&activity_trash_path, &activity_path)
+                } else {
+                    Ok(())
+                };
+                let history_rollback = fs::rename(&trash_path, &history_path);
+                return match (history_rollback, activity_rollback) {
+                    (Ok(()), Ok(())) => Err(format!(
                         "{publication_error}; deletion rolled back to {}",
                         history_path.display()
                     )),
-                    Err(rollback_error) => Err(format!(
-                        "{publication_error}; failed to roll back deletion from {} to {}: \
-                         {rollback_error}; conversation history remains recoverable at {}",
-                        trash_path.display(),
-                        history_path.display(),
+                    (history_result, activity_result) => Err(format!(
+                        "{publication_error}; deletion rollback incomplete: history={history_result:?}, activity={activity_result:?}; history remains recoverable at {}",
                         trash_path.display()
                     )),
                 };
@@ -505,6 +637,52 @@ impl ConversationStore {
         Ok(())
     }
 
+    fn write_new_activity(&self, path: &Path, activity: &ActivityTurn) -> Result<(), String> {
+        let file = private_file_options()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+        write_activity(file, path, activity)
+    }
+
+    fn append_activity(&self, path: &Path, activity: &ActivityTurn) -> Result<u64, String> {
+        let mut file = private_file_options()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        let original_len = file
+            .metadata()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
+            .len();
+        let result = (|| {
+            if original_len > 0 {
+                file.seek(SeekFrom::End(-1))
+                    .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+                let mut last_byte = [0];
+                file.read_exact(&mut last_byte)
+                    .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+                if last_byte[0] != b'\n' {
+                    file.write_all(b"\n")
+                        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+                }
+            }
+            write_activity(&mut file, path, activity)
+        })();
+        if let Err(error) = result {
+            return match rollback_file(path, original_len) {
+                Ok(()) => Err(format!("{error}; activity append rolled back")),
+                Err(rollback_error) => Err(format!(
+                    "{error}; failed to roll back {} to {original_len} bytes: {rollback_error}",
+                    path.display()
+                )),
+            };
+        }
+        Ok(original_len)
+    }
+
     fn read_history(&self, path: &Path) -> Result<Vec<ConversationMessage>, String> {
         let file = File::open(path)
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
@@ -530,6 +708,47 @@ impl ConversationStore {
             .collect()
     }
 
+    fn read_activities(
+        &self,
+        path: &Path,
+        durable_message_count: usize,
+    ) -> Result<Vec<ActivityTurn>, String> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+        };
+        let mut activities = Vec::new();
+        for (line_number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line.map_err(|error| {
+                format!(
+                    "failed to read {} line {}: {error}",
+                    path.display(),
+                    line_number + 1
+                )
+            })?;
+            let activity: ActivityTurn = serde_json::from_str(&line).map_err(|error| {
+                format!(
+                    "failed to parse {} line {}: {error}",
+                    path.display(),
+                    line_number + 1
+                )
+            })?;
+            if activity.version != ACTIVITY_VERSION {
+                return Err(format!(
+                    "failed to parse {} line {}: unsupported version {}",
+                    path.display(),
+                    line_number + 1,
+                    activity.version
+                ));
+            }
+            if activity.assistant_message_index < durable_message_count {
+                activities.push(activity);
+            }
+        }
+        Ok(activities)
+    }
+
     fn index_path(&self) -> PathBuf {
         self.root.join("conversations.json")
     }
@@ -542,8 +761,16 @@ impl ConversationStore {
         self.root.join("conversations")
     }
 
+    fn activities_dir(&self) -> PathBuf {
+        self.root.join("activities")
+    }
+
     fn history_path(&self, id: &ConversationId) -> PathBuf {
         self.conversations_dir().join(format!("{id}.jsonl"))
+    }
+
+    fn activity_path(&self, id: &ConversationId) -> PathBuf {
+        self.activities_dir().join(format!("{id}.jsonl"))
     }
 }
 
@@ -602,6 +829,29 @@ fn write_messages(
     writer
         .flush()
         .map_err(|error| format!("failed to flush {}: {error}", path.display()))
+}
+
+fn write_activity(file: impl Write, path: &Path, activity: &ActivityTurn) -> Result<(), String> {
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, activity)
+        .map_err(|error| format!("failed to serialize {}: {error}", path.display()))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    writer
+        .flush()
+        .map_err(|error| format!("failed to flush {}: {error}", path.display()))
+}
+
+fn rollback_file(path: &Path, original_len: u64) -> io::Result<()> {
+    if original_len == 0 {
+        fs::remove_file(path)
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_len(original_len)
+    }
 }
 
 fn find_metadata_position(index: &ConversationIndex, id: &ConversationId) -> Result<usize, String> {

@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use atlas_agentic::conversations::ConversationStore;
+use atlas_agentic::conversations::{ActivityTurn, ConversationStore};
 
 #[test]
 fn storage_permissions_are_private_with_permissive_umask() {
@@ -55,7 +55,18 @@ fn storage_permissions_are_private_with_permissive_umask() {
                 fs::rename(source, destination)
             });
         let metadata = store
-            .create_turn("private input", "private answer")
+            .create_turn_with_activity(
+                "private input",
+                "private answer",
+                None,
+                None,
+                ActivityTurn {
+                    version: 1,
+                    turn_id: "private-turn".to_string(),
+                    assistant_message_index: usize::MAX,
+                    records: Vec::new(),
+                },
+            )
             .unwrap();
         store
             .append_turn(&metadata.id, "next input", "next answer")
@@ -65,11 +76,18 @@ fn storage_permissions_are_private_with_permissive_umask() {
             assert_mode(root.parent().unwrap(), 0o700);
         }
         assert_mode(&root.join("conversations"), 0o700);
+        assert_mode(&root.join("activities"), 0o700);
         assert_mode(&root.join("conversations.json"), 0o600);
         assert_mode(&root.join("conversations.lock"), 0o600);
         assert_mode(
             &root
                 .join("conversations")
+                .join(format!("{}.jsonl", metadata.id)),
+            0o600,
+        );
+        assert_mode(
+            &root
+                .join("activities")
                 .join(format!("{}.jsonl", metadata.id)),
             0o600,
         );

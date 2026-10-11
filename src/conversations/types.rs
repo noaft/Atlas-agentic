@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::permissions::PermissionMode;
 
+use super::ActivityTurn;
+
 pub const DEFAULT_HISTORY_MESSAGES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,6 +70,7 @@ pub struct ConversationMetadata {
 pub struct Conversation {
     pub metadata: ConversationMetadata,
     pub messages: Vec<ConversationMessage>,
+    pub activities: Vec<ActivityTurn>,
 }
 
 pub fn history_limit_from_env() -> Result<usize, String> {
