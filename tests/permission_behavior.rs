@@ -187,10 +187,12 @@ fn runtime_asks_once_and_executes_after_allow() {
     assert_eq!(answer, "finished");
     assert_eq!(authorizer.calls.get(), 1);
     assert_eq!(executions.get(), 1);
-    assert!(matches!(events[0], ToolEvent::ApprovalRequested { .. }));
-    assert!(matches!(events[1], ToolEvent::Started { .. }));
+    assert!(matches!(events[0], ToolEvent::Status { .. }));
+    assert!(matches!(events[1], ToolEvent::Requested { .. }));
+    assert!(matches!(events[2], ToolEvent::ApprovalRequested { .. }));
+    assert!(matches!(events[3], ToolEvent::Started { .. }));
     assert!(matches!(
-        events[2],
+        events[4],
         ToolEvent::Finished { success: true, .. }
     ));
 }
@@ -228,6 +230,41 @@ fn runtime_returns_denial_to_model_without_execution() {
         continuation["tool_results"][0]["output"],
         "Tool risky was denied by the user."
     );
+}
+
+#[test]
+fn denied_tool_emits_denied_without_started() {
+    let executions = Rc::new(Cell::new(0));
+    let (runtime, _) = test_runtime(Rc::clone(&executions));
+    let authorizer = FixedAuthorizer {
+        decision: Ok(AuthorizationDecision::Deny),
+        calls: Cell::new(0),
+    };
+    let mut events = Vec::new();
+
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "change it",
+            &[],
+            PermissionMode::Ask,
+            &authorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ToolEvent::Denied {
+            sequence: 0,
+            tool,
+            ..
+        } if tool == "risky"
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, ToolEvent::Started { .. })));
+    assert_eq!(executions.get(), 0);
 }
 
 #[test]

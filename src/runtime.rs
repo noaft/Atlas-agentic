@@ -3,11 +3,11 @@ use serde::Serialize;
 use crate::{
     agent_output::AgentOutput,
     agents::AgentRegistry,
-    conversations::ConversationMessage,
+    conversations::{sanitize_arguments, sanitize_result, ConversationMessage},
     media::ImageData,
     permissions::{
         requires_confirmation, AuthorizationDecision, AuthorizationRequest, MissingAuthorizer,
-        PermissionMode, ToolAuthorizer, ToolEvent,
+        PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
     },
     tools::{ToolAttachment, ToolRegistry},
 };
@@ -107,8 +107,17 @@ impl Runtime {
         let mut latest_images: Vec<ImageData> = Vec::new();
         let mut retried_invalid_response = false;
         let allow_plain_final = tool_definitions.is_empty();
+        let mut first_model_request = true;
 
         loop {
+            on_tool_event(&ToolEvent::Status {
+                status: if first_model_request {
+                    RuntimeStatus::Thinking
+                } else {
+                    RuntimeStatus::PreparingAnswer
+                },
+            });
+            first_model_request = false;
             let mut final_stream = FinalContentStream::new(allow_plain_final);
             let response = agent.process_stream_with_images(
                 &input,
@@ -149,9 +158,23 @@ impl Runtime {
                         }
                     }
 
+                    let sequence = tool_results.len() as u32;
+                    on_tool_event(&ToolEvent::Requested {
+                        sequence,
+                        tool: tool.clone(),
+                        arguments: sanitize_arguments(&args),
+                    });
+
                     let (risk, arguments) = match self.tools.authorization(&tool, &args) {
                         Ok(authorization) => authorization,
                         Err(error) => {
+                            on_tool_event(&ToolEvent::Finished {
+                                sequence,
+                                tool: tool.clone(),
+                                success: false,
+                                summary: format!("{tool} failed"),
+                                details: Some(sanitize_result(&error)),
+                            });
                             tool_results.push(ToolExecutionRecord {
                                 tool,
                                 args,
@@ -165,9 +188,15 @@ impl Runtime {
                     if requires_confirmation(permission_mode, risk) {
                         let request = AuthorizationRequest::new(&tool, arguments, risk);
                         on_tool_event(&ToolEvent::ApprovalRequested {
+                            sequence,
                             request: request.clone(),
                         });
                         if authorizer.authorize(&request)? == AuthorizationDecision::Deny {
+                            on_tool_event(&ToolEvent::Denied {
+                                sequence,
+                                tool: tool.clone(),
+                                summary: format!("{tool} was denied"),
+                            });
                             tool_results.push(ToolExecutionRecord {
                                 tool: tool.clone(),
                                 args,
@@ -178,7 +207,10 @@ impl Runtime {
                             continue;
                         }
                     }
-                    on_tool_event(&ToolEvent::Started { tool: tool.clone() });
+                    on_tool_event(&ToolEvent::Started {
+                        sequence,
+                        tool: tool.clone(),
+                    });
                     let tool_call = AgentOutput::ToolCall {
                         tool: tool.clone(),
                         args: args.clone(),
@@ -213,8 +245,17 @@ impl Runtime {
                         Err(error) => (false, error),
                     };
                     on_tool_event(&ToolEvent::Finished {
+                        sequence,
                         tool: tool.clone(),
                         success,
+                        summary: if tool == "capture_screen" && success {
+                            output.clone()
+                        } else if success {
+                            format!("{tool} succeeded")
+                        } else {
+                            format!("{tool} failed")
+                        },
+                        details: (tool != "capture_screen").then(|| sanitize_result(&output)),
                     });
                     tool_results.push(ToolExecutionRecord {
                         tool,

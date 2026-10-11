@@ -11,7 +11,7 @@ use atlas_agentic::{
     conversations::{ConversationMessage, MessageRole},
     media::{ImageData, ImageDetail},
     models::{ModelProvider, ModelRequest},
-    permissions::{AllowAllAuthorizer, PermissionMode, ToolEvent},
+    permissions::{AllowAllAuthorizer, PermissionMode, RuntimeStatus, ToolEvent},
     tools::{
         CreateFileTool, CurrentTimeTool, ListDirTool, PwdTool, ReadFileTool, Tool, ToolDefinition,
         ToolRegistry, ToolResult,
@@ -607,7 +607,8 @@ fn runtime_turns_provider_image_rejection_into_a_recoverable_tool_failure() {
         event,
         ToolEvent::Finished {
             tool,
-            success: false
+            success: false,
+            ..
         } if tool == "capture_oversized"
     )));
 }
@@ -990,11 +991,184 @@ fn runtime_returns_execution_failure_to_agent_and_emits_failed_event() {
     let retry: serde_json::Value = serde_json::from_str(&requests.borrow()[1].user_prompt).unwrap();
     assert_eq!(retry["tool_results"][0]["success"], false);
     assert_eq!(retry["tool_results"][0]["output"], "simulated tool failure");
-    assert!(matches!(events[0], ToolEvent::Started { .. }));
+    assert!(matches!(events[0], ToolEvent::Status { .. }));
+    assert!(matches!(events[1], ToolEvent::Requested { .. }));
+    assert!(matches!(events[2], ToolEvent::Started { .. }));
     assert!(matches!(
-        events[1],
+        events[3],
         ToolEvent::Finished { success: false, .. }
     ));
+}
+
+#[test]
+fn runtime_emits_thinking_request_start_finish_and_preparing_statuses() {
+    let workspace = tempfile::tempdir().unwrap();
+    let model = ToolProtocolStreamingModel::new([
+        vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+        vec![r#"{"type":"final","content":"done"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
+        workspace.path(),
+    ))]));
+    let mut events = Vec::new();
+
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "locate",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            ToolEvent::Status {
+                status: RuntimeStatus::Thinking
+            },
+            ToolEvent::Requested {
+                sequence: 0,
+                tool,
+                ..
+            },
+            ToolEvent::Started {
+                sequence: 0,
+                tool: started
+            },
+            ToolEvent::Finished {
+                sequence: 0,
+                tool: finished,
+                success: true,
+                ..
+            },
+            ToolEvent::Status {
+                status: RuntimeStatus::PreparingAnswer
+            }
+        ] if tool == "pwd" && started == "pwd" && finished == "pwd"
+    ));
+}
+
+#[test]
+fn repeated_same_tool_calls_have_distinct_monotonic_sequences() {
+    let workspace = tempfile::tempdir().unwrap();
+    let model = ToolProtocolStreamingModel::new([
+        vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+        vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+        vec![r#"{"type":"final","content":"done"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
+        workspace.path(),
+    ))]));
+    let mut events = Vec::new();
+
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "locate twice",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    let requested = events
+        .iter()
+        .filter_map(|event| match event {
+            ToolEvent::Requested { sequence, tool, .. } => Some((*sequence, tool.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requested, vec![(0, "pwd"), (1, "pwd")]);
+}
+
+#[test]
+fn failed_tool_emits_sanitized_bounded_details() {
+    let model = ToolProtocolStreamingModel::new([
+        vec![r#"{"type":"tool_call","tool":"failing","args":{"apiKey":"private"}}"#],
+        vec![r#"{"type":"final","content":"handled"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(FailingTool)]));
+    let mut events = Vec::new();
+
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "fail safely",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ToolEvent::Requested { arguments, .. }
+            if arguments.contains("[redacted]") && !arguments.contains("private")
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ToolEvent::Finished {
+            success: false,
+            details: Some(details),
+            ..
+        } if details == "simulated tool failure" && details.chars().count() <= 8_192
+    )));
+}
+
+#[test]
+fn screen_capture_event_contains_no_attachment_bytes() {
+    const PIXELS: &[u8] = b"PRIVATE_SCREEN_PIXELS";
+    let (runtime, _, _) = image_lifecycle_runtime(
+        [
+            r#"{"type":"tool_call","tool":"capture_screen","args":{}}"#,
+            r#"{"type":"final","content":"seen"}"#,
+        ],
+        vec![Box::new(SyntheticTool {
+            name: "capture_screen",
+            output: SyntheticToolOutput::Image(PIXELS),
+        })],
+    );
+    let mut events = Vec::new();
+
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "look",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        )
+        .unwrap();
+
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(!serialized.contains("PRIVATE_SCREEN_PIXELS"));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ToolEvent::Finished {
+            tool,
+            success: true,
+            details: None,
+            ..
+        } if tool == "capture_screen"
+    )));
 }
 
 #[test]

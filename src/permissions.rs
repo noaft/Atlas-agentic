@@ -103,8 +103,40 @@ impl ToolAuthorizer for MissingAuthorizer {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum RuntimeStatus {
+    Thinking,
+    PreparingAnswer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ToolEvent {
-    ApprovalRequested { request: AuthorizationRequest },
-    Started { tool: String },
-    Finished { tool: String, success: bool },
+    Status {
+        status: RuntimeStatus,
+    },
+    Requested {
+        sequence: u32,
+        tool: String,
+        arguments: String,
+    },
+    ApprovalRequested {
+        sequence: u32,
+        request: AuthorizationRequest,
+    },
+    Denied {
+        sequence: u32,
+        tool: String,
+        summary: String,
+    },
+    Started {
+        sequence: u32,
+        tool: String,
+    },
+    Finished {
+        sequence: u32,
+        tool: String,
+        success: bool,
+        summary: String,
+        details: Option<String>,
+    },
 }
