@@ -218,13 +218,13 @@ model_provider = "deepseek"
 model = "deepseek-flash"
 temperature = 0.3
 top_p = 0.9
-max_tool_calls = 32
 ```
 
 Atlas can execute structured tool calls from the agent. `max_tool_calls` sets a
 positive per-turn limit and includes failed or denied requests. Omit it to run
-without an Atlas tool-call limit. Tool definitions are passed to the model
-request at runtime, not hard-coded into the local agent prompt.
+without an Atlas tool-call limit; the default Atlas agent omits it. Tool
+definitions are passed to the model request at runtime, not hard-coded into the
+local agent prompt.
 
 The default agent is a general assistant for conversation, files, applications,
 computer tasks, shell work, coding, and projects. It inspects relevant context,
