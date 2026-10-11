@@ -160,6 +160,8 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
         "inspect",
         "relevant context",
         "runtime-provided tools",
+        "ripgrep",
+        "do not use grep",
         "coding",
         "preserve unrelated",
         "verify",
@@ -171,6 +173,10 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
             "default Atlas prompt is missing `{required}` guidance"
         );
     }
+    assert!(
+        prompt.contains("outside the workspace"),
+        "default Atlas prompt must allow explicitly requested machine-wide searches"
+    );
 
     let prompt_tokens = prompt
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')

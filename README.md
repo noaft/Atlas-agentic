@@ -230,7 +230,11 @@ local agent prompt.
 The default agent is a general assistant for conversation, files, applications,
 computer tasks, shell work, coding, and projects. It inspects relevant context,
 uses tools when needed, preserves unrelated data, verifies material results, and
-reports blockers honestly. Its behavior and separate
+reports blockers honestly. It prefers ripgrep (`rg`) rather than `grep` for
+file-name and text searches. For an explicitly requested broader search, Atlas
+can run `rg` through unrestricted shell access against OS-accessible paths
+outside the workspace; the structured `search_files` tool remains
+workspace-scoped. Its behavior and separate
 `conversation_title_prompt` are configured in `agents/atlas.toml`.
 
 Default runtime tools:
