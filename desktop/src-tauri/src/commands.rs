@@ -6,15 +6,16 @@ use std::{
 };
 
 use atlas_agentic::conversations::{
-    validate_workspace as validate_workspace_path, AskCallbacks, Conversation,
-    ConversationAskResult, ConversationId, ConversationMessage, ConversationMetadata,
-    ConversationService, ConversationStore, MessageRole,
+    validate_workspace as validate_workspace_path, ActivityKind, ActivityOutcome, ActivityRecord,
+    ActivityTurn, AskCallbacks, Conversation, ConversationAskResult, ConversationId,
+    ConversationMessage, ConversationMetadata, ConversationService, ConversationStore, MessageRole,
 };
 use atlas_agentic::{
     app::{build_runtime_with_settings, list_available_models_with_settings},
     models::ModelInfo,
     permissions::{
-        AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolAuthorizer, ToolEvent,
+        AuthorizationDecision, AuthorizationRequest, PermissionMode, RuntimeStatus, ToolAuthorizer,
+        ToolEvent,
     },
     settings::{AtlasSettings, EffectiveSettings, SettingField, SettingsStore},
     workspace::automatic_workspace,
@@ -309,6 +310,7 @@ impl From<ConversationMessage> for ConversationMessageDto {
 pub struct ConversationDto {
     pub metadata: ConversationMetadataDto,
     pub messages: Vec<ConversationMessageDto>,
+    pub activities: Vec<ActivityTurnDto>,
 }
 
 impl From<Conversation> for ConversationDto {
@@ -316,6 +318,57 @@ impl From<Conversation> for ConversationDto {
         Self {
             metadata: conversation.metadata.into(),
             messages: conversation.messages.into_iter().map(Into::into).collect(),
+            activities: conversation
+                .activities
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityRecordDto {
+    pub sequence: u32,
+    pub kind: ActivityKind,
+    pub tool: Option<String>,
+    pub arguments: Option<String>,
+    pub outcome: Option<ActivityOutcome>,
+    pub summary: String,
+    pub details: Option<String>,
+    pub created_at: String,
+}
+
+impl From<ActivityRecord> for ActivityRecordDto {
+    fn from(record: ActivityRecord) -> Self {
+        Self {
+            sequence: record.sequence,
+            kind: record.kind,
+            tool: record.tool,
+            arguments: record.arguments,
+            outcome: record.outcome,
+            summary: record.summary,
+            details: record.details,
+            created_at: record.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityTurnDto {
+    pub turn_id: String,
+    pub assistant_message_index: usize,
+    pub records: Vec<ActivityRecordDto>,
+}
+
+impl From<ActivityTurn> for ActivityTurnDto {
+    fn from(turn: ActivityTurn) -> Self {
+        Self {
+            turn_id: turn.turn_id,
+            assistant_message_index: turn.assistant_message_index,
+            records: turn.records.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -330,6 +383,7 @@ pub struct DeleteResult {
 pub struct ConversationAskResultDto {
     pub answer: String,
     pub metadata: ConversationMetadataDto,
+    pub activities: Vec<ActivityRecordDto>,
     pub created: bool,
 }
 
@@ -338,6 +392,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
         Self {
             answer: result.answer,
             metadata: result.metadata.into(),
+            activities: result.activities.into_iter().map(Into::into).collect(),
             created: result.created,
         }
     }
@@ -346,11 +401,40 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
-    Delta { content: String },
-    ApprovalRequested { request: AuthorizationRequest },
-    ApprovalWaiting { id: String },
-    ToolStarted { tool: String },
-    ToolFinished { tool: String, success: bool },
+    Delta {
+        content: String,
+    },
+    RuntimeStatus {
+        status: RuntimeStatus,
+    },
+    ToolRequested {
+        sequence: u32,
+        tool: String,
+        arguments: String,
+    },
+    ApprovalRequested {
+        sequence: u32,
+        request: AuthorizationRequest,
+    },
+    ApprovalWaiting {
+        id: String,
+    },
+    ToolDenied {
+        sequence: u32,
+        tool: String,
+        summary: String,
+    },
+    ToolStarted {
+        sequence: u32,
+        tool: String,
+    },
+    ToolFinished {
+        sequence: u32,
+        tool: String,
+        success: bool,
+        summary: String,
+        details: Option<String>,
+    },
 }
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -431,12 +515,6 @@ struct DesktopAuthorizer {
 impl ToolAuthorizer for DesktopAuthorizer {
     fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
         let receiver = self.approvals.register(&request.id)?;
-        if let Err(error) = self.channel.send(ChatEvent::ApprovalRequested {
-            request: request.clone(),
-        }) {
-            self.approvals.cancel(&request.id);
-            return Err(format!("failed to send tool approval request: {error}"));
-        }
         let deadline = Instant::now() + APPROVAL_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -856,11 +934,49 @@ pub async fn ask(
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
-                    ToolEvent::ApprovalRequested { .. } => return,
-                    ToolEvent::Started { tool } => ChatEvent::ToolStarted { tool: tool.clone() },
-                    ToolEvent::Finished { tool, success } => ChatEvent::ToolFinished {
+                    ToolEvent::Status { status } => ChatEvent::RuntimeStatus {
+                        status: status.clone(),
+                    },
+                    ToolEvent::Requested {
+                        sequence,
+                        tool,
+                        arguments,
+                    } => ChatEvent::ToolRequested {
+                        sequence: *sequence,
+                        tool: tool.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    ToolEvent::ApprovalRequested { sequence, request } => {
+                        ChatEvent::ApprovalRequested {
+                            sequence: *sequence,
+                            request: request.clone(),
+                        }
+                    }
+                    ToolEvent::Denied {
+                        sequence,
+                        tool,
+                        summary,
+                    } => ChatEvent::ToolDenied {
+                        sequence: *sequence,
+                        tool: tool.clone(),
+                        summary: summary.clone(),
+                    },
+                    ToolEvent::Started { sequence, tool } => ChatEvent::ToolStarted {
+                        sequence: *sequence,
+                        tool: tool.clone(),
+                    },
+                    ToolEvent::Finished {
+                        sequence,
+                        tool,
+                        success,
+                        summary,
+                        details,
+                    } => ChatEvent::ToolFinished {
+                        sequence: *sequence,
                         tool: tool.clone(),
                         success: *success,
+                        summary: summary.clone(),
+                        details: details.clone(),
                     },
                 };
                 let _ = channel.send(event);
@@ -887,10 +1003,13 @@ mod tests {
 
     use atlas_agentic::{
         agents::{Agent, AgentRegistry, LocalAgent, LocalAgentDefinition},
-        conversations::{ConversationId, ConversationMessage, ConversationStore},
+        conversations::{
+            ActivityCollector, ConversationId, ConversationMessage, ConversationStore,
+        },
         models::deepseek::{DeepSeekConfig, DeepSeekProvider},
         permissions::{
-            AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolEvent, ToolRisk,
+            AuthorizationDecision, AuthorizationRequest, PermissionMode, RuntimeStatus, ToolEvent,
+            ToolRisk,
         },
         settings::{AtlasSettings, SettingsStore},
         tools::ToolDefinition,
@@ -918,6 +1037,7 @@ mod tests {
             ToolRisk::Destructive,
         );
         let json = serde_json::to_value(ChatEvent::ApprovalRequested {
+            sequence: 4,
             request: request.clone(),
         })
         .unwrap();
@@ -925,12 +1045,88 @@ mod tests {
         assert_eq!(json["event"], "approvalRequested");
         assert_eq!(json["data"]["request"]["id"], request.id);
         assert_eq!(json["data"]["request"]["tool"], "delete_file");
+        assert_eq!(json["data"]["sequence"], 4);
         assert_eq!(
             serde_json::to_value(ChatEvent::ToolStarted {
+                sequence: 4,
                 tool: "delete_file".to_string()
             })
             .unwrap()["event"],
             "toolStarted"
+        );
+    }
+
+    #[test]
+    fn detailed_activity_events_serialize_with_camel_case_contract() {
+        let events = [
+            ChatEvent::RuntimeStatus {
+                status: RuntimeStatus::Thinking,
+            },
+            ChatEvent::ToolRequested {
+                sequence: 2,
+                tool: "search_files".to_string(),
+                arguments: r#"{"query":"needle"}"#.to_string(),
+            },
+            ChatEvent::ToolDenied {
+                sequence: 2,
+                tool: "search_files".to_string(),
+                summary: "search_files was denied".to_string(),
+            },
+            ChatEvent::ToolFinished {
+                sequence: 3,
+                tool: "search_files".to_string(),
+                success: false,
+                summary: "search_files failed".to_string(),
+                details: Some("bounded details".to_string()),
+            },
+        ];
+
+        let json = events
+            .into_iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(json[0]["event"], "runtimeStatus");
+        assert_eq!(json[0]["data"]["status"], "thinking");
+        assert_eq!(json[1]["event"], "toolRequested");
+        assert_eq!(json[1]["data"]["sequence"], 2);
+        assert_eq!(json[2]["event"], "toolDenied");
+        assert_eq!(json[3]["data"]["details"], "bounded details");
+    }
+
+    #[test]
+    fn persisted_and_completed_activity_convert_to_desktop_dtos() {
+        let (_data, store, state) = fixture();
+        let mut collector = ActivityCollector::new();
+        collector.status("Thinking");
+        let metadata = store
+            .create_turn_with_activity(
+                "question",
+                "answer",
+                None,
+                None,
+                collector.into_unassociated_turn(),
+            )
+            .unwrap();
+
+        let loaded = load_impl(&metadata.id.to_string(), &state).unwrap();
+
+        assert_eq!(loaded.activities.len(), 1);
+        assert_eq!(loaded.activities[0].assistant_message_index, 1);
+        assert_eq!(loaded.activities[0].records[0].summary, "Thinking");
+    }
+
+    #[test]
+    fn legacy_load_and_delete_work_without_activity_sidecar() {
+        let (_data, store, state) = fixture();
+        let metadata = store.create_turn("question", "answer").unwrap();
+
+        assert!(load_impl(&metadata.id.to_string(), &state)
+            .unwrap()
+            .activities
+            .is_empty());
+        assert_eq!(
+            delete_impl(&metadata.id.to_string(), &state).unwrap().id,
+            metadata.id.to_string()
         );
     }
 
@@ -1288,6 +1484,10 @@ mod tests {
         assert_eq!(result.answer, "Hello desktop");
         assert!(result.created);
         assert_eq!(result.metadata.title, "Desktop title");
+        assert!(result
+            .activities
+            .iter()
+            .any(|activity| activity.summary == "Thinking"));
         assert_eq!(store.list().unwrap().len(), 1);
     }
 

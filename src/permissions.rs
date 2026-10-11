@@ -102,7 +102,7 @@ impl ToolAuthorizer for MissingAuthorizer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub enum RuntimeStatus {
     Thinking,
     PreparingAnswer,
