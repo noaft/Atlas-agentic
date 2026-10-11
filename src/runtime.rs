@@ -42,6 +42,12 @@ pub struct Runtime {
     tools: ToolRegistry,
 }
 
+pub struct RuntimeAskCallbacks<'a> {
+    pub authorizer: &'a dyn ToolAuthorizer,
+    pub on_delta: &'a mut dyn FnMut(&str),
+    pub on_tool_event: &'a mut dyn FnMut(&ToolEvent),
+}
+
 impl Runtime {
     pub fn new(agents: AgentRegistry) -> Self {
         Self {
@@ -100,9 +106,11 @@ impl Runtime {
             history,
             None,
             permission_mode,
-            authorizer,
-            on_delta,
-            on_tool_event,
+            RuntimeAskCallbacks {
+                authorizer,
+                on_delta,
+                on_tool_event,
+            },
         )
     }
 
@@ -112,10 +120,13 @@ impl Runtime {
         history: &[ConversationMessage],
         activity_context: Option<&str>,
         permission_mode: PermissionMode,
-        authorizer: &dyn ToolAuthorizer,
-        on_delta: &mut dyn FnMut(&str),
-        on_tool_event: &mut dyn FnMut(&ToolEvent),
+        callbacks: RuntimeAskCallbacks<'_>,
     ) -> Result<String, String> {
+        let RuntimeAskCallbacks {
+            authorizer,
+            on_delta,
+            on_tool_event,
+        } = callbacks;
         let agent = self
             .agents
             .default_agent()

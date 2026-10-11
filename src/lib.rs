@@ -10,7 +10,7 @@ pub mod settings;
 pub mod tools;
 pub mod workspace;
 
-pub use runtime::Runtime;
+pub use runtime::{Runtime, RuntimeAskCallbacks};
 
 use conversations::{Conversation, ConversationId, ConversationMetadata, MessageRole};
 

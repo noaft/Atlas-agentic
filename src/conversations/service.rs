@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::permissions::{
     MissingAuthorizer, PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
 };
-use crate::Runtime;
+use crate::{Runtime, RuntimeAskCallbacks};
 
 use super::{
     render_activity_context, sanitize_title, select_recent_history, ActivityCollector,
@@ -223,13 +223,15 @@ impl<'a> ConversationService<'a> {
             &history,
             (!activity_context.is_empty()).then_some(activity_context.as_str()),
             permission_mode,
-            callbacks.authorizer,
-            &mut |delta| {
-                if sink_error.is_none() {
-                    sink_error = (callbacks.on_delta)(delta).err();
-                }
+            RuntimeAskCallbacks {
+                authorizer: callbacks.authorizer,
+                on_delta: &mut |delta| {
+                    if sink_error.is_none() {
+                        sink_error = (callbacks.on_delta)(delta).err();
+                    }
+                },
+                on_tool_event: &mut capture_event,
             },
-            &mut capture_event,
         );
         if let Some(error) = sink_error {
             return Err(error);
