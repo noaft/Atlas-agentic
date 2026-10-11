@@ -11,7 +11,8 @@ use crate::{
         system_computer_controller, CaptureScreenTool, CopyFileTool, CreateDirectoryTool,
         CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool,
         MouseClickTool, MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool,
-        OpenFileTool, PwdTool, ReadFileTool, SearchFilesTool, ToolRegistry, TypeTextTool,
+        OpenFileTool, PwdTool, ReadFileTool, RipgrepTool, SearchFilesTool, ToolRegistry,
+        TypeTextTool,
     },
     Runtime,
 };
@@ -55,6 +56,7 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(CopyFileTool::new(workspace_root)),
         Box::new(MoveFileTool::new(workspace_root)),
         Box::new(DeleteFileTool::new(workspace_root)),
+        Box::new(RipgrepTool::new(workspace_root)),
         Box::new(SearchFilesTool::new(workspace_root)),
         Box::new(OpenFileTool::new(workspace_root)),
         Box::new(OpenApplicationTool::new()),
@@ -124,6 +126,7 @@ mod tests {
             "open_file",
             "pwd",
             "read_file",
+            "ripgrep",
             "search_files",
             "type_text",
         ];

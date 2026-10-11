@@ -105,6 +105,7 @@ fn permission_matrix_matches_the_three_modes() {
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
+        ToolRisk::ReadOutsideWorkspace,
         ToolRisk::ComputerObserve,
         ToolRisk::ComputerControl,
     ] {
@@ -119,6 +120,7 @@ fn permission_matrix_matches_the_three_modes() {
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
+        ToolRisk::ReadOutsideWorkspace,
         ToolRisk::ComputerObserve,
         ToolRisk::ComputerControl,
     ] {
@@ -131,12 +133,17 @@ fn permission_matrix_matches_the_three_modes() {
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
+        ToolRisk::ReadOutsideWorkspace,
         ToolRisk::ComputerObserve,
         ToolRisk::ComputerControl,
     ] {
         assert!(requires_confirmation(PermissionMode::Workspace, risk));
     }
 
+    assert_eq!(
+        ToolRisk::ReadOutsideWorkspace.reason(),
+        "reads files outside the selected workspace and may send sensitive content to the configured model provider"
+    );
     assert_eq!(
         ToolRisk::ComputerObserve.reason(),
         "reads potentially sensitive desktop information that may be sent to the configured model provider"

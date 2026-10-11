@@ -65,11 +65,11 @@ to that conversation; reopening it restores the same mode, and changing it does
 not affect other chats.
 
 - **Ask** automatically permits ordinary workspace reads and asks before file
-  changes, application launches, commands, desktop observation, or mouse and
-  keyboard control.
-- **Workspace** also permits non-destructive changes inside the selected
-  workspace, but asks before deletion, overwrite, launch, command execution,
+  changes, searches outside the workspace, application launches, commands,
   desktop observation, or mouse and keyboard control.
+- **Workspace** also permits non-destructive changes inside the selected
+  workspace, but asks before outside-workspace search, deletion, overwrite,
+  launch, command execution, desktop observation, or mouse and keyboard control.
 - **Full access** runs all registered tools without an Atlas confirmation. It
   does not elevate privileges: every action still runs with the desktop process's
   current OS-user permissions.
@@ -230,11 +230,10 @@ local agent prompt.
 The default agent is a general assistant for conversation, files, applications,
 computer tasks, shell work, coding, and projects. It inspects relevant context,
 uses tools when needed, preserves unrelated data, verifies material results, and
-reports blockers honestly. It prefers ripgrep (`rg`) rather than `grep` for
-file-name and text searches. For an explicitly requested broader search, Atlas
-can run `rg` through unrestricted shell access against OS-accessible paths
-outside the workspace; the structured `search_files` tool remains
-workspace-scoped. Its behavior and separate
+reports blockers honestly. It prefers the built-in `ripgrep` tool for content
+search because ripgrep is generally faster, while `grep` remains available
+through shell access. Native ripgrep is compiled into Atlas and does not require
+an `rg` executable on `PATH`. Its behavior and separate
 `conversation_title_prompt` are configured in `agents/atlas.toml`.
 
 Default runtime tools:
@@ -243,6 +242,7 @@ Default runtime tools:
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
+- `ripgrep`: search file contents with compiled-in ripgrep matching, including approved absolute paths outside the workspace
 - `search_files`: search workspace filenames and UTF-8 file contents with optional glob and result limits
 - `create_file`: create a new UTF-8 file with a relative path, without overwriting an existing file
 - `create_directory`: create a relative directory path inside the workspace
@@ -283,10 +283,15 @@ dialog and fullscreen capabilities; it receives no shell, process,
 accessibility, screen-capture, or unrestricted filesystem permission.
 
 The workspace shown in the app is the tools' starting directory and conversation
-label. Structured path-based file helpers reject absolute paths, parent traversal,
-and symlink escapes and remain scoped to that workspace. They do not become
-machine-wide merely because Full access is selected. `exec_command` is available
-on Linux, WSL, macOS, and Windows and is intentionally unrestricted: it supports
+label. Most structured path-based file helpers reject absolute paths, parent
+traversal, and symlink escapes and remain scoped to that workspace. The native
+`ripgrep` tool is the read-only exception: it accepts workspace-relative or
+absolute search roots, respects ignore files, skips hidden and binary files and
+symlinks by default, and bounds results to 200 matches and 64 KiB. Searches whose
+canonical root is outside the workspace require approval in Ask and Workspace
+modes. They run automatically only in Full access, remain limited by OS-user
+permissions, and do not require an external `rg` executable. `exec_command` is
+available on Linux, WSL, macOS, and Windows and is intentionally unrestricted: it supports
 the platform shell's operators, pipes, redirects, changing directories, and
 absolute paths outside the starting folder. It runs with the same permissions as
 the Atlas process, so normal OS access controls still apply. Commands and

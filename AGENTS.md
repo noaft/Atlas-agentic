@@ -55,6 +55,8 @@ The built-in runtime tools are:
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
 - `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
+- `ripgrep`: search file contents with compiled-in ripgrep matching, including
+  approved paths outside the workspace
 - `search_files`: search workspace filenames and UTF-8 contents
 - `create_file`: safely create a new file inside the workspace
 - `create_directory`: create directories inside the workspace
@@ -71,6 +73,11 @@ The built-in runtime tools are:
 - `capture_screen`: capture the primary display as an in-memory PNG for model vision
 
 The displayed workspace is a starting directory, not a shell sandbox.
+`ripgrep` is compiled into Atlas and does not require an `rg` executable on
+`PATH`. It defaults to the workspace, respects ignore files, skips hidden and
+binary files and symlinks, and accepts absolute roots. A canonical root outside
+the workspace requires approval in Ask and Workspace modes; Full access skips
+that Atlas confirmation but remains subject to OS-user permissions.
 `exec_command` is available on Linux, WSL, macOS, and Windows and is intentionally
 unrestricted. It supports shell operators, pipes, redirects, and paths outside
 the starting folder, and it runs with the same permissions as the Atlas process.
@@ -79,10 +86,11 @@ timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
 
 Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
 read-only tools automatically. Workspace also permits non-destructive structured
-workspace changes. Destructive actions, launches, and commands still require an
-approval in Workspace mode. Desktop observation and mouse/keyboard control
-require approval in both Ask and Workspace modes because they can expose or
-change sensitive state. Full access skips Atlas confirmations but never
+workspace changes. Outside-workspace searches, destructive actions, launches,
+and commands still require an approval in Workspace mode. Desktop observation
+and mouse/keyboard control require approval in both Ask and Workspace modes
+because they can expose or change sensitive state. Full access skips Atlas
+confirmations but never
 elevates beyond the Atlas process's OS-user permissions. The Settings default
 applies to new drafts; a saved conversation stores and restores its own mode.
 

@@ -17,6 +17,7 @@ mod output_capture;
 mod platform;
 mod pwd;
 mod read_file;
+mod ripgrep;
 mod search_files;
 mod workspace_path;
 
@@ -43,6 +44,7 @@ pub use open_file::OpenFileTool;
 pub use platform::{application_command, file_command, CommandSpec, Platform, ProcessLauncher};
 pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;
+pub use ripgrep::RipgrepTool;
 pub use search_files::SearchFilesTool;
 
 use std::collections::HashMap;

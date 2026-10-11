@@ -40,8 +40,10 @@ can provide task-specific context.
 
 The starting folder organizes tools and conversations; it does not confine shell
 access. On Linux, WSL, macOS, and Windows, `exec_command` can reach other
-locations allowed by the current user's OS permissions. Structured file helpers
-remain scoped to the selected starting folder. Per-conversation permission modes
+locations allowed by the current user's OS permissions. Most structured file
+helpers remain scoped to the selected starting folder. Native ripgrep may search
+an approved absolute root outside it without requiring an installed `rg`
+executable. Per-conversation permission modes
 decide when Atlas must ask before changing files, launching applications, or
 executing commands; they do not grant OS privileges. Atlas can also observe
 basic desktop state, capture the primary display for model vision, and send
