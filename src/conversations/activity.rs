@@ -197,6 +197,8 @@ pub fn render_activity_context(turns: &[ActivityTurn]) -> String {
         if used + length <= ACTIVITY_CONTEXT_LIMIT {
             selected.push(line);
             used += length;
+        } else {
+            break;
         }
     }
     if selected.is_empty() {

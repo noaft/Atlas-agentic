@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fmt,
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
@@ -718,7 +719,7 @@ impl ConversationStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
         };
-        let mut activities = Vec::new();
+        let mut activities = BTreeMap::new();
         for (line_number, line) in BufReader::new(file).lines().enumerate() {
             let line = line.map_err(|error| {
                 format!(
@@ -743,10 +744,10 @@ impl ConversationStore {
                 ));
             }
             if activity.assistant_message_index < durable_message_count {
-                activities.push(activity);
+                activities.insert(activity.assistant_message_index, activity);
             }
         }
-        Ok(activities)
+        Ok(activities.into_values().collect())
     }
 
     fn index_path(&self) -> PathBuf {

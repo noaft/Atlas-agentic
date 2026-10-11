@@ -187,6 +187,45 @@ fn activity_batch_beyond_durable_message_count_is_ignored() {
 }
 
 #[test]
+fn later_turn_does_not_revive_a_crash_orphaned_activity_batch() {
+    let data = tempdir().unwrap();
+    let store = ConversationStore::at(data.path().to_path_buf());
+    let metadata = store
+        .create_turn_with_activity("user", "assistant", None, None, activity_turn("durable"))
+        .unwrap();
+    let path = data
+        .path()
+        .join("activities")
+        .join(format!("{}.jsonl", metadata.id));
+    let mut orphan = activity_turn("orphan");
+    orphan.assistant_message_index = 3;
+    let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{}", serde_json::to_string(&orphan).unwrap()).unwrap();
+    drop(file);
+
+    store
+        .append_turn_with_activity(
+            &metadata.id,
+            "next user",
+            "next assistant",
+            None,
+            None,
+            activity_turn("next-durable"),
+        )
+        .unwrap();
+
+    let loaded = store.load(&metadata.id).unwrap();
+    assert_eq!(
+        loaded
+            .activities
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["durable", "next-durable"]
+    );
+}
+
+#[test]
 fn activity_write_failure_leaves_messages_and_metadata_unchanged() {
     let data = tempdir().unwrap();
     fs::create_dir_all(data.path()).unwrap();

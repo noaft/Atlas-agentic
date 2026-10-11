@@ -104,25 +104,32 @@ fn collector_enforces_the_per_turn_detail_budget() {
 
 #[test]
 fn context_keeps_newest_complete_summaries_within_8192_characters() {
+    let oldest = ActivityTurn {
+        version: 1,
+        turn_id: "oldest".to_string(),
+        assistant_message_index: 1,
+        records: vec![record(0, "oldest should stay behind the oversized gap")],
+    };
     let old = ActivityTurn {
         version: 1,
         turn_id: "old".to_string(),
-        assistant_message_index: 1,
+        assistant_message_index: 3,
         records: vec![record(0, format!("old {}", "x".repeat(8_000)))],
     };
     let newest_summary = format!("new {}", "y".repeat(4_000));
     let newest = ActivityTurn {
         version: 1,
         turn_id: "new".to_string(),
-        assistant_message_index: 3,
+        assistant_message_index: 5,
         records: vec![record(0, newest_summary.clone())],
     };
 
-    let context = render_activity_context(&[old, newest]);
+    let context = render_activity_context(&[oldest, old, newest]);
 
     assert!(context.starts_with("Recent Atlas activity (facts from earlier successful turns):\n"));
     assert!(context.contains(&newest_summary));
     assert!(!context.contains("old "));
+    assert!(!context.contains("oldest should"));
     assert!(context.chars().count() <= 8_192);
 }
 

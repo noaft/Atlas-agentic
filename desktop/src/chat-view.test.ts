@@ -370,9 +370,35 @@ test("live activity has a status region while approvals stay prominent", async (
   expect(root.querySelector("[data-live-activity][role='status']")?.textContent).toContain(
     "Thinking",
   );
+  const waitingDisclosure = root.querySelector<HTMLElement>(
+    "[data-live-turn-activity]",
+  );
+  expect(waitingDisclosure?.textContent).toContain("Waiting");
+  expect(waitingDisclosure?.querySelector("pre")?.textContent).toContain(
+    '"query":"x"',
+  );
   expect(root.querySelector("[role='alertdialog']")?.textContent).toContain(
     "Allow search_files?",
   );
+  api.eventSink!({
+    event: "toolStarted",
+    data: { sequence: 0, tool: "search_files" },
+  });
+  api.eventSink!({
+    event: "toolFinished",
+    data: {
+      sequence: 0,
+      tool: "search_files",
+      success: true,
+      summary: "Search completed",
+      details: "Found 3 matches",
+    },
+  });
+  const finishedDisclosure = root.querySelector<HTMLElement>(
+    "[data-live-turn-activity]",
+  );
+  expect(finishedDisclosure?.textContent).toContain("Succeeded");
+  expect(finishedDisclosure?.textContent).toContain("Found 3 matches");
   pending.resolve({ answer: "done", metadata, created: true, activities: [] });
   await sending;
 });

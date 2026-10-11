@@ -7,6 +7,7 @@ import type {
   ChatState,
   ConversationMetadata,
   DisplayMessage,
+  ToolActivity,
 } from "./types";
 
 function activeMetadata(state: Readonly<ChatState>): ConversationMetadata | undefined {
@@ -33,13 +34,18 @@ function chatIsBusy(state: Readonly<ChatState>) {
   );
 }
 
-function outcomeLabel(record: ActivityRecord): string {
+type RenderableActivity = Pick<
+  ActivityRecord,
+  "summary" | "arguments" | "details"
+> & { outcome: string | null };
+
+function outcomeLabel(record: RenderableActivity): string {
   if (!record.outcome) return record.summary;
   const outcome = `${record.outcome[0].toUpperCase()}${record.outcome.slice(1)}`;
   return `${outcome}: ${record.summary}`;
 }
 
-function renderActivity(records: ActivityRecord[]): HTMLDetailsElement {
+function renderActivity(records: RenderableActivity[]): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "activity-disclosure";
   details.dataset.activity = "";
@@ -70,6 +76,20 @@ function renderActivity(records: ActivityRecord[]): HTMLDetailsElement {
     timeline.append(row);
   }
   details.append(summary, timeline);
+  return details;
+}
+
+function renderLiveActivity(records: ToolActivity[]): HTMLDetailsElement {
+  const details = renderActivity(
+    records.map((record) => ({
+      summary: record.summary,
+      arguments: record.arguments,
+      details: record.details,
+      outcome: record.status === "status" ? null : record.status,
+    })),
+  );
+  details.dataset.liveTurnActivity = "";
+  details.setAttribute("aria-label", "Current Atlas activity");
   return details;
 }
 
@@ -446,7 +466,18 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       }
       messages.append(welcome);
     } else {
-      for (const message of state.messages) messages.append(renderMessage(message));
+      state.messages.forEach((message, index) => {
+        const rendered = renderMessage(message);
+        if (
+          isStreaming &&
+          index === state.messages.length - 1 &&
+          message.role === "assistant" &&
+          state.toolActivity.length
+        ) {
+          rendered.append(renderLiveActivity(state.toolActivity));
+        }
+        messages.append(rendered);
+      });
       messages.scrollTop = messages.scrollHeight;
     }
 
