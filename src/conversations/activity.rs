@@ -51,6 +51,8 @@ pub struct ActivityTurn {
     pub version: u32,
     pub turn_id: String,
     pub assistant_message_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     pub records: Vec<ActivityRecord>,
 }
 
@@ -149,6 +151,7 @@ impl ActivityCollector {
             version: ACTIVITY_VERSION,
             turn_id: turn_id.into(),
             assistant_message_index,
+            duration_ms: None,
             records: self.records,
         }
     }

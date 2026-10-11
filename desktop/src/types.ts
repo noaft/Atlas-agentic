@@ -33,6 +33,7 @@ export interface ConversationAskResult {
   answer: string;
   metadata: ConversationMetadata;
   activities?: ActivityRecord[];
+  activityDurationMs?: number;
   created: boolean;
 }
 
@@ -53,6 +54,7 @@ export interface ActivityRecord {
 export interface ActivityTurn {
   turnId: string;
   assistantMessageIndex: number;
+  durationMs?: number | null;
   records: ActivityRecord[];
 }
 
@@ -119,6 +121,7 @@ export interface DisplayMessage {
   createdAt: string | null;
   delivery: MessageDelivery;
   activity?: ActivityRecord[];
+  activityDurationMs?: number | null;
 }
 
 export interface ChatState {

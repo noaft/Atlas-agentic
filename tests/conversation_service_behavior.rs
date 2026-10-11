@@ -927,6 +927,10 @@ fn successful_service_turn_commits_activity_with_messages() {
     assert_eq!(saved.messages.len(), 2);
     assert_eq!(saved.activities.len(), 1);
     assert_eq!(saved.activities[0].records, result.activities);
+    assert_eq!(
+        saved.activities[0].duration_ms,
+        Some(result.activity_duration_ms)
+    );
     assert!(result
         .activities
         .iter()

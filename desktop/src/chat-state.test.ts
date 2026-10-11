@@ -393,9 +393,16 @@ test("activity events update repeated tools by sequence and canonicalize on succ
     ]),
   );
 
-  pending.resolve({ answer: "Done", metadata: first, created: true, activities: [thinkingActivity] });
+  pending.resolve({
+    answer: "Done",
+    metadata: first,
+    created: true,
+    activities: [thinkingActivity],
+    activityDurationMs: 72_000,
+  });
   await sending;
   expect(store.getState().messages.at(-1)?.activity).toEqual([thinkingActivity]);
+  expect(store.getState().messages.at(-1)?.activityDurationMs).toBe(72_000);
   expect(store.getState().toolActivity).toEqual([]);
 
   sink({ event: "runtimeStatus", data: { status: "preparingAnswer" } });
@@ -411,6 +418,7 @@ test("restored activity is associated by assistant message index", async () => {
       {
         turnId: "turn-1",
         assistantMessageIndex: 1,
+        durationMs: 72_000,
         records: [thinkingActivity],
       },
     ],
@@ -421,6 +429,7 @@ test("restored activity is associated by assistant message index", async () => {
   await store.selectConversation(first.id);
 
   expect(store.getState().messages[1].activity).toEqual([thinkingActivity]);
+  expect(store.getState().messages[1].activityDurationMs).toBe(72_000);
   expect(store.getState().messages[0].activity).toBeUndefined();
 });
 

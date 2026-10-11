@@ -170,9 +170,11 @@ is manual, with no CLI restore command.
 user/final-assistant pairs to ordinary message history. Save sanitized, bounded
 runtime status and tool activity from successful turns in the separate sidecar;
 failed overall turns save neither. Never persist screenshot pixels, image data,
-or tool attachments. Raw activity details remain local, while later model turns
-receive only a separately capped summary from the same recent turns selected for
-message history. Keep full message history on disk, passing at most the latest 40
+or tool attachments. New activity batches also store elapsed runtime/model work
+duration; legacy batches without it remain valid. Raw activity details remain
+local, while later model turns receive only a separately capped summary from the
+same recent turns selected for message history. Keep full message history on
+disk, passing at most the latest 40
 messages to the model by default. `ATLAS_HISTORY_MESSAGES` must be a positive
 integer; selected history stays chronological and drops a leading assistant
 message when needed. The current input is additional to that limit.

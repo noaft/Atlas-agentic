@@ -73,15 +73,16 @@ const displaySavedMessage = (message: ConversationMessage): DisplayMessage => ({
 
 const displaySavedMessages = (conversation: import("./types").Conversation): DisplayMessage[] => {
   const activityByMessage = new Map(
-    (conversation.activities ?? []).map((turn) => [
-      turn.assistantMessageIndex,
-      turn.records,
-    ]),
+    (conversation.activities ?? []).map((turn) => [turn.assistantMessageIndex, turn]),
   );
-  return conversation.messages.map((message, index) => ({
-    ...displaySavedMessage(message),
-    activity: activityByMessage.get(index),
-  }));
+  return conversation.messages.map((message, index) => {
+    const activity = activityByMessage.get(index);
+    return {
+      ...displaySavedMessage(message),
+      activity: activity?.records,
+      activityDurationMs: activity?.durationMs,
+    };
+  });
 };
 
 const errorMessage = (error: unknown): string =>
@@ -382,6 +383,9 @@ export class ChatStore {
           activity: completedAssistant
             ? (completed.activities ?? [])
             : message.activity,
+          activityDurationMs: completedAssistant
+            ? completed.activityDurationMs
+            : message.activityDurationMs,
         };
       });
       this.replace({

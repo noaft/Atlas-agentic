@@ -360,6 +360,7 @@ impl From<ActivityRecord> for ActivityRecordDto {
 pub struct ActivityTurnDto {
     pub turn_id: String,
     pub assistant_message_index: usize,
+    pub duration_ms: Option<u64>,
     pub records: Vec<ActivityRecordDto>,
 }
 
@@ -368,6 +369,7 @@ impl From<ActivityTurn> for ActivityTurnDto {
         Self {
             turn_id: turn.turn_id,
             assistant_message_index: turn.assistant_message_index,
+            duration_ms: turn.duration_ms,
             records: turn.records.into_iter().map(Into::into).collect(),
         }
     }
@@ -384,6 +386,7 @@ pub struct ConversationAskResultDto {
     pub answer: String,
     pub metadata: ConversationMetadataDto,
     pub activities: Vec<ActivityRecordDto>,
+    pub activity_duration_ms: u64,
     pub created: bool,
 }
 
@@ -393,6 +396,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
             answer: result.answer,
             metadata: result.metadata.into(),
             activities: result.activities.into_iter().map(Into::into).collect(),
+            activity_duration_ms: result.activity_duration_ms,
             created: result.created,
         }
     }
@@ -1004,7 +1008,8 @@ mod tests {
     use atlas_agentic::{
         agents::{Agent, AgentRegistry, LocalAgent, LocalAgentDefinition},
         conversations::{
-            ActivityCollector, ConversationId, ConversationMessage, ConversationStore,
+            ActivityCollector, ConversationAskResult, ConversationId, ConversationMessage,
+            ConversationStore,
         },
         models::deepseek::{DeepSeekConfig, DeepSeekProvider},
         permissions::{
@@ -1020,8 +1025,8 @@ mod tests {
     use super::{
         ask_in_background, delete_impl, list_impl, list_models_in_background, load_impl,
         load_settings_impl, rename_impl, save_settings_impl, set_model_impl, settings_view,
-        validate_workspace_impl, ChatEvent, DesktopAskCallbacks, DesktopState, PendingApprovals,
-        SaveSettingsInput,
+        validate_workspace_impl, ChatEvent, ConversationAskResultDto, DesktopAskCallbacks,
+        DesktopState, PendingApprovals, SaveSettingsInput,
     };
 
     fn environment_lock() -> MutexGuard<'static, ()> {
@@ -1098,21 +1103,28 @@ mod tests {
         let (_data, store, state) = fixture();
         let mut collector = ActivityCollector::new();
         collector.status("Thinking");
+        let mut activity = collector.into_unassociated_turn();
+        activity.duration_ms = Some(72_000);
         let metadata = store
-            .create_turn_with_activity(
-                "question",
-                "answer",
-                None,
-                None,
-                collector.into_unassociated_turn(),
-            )
+            .create_turn_with_activity("question", "answer", None, None, activity)
             .unwrap();
 
         let loaded = load_impl(&metadata.id.to_string(), &state).unwrap();
 
         assert_eq!(loaded.activities.len(), 1);
         assert_eq!(loaded.activities[0].assistant_message_index, 1);
+        assert_eq!(loaded.activities[0].duration_ms, Some(72_000));
         assert_eq!(loaded.activities[0].records[0].summary, "Thinking");
+
+        let completed: ConversationAskResultDto = ConversationAskResult {
+            answer: "answer".to_string(),
+            metadata,
+            activities: Vec::new(),
+            activity_duration_ms: 72_000,
+            created: true,
+        }
+        .into();
+        assert_eq!(completed.activity_duration_ms, 72_000);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
 use crate::permissions::{
     MissingAuthorizer, PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
@@ -15,6 +15,7 @@ pub struct ConversationAskResult {
     pub answer: String,
     pub metadata: ConversationMetadata,
     pub activities: Vec<ActivityRecord>,
+    pub activity_duration_ms: u64,
     pub created: bool,
 }
 
@@ -218,6 +219,7 @@ impl<'a> ConversationService<'a> {
             }
             (callbacks.on_tool_event)(event);
         };
+        let activity_started_at = Instant::now();
         let answer = self.runtime.ask_stream_with_context_and_authorization(
             prompt,
             &history,
@@ -237,7 +239,10 @@ impl<'a> ConversationService<'a> {
             return Err(error);
         }
         let answer = answer?;
-        let activity_turn = collector.into_unassociated_turn();
+        let activity_duration_ms =
+            u64::try_from(activity_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut activity_turn = collector.into_unassociated_turn();
+        activity_turn.duration_ms = Some(activity_duration_ms);
         let activities = activity_turn.records.clone();
 
         let metadata = match id {
@@ -271,6 +276,7 @@ impl<'a> ConversationService<'a> {
             answer,
             metadata,
             activities,
+            activity_duration_ms,
             created: id.is_none(),
         })
     }

@@ -26,6 +26,7 @@ fn activity_turn(id: &str) -> ActivityTurn {
         version: 1,
         turn_id: id.to_string(),
         assistant_message_index: usize::MAX,
+        duration_ms: None,
         records: Vec::new(),
     }
 }

@@ -162,7 +162,8 @@ successful turn are stored separately in a bounded activity sidecar; a failed
 overall turn saves neither messages nor activity. Arguments are redacted and
 bounded, result details are bounded and local-only, and screenshot pixels and
 attachments are never persisted. The desktop shows this record in an expandable
-Activity section below each Atlas answer.
+Activity section above each Atlas answer and includes the elapsed runtime/model
+work duration for new turns.
 
 Atlas keeps complete message history on disk and sends the most recent 40
 messages by default

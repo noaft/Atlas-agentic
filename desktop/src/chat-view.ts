@@ -45,13 +45,32 @@ function outcomeLabel(record: RenderableActivity): string {
   return `${outcome}: ${record.summary}`;
 }
 
-function renderActivity(records: RenderableActivity[]): HTMLDetailsElement {
+function formatWorkingDuration(durationMs: number): string {
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    hours ? `${hours}h` : null,
+    hours || minutes ? `${minutes}m` : null,
+    `${seconds}s`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function renderActivity(
+  records: RenderableActivity[],
+  durationMs?: number | null,
+): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "activity-disclosure";
   details.dataset.activity = "";
   details.setAttribute("aria-label", "Atlas activity");
   const summary = document.createElement("summary");
-  summary.textContent = `Activity (${records.length})`;
+  summary.textContent = `Activity (${records.length})${
+    durationMs == null ? "" : ` · Worked for ${formatWorkingDuration(durationMs)}`
+  }`;
   const timeline = document.createElement("div");
   timeline.className = "activity-timeline";
   for (const record of records) {
@@ -111,7 +130,7 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   }
   article.append(label);
   if (message.role === "assistant" && message.activity?.length) {
-    article.append(renderActivity(message.activity));
+    article.append(renderActivity(message.activity, message.activityDurationMs));
   }
   article.append(content);
   if (message.delivery === "failed") {

@@ -267,6 +267,7 @@ test("saved assistant activity renders as an accessible expandable timeline", as
       {
         turnId: "turn-1",
         assistantMessageIndex: 1,
+        durationMs: 72_000,
         records: [
           {
             sequence: 0,
@@ -334,6 +335,9 @@ test("saved assistant activity renders as an accessible expandable timeline", as
     [...assistant.children].indexOf(disclosure),
   ).toBeLessThan([...assistant.children].indexOf(content));
   expect(disclosure.querySelector("summary")?.textContent).toContain("Activity");
+  expect(disclosure.querySelector("summary")?.textContent).toContain(
+    "Worked for 1m 12s",
+  );
   expect(disclosure.textContent).toContain("Thinking");
   expect(disclosure.textContent).toContain("Succeeded");
   expect(disclosure.textContent).toContain("Failed");
