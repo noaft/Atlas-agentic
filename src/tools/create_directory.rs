@@ -60,9 +60,10 @@ impl Tool for CreateDirectoryTool {
                 path.display()
             ));
         }
-        Ok(ToolResult {
-            message: format!("Created directory: {}", path.display()),
-        })
+        Ok(ToolResult::text(format!(
+            "Created directory: {}",
+            path.display()
+        )))
     }
 }
 

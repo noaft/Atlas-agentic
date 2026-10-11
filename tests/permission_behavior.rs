@@ -52,9 +52,7 @@ impl Tool for RiskyTool {
 
     fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
         self.executions.set(self.executions.get() + 1);
-        Ok(ToolResult {
-            message: "changed".to_string(),
-        })
+        Ok(ToolResult::text("changed"))
     }
 }
 
@@ -141,7 +139,7 @@ fn permission_matrix_matches_the_three_modes() {
 
     assert_eq!(
         ToolRisk::ComputerObserve.reason(),
-        "reads potentially sensitive information from the active desktop"
+        "reads potentially sensitive desktop information that may be sent to the configured model provider"
     );
     assert_eq!(
         ToolRisk::ComputerControl.reason(),

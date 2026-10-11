@@ -8,10 +8,10 @@ use crate::{
     },
     settings::{EffectiveSettings, SettingsStore},
     tools::{
-        system_computer_controller, CopyFileTool, CreateDirectoryTool, CreateFileTool,
-        CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool, MouseClickTool,
-        MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool, OpenFileTool, PwdTool,
-        ReadFileTool, SearchFilesTool, ToolRegistry, TypeTextTool,
+        system_computer_controller, CaptureScreenTool, CopyFileTool, CreateDirectoryTool,
+        CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool,
+        MouseClickTool, MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool,
+        OpenFileTool, PwdTool, ReadFileTool, SearchFilesTool, ToolRegistry, TypeTextTool,
     },
     Runtime,
 };
@@ -64,7 +64,8 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(MouseScrollTool::new(computer.clone())),
         Box::new(TypeTextTool::new(computer.clone())),
         Box::new(KeyPressTool::new(computer.clone())),
-        Box::new(GetUiStateTool::new(computer)),
+        Box::new(GetUiStateTool::new(computer.clone())),
+        Box::new(CaptureScreenTool::new(computer)),
     ]);
     #[cfg(any(unix, windows))]
     let tools = {
@@ -106,6 +107,7 @@ mod tests {
         names.sort();
 
         let mut expected = vec![
+            "capture_screen",
             "copy_file",
             "create_directory",
             "create_file",

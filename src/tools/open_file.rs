@@ -70,9 +70,7 @@ impl Tool for OpenFileTool {
             .to_str()
             .ok_or_else(|| "open_file path must contain valid Unicode".to_string())?;
         self.launcher.launch_file(self.platform, absolute)?;
-        Ok(ToolResult {
-            message: format!("Opened file: {}", path.display()),
-        })
+        Ok(ToolResult::text(format!("Opened file: {}", path.display())))
     }
 }
 

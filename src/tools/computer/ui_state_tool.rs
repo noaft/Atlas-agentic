@@ -46,7 +46,7 @@ impl Tool for GetUiStateTool {
             .ui_state()?;
         let message = serde_json::to_string_pretty(&state)
             .map_err(|error| format!("failed to serialize UI state: {error}"))?;
-        Ok(ToolResult { message })
+        Ok(ToolResult::text(message))
     }
 }
 

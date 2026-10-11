@@ -3,12 +3,20 @@ mod local;
 pub use local::{LocalAgent, LocalAgentDefinition};
 
 use crate::conversations::ConversationMessage;
+use crate::media::ImageData;
 
 pub trait Agent {
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;
     fn max_tool_calls(&self) -> Option<usize> {
         None
+    }
+    fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            Err("model provider does not support image input".to_string())
+        }
     }
     fn process(
         &self,
@@ -23,6 +31,20 @@ pub trait Agent {
         tools: &[crate::tools::ToolDefinition],
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String>;
+    fn process_stream_with_images(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[crate::tools::ToolDefinition],
+        images: &[ImageData],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        if images.is_empty() {
+            self.process_stream(input, history, tools, on_delta)
+        } else {
+            Err("model provider does not support image input".to_string())
+        }
+    }
     fn generate_conversation_title(&self, first_input: &str) -> Result<String, String>;
 }
 

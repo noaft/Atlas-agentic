@@ -98,13 +98,11 @@ impl Tool for MoveFileTool {
                 return Err(format!("failed to remove move_file source: {error}"));
             }
         }
-        Ok(ToolResult {
-            message: format!(
-                "Moved file: {} -> {}",
-                args.source.display(),
-                args.destination.display()
-            ),
-        })
+        Ok(ToolResult::text(format!(
+            "Moved file: {} -> {}",
+            args.source.display(),
+            args.destination.display()
+        )))
     }
 }
 

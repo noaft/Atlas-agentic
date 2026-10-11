@@ -189,13 +189,11 @@ fn generated_directory(name: &str) -> bool {
 }
 
 fn result(matches: Vec<String>) -> ToolResult {
-    ToolResult {
-        message: if matches.is_empty() {
-            "No matches.".to_string()
-        } else {
-            matches.join("\n")
-        },
-    }
+    ToolResult::text(if matches.is_empty() {
+        "No matches.".to_string()
+    } else {
+        matches.join("\n")
+    })
 }
 
 fn path_text(path: &Path) -> String {

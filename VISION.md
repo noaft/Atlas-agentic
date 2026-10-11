@@ -44,10 +44,14 @@ locations allowed by the current user's OS permissions. Structured file helpers
 remain scoped to the selected starting folder. Per-conversation permission modes
 decide when Atlas must ask before changing files, launching applications, or
 executing commands; they do not grant OS privileges. Atlas can also observe
-basic desktop state and send mouse or keyboard input through runtime-controlled
-tools. Those sensitive computer operations require confirmation in Ask and
-Workspace modes and remain subject to native OS accessibility, integrity, and
-desktop-session protections even in Full access.
+basic desktop state, capture the primary display for model vision, and send
+mouse or keyboard input through runtime-controlled tools. Those sensitive
+computer operations require confirmation in Ask and Workspace modes and remain
+subject to native OS accessibility, screen-recording, integrity, and
+desktop-session protections even in Full access. Screenshot pixels remain
+turn-local and in memory: Atlas sends an approved capture to the configured
+model provider but does not write it to disk or conversation history. Capture
+stays in the Rust backend without expanding frontend Tauri permissions.
 
 The current repo starts with a Rust CLI because it is the simplest runtime foundation. The CLI lets us build and test the agent core before adding the desktop interface.
 

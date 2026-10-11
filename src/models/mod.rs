@@ -2,6 +2,7 @@ pub mod deepseek;
 
 use crate::agents::LocalAgentDefinition;
 use crate::conversations::ConversationMessage;
+use crate::media::ImageData;
 use crate::settings::{AtlasSettings, EffectiveSettings, SettingField, DEFAULT_DEEPSEEK_MODEL};
 use crate::tools::ToolDefinition;
 
@@ -16,6 +17,14 @@ pub struct ModelInfo {
 
 pub trait ModelProvider {
     fn complete(&self, request: &ModelRequest) -> Result<String, String>;
+
+    fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            Err("model provider does not support image input".to_string())
+        }
+    }
 
     fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
         Err("model provider does not support model discovery".to_string())
@@ -37,6 +46,7 @@ pub struct ModelRequest<'a> {
     pub user_prompt: &'a str,
     pub history: &'a [ConversationMessage],
     pub tools: &'a [ToolDefinition],
+    pub images: &'a [ImageData],
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
 }

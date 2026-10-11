@@ -59,13 +59,11 @@ impl Tool for CopyFileTool {
         let args = parse(args)?;
         let workspace = open_workspace(self.name(), &self.workspace)?;
         copy(&workspace, &args.source, &args.destination, args.overwrite)?;
-        Ok(ToolResult {
-            message: format!(
-                "Copied file: {} -> {}",
-                args.source.display(),
-                args.destination.display()
-            ),
-        })
+        Ok(ToolResult::text(format!(
+            "Copied file: {} -> {}",
+            args.source.display(),
+            args.destination.display()
+        )))
     }
 }
 

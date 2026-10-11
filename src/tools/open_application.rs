@@ -63,9 +63,10 @@ impl Tool for OpenApplicationTool {
             &args.application,
             &args.args,
         ))?;
-        Ok(ToolResult {
-            message: format!("Opened application: {}", args.application),
-        })
+        Ok(ToolResult::text(format!(
+            "Opened application: {}",
+            args.application
+        )))
     }
 }
 

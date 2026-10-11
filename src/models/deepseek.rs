@@ -1,9 +1,11 @@
 use std::io::Read;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::conversations::MessageRole;
+use crate::media::ImageData;
 
 use super::{ModelInfo, ModelProvider, ModelRequest};
 
@@ -28,12 +30,17 @@ impl DeepSeekProvider {
 }
 
 impl ModelProvider for DeepSeekProvider {
+    fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
+        images.iter().try_for_each(validate_image)
+    }
+
     fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+        let payload = self.chat_request(request, false)?;
         let response = self
             .client
             .post(self.chat_url())
             .bearer_auth(&self.config.api_key)
-            .json(&self.chat_request(request, false))
+            .json(&payload)
             .send()
             .map_err(|error| format!("DeepSeek request failed: {error}"))?;
 
@@ -58,11 +65,12 @@ impl ModelProvider for DeepSeekProvider {
         request: &ModelRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
+        let payload = self.chat_request(request, true)?;
         let mut response = self
             .client
             .post(self.chat_url())
             .bearer_auth(&self.config.api_key)
-            .json(&self.chat_request(request, true))
+            .json(&payload)
             .send()
             .map_err(|error| format!("DeepSeek request failed: {error}"))?;
 
@@ -137,26 +145,48 @@ impl DeepSeekProvider {
         format!("{}/models", self.config.base_url.trim_end_matches('/'))
     }
 
-    fn chat_request(&self, request: &ModelRequest, stream: bool) -> ChatRequest {
+    fn chat_request(&self, request: &ModelRequest, stream: bool) -> Result<ChatRequest, String> {
         let system_prompt = render_model_instructions(request);
         let mut messages = Vec::with_capacity(request.history.len() + 2);
         messages.push(ChatMessage {
             role: "system",
-            content: system_prompt,
+            content: ChatContent::Text(system_prompt),
         });
         messages.extend(request.history.iter().map(|message| ChatMessage {
             role: match message.role {
                 MessageRole::User => "user",
                 MessageRole::Assistant => "assistant",
             },
-            content: message.content.clone(),
+            content: ChatContent::Text(message.content.clone()),
         }));
+        let user_content = if request.images.is_empty() {
+            ChatContent::Text(request.user_prompt.to_string())
+        } else {
+            self.validate_images(request.images)?;
+            let mut parts = Vec::with_capacity(request.images.len() + 1);
+            parts.push(ChatContentPart::Text {
+                text: request.user_prompt.to_string(),
+            });
+            for image in request.images {
+                parts.push(ChatContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: format!(
+                            "data:{};base64,{}",
+                            image.mime_type,
+                            STANDARD.encode(&image.bytes)
+                        ),
+                        detail: image.detail,
+                    },
+                });
+            }
+            ChatContent::Parts(parts)
+        };
         messages.push(ChatMessage {
             role: "user",
-            content: request.user_prompt.to_string(),
+            content: user_content,
         });
 
-        ChatRequest {
+        Ok(ChatRequest {
             model: self.config.model.clone(),
             messages,
             stream,
@@ -165,8 +195,27 @@ impl DeepSeekProvider {
             }),
             temperature: request.temperature,
             top_p: request.top_p,
-        }
+        })
     }
+}
+
+fn validate_image(image: &ImageData) -> Result<(), String> {
+    if image.mime_type != "image/png" {
+        return Err(format!(
+            "DeepSeek image input requires image/png, got {}",
+            image.mime_type
+        ));
+    }
+    if image.width == 0 || image.height == 0 {
+        return Err("DeepSeek image input dimensions must be nonzero".to_string());
+    }
+    if image.width > 8192 || image.height > 8192 {
+        return Err("DeepSeek image input dimensions must not exceed 8192 pixels".to_string());
+    }
+    if image.bytes.len() > 32 * 1024 * 1024 {
+        return Err("DeepSeek image input must not exceed 32 MiB".to_string());
+    }
+    Ok(())
 }
 
 pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
@@ -222,7 +271,27 @@ struct ResponseFormat {
 #[derive(Serialize)]
 struct ChatMessage {
     role: &'static str,
-    content: String,
+    content: ChatContent,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChatContent {
+    Text(String),
+    Parts(Vec<ChatContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ChatContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Serialize)]
+struct ImageUrl {
+    url: String,
+    detail: crate::media::ImageDetail,
 }
 
 #[derive(Deserialize)]
@@ -309,6 +378,7 @@ mod tests {
 
     use crate::{
         conversations::{ConversationMessage, MessageRole},
+        media::{ImageData, ImageDetail},
         models::{
             deepseek::{
                 parse_model_list, parse_stream_delta, render_model_instructions, DeepSeekConfig,
@@ -318,6 +388,92 @@ mod tests {
         },
         tools::ToolDefinition,
     };
+
+    fn provider() -> DeepSeekProvider {
+        DeepSeekProvider::new(DeepSeekConfig {
+            api_key: "test-key".to_string(),
+            base_url: "http://localhost".to_string(),
+            model: "test-model".to_string(),
+        })
+    }
+
+    fn request<'a>(images: &'a [ImageData]) -> ModelRequest<'a> {
+        ModelRequest {
+            system_prompt: "You are Atlas.",
+            user_prompt: "inspect this screen",
+            history: &[],
+            tools: &[],
+            images,
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    fn png(bytes: Vec<u8>, width: u32, height: u32) -> ImageData {
+        ImageData {
+            mime_type: "image/png".to_string(),
+            bytes,
+            width,
+            height,
+            detail: ImageDetail::Original,
+        }
+    }
+
+    #[test]
+    fn chat_request_serializes_text_only_content_as_a_string() {
+        let payload =
+            serde_json::to_value(provider().chat_request(&request(&[]), false).unwrap()).unwrap();
+
+        assert_eq!(
+            payload["messages"][1]["content"],
+            json!("inspect this screen")
+        );
+    }
+
+    #[test]
+    fn chat_request_serializes_png_after_text_as_original_image_input() {
+        let images = vec![png(vec![1, 2, 3], 2, 1)];
+        let payload =
+            serde_json::to_value(provider().chat_request(&request(&images), false).unwrap())
+                .unwrap();
+
+        assert_eq!(
+            payload["messages"][1]["content"],
+            json!([
+                {"type": "text", "text": "inspect this screen"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64,AQID",
+                    "detail": "original"
+                }}
+            ])
+        );
+    }
+
+    #[test]
+    fn chat_request_accepts_exact_image_limits() {
+        let images = vec![png(vec![0; 32 * 1024 * 1024], 8192, 8192)];
+
+        assert!(provider().chat_request(&request(&images), false).is_ok());
+    }
+
+    #[test]
+    fn chat_request_rejects_oversized_image_dimensions_and_bytes() {
+        for image in [
+            png(vec![1], 8193, 1),
+            png(vec![1], 1, 8193),
+            png(vec![0; 32 * 1024 * 1024 + 1], 1, 1),
+            png(vec![1], 0, 1),
+            ImageData {
+                mime_type: "image/jpeg".to_string(),
+                bytes: vec![1],
+                width: 1,
+                height: 1,
+                detail: ImageDetail::Low,
+            },
+        ] {
+            assert!(provider().chat_request(&request(&[image]), false).is_err());
+        }
+    }
 
     #[test]
     fn tool_instructions_require_exact_json_response_format() {
@@ -334,6 +490,7 @@ mod tests {
             user_prompt: "Create a file.",
             history: &[],
             tools: &tools,
+            images: &[],
             temperature: Some(0.2),
             top_p: Some(0.9),
         };
@@ -365,11 +522,12 @@ mod tests {
             user_prompt: "Read README.md.",
             history: &[],
             tools: &tools,
+            images: &[],
             temperature: None,
             top_p: None,
         };
 
-        let payload = serde_json::to_value(provider.chat_request(&request, true)).unwrap();
+        let payload = serde_json::to_value(provider.chat_request(&request, true).unwrap()).unwrap();
 
         assert_eq!(payload["response_format"], json!({"type": "json_object"}));
     }
@@ -398,24 +556,22 @@ mod tests {
             user_prompt: "Newest question",
             history: &history,
             tools: &[],
+            images: &[],
             temperature: None,
             top_p: None,
         };
 
-        let request = provider.chat_request(&request, false);
-        let messages = request
-            .messages
-            .iter()
-            .map(|message| (message.role, message.content.as_str()))
-            .collect::<Vec<_>>();
+        let request =
+            serde_json::to_value(provider.chat_request(&request, false).unwrap()).unwrap();
+        let messages = request["messages"].as_array().unwrap();
 
         assert_eq!(
             messages,
-            vec![
-                ("system", "You are Atlas."),
-                ("user", "Earlier question"),
-                ("assistant", "Earlier answer"),
-                ("user", "Newest question"),
+            &vec![
+                json!({"role": "system", "content": "You are Atlas."}),
+                json!({"role": "user", "content": "Earlier question"}),
+                json!({"role": "assistant", "content": "Earlier answer"}),
+                json!({"role": "user", "content": "Newest question"}),
             ]
         );
     }

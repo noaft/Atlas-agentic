@@ -104,6 +104,13 @@ pub struct ComputerUiState {
     pub active_window: Observation<ActiveWindowState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedImage {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait ComputerController: Send {
     fn move_mouse(&mut self, x: i32, y: i32, coordinate: CoordinateMode) -> Result<(), String>;
     fn click(&mut self, button: MouseButton) -> Result<(), String>;
@@ -111,6 +118,7 @@ pub trait ComputerController: Send {
     fn type_text(&mut self, text: &str) -> Result<(), String>;
     fn key_event(&mut self, key: ComputerKey, direction: KeyDirection) -> Result<(), String>;
     fn ui_state(&mut self) -> Result<ComputerUiState, String>;
+    fn capture_primary_display(&mut self) -> Result<CapturedImage, String>;
 }
 
 pub type SharedComputerController = Arc<Mutex<Box<dyn ComputerController>>>;

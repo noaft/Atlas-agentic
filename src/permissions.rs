@@ -30,7 +30,7 @@ impl ToolRisk {
             Self::Launch => "opens a file or application on the computer",
             Self::Command => "executes a shell command with the Atlas process permissions",
             Self::ComputerObserve => {
-                "reads potentially sensitive information from the active desktop"
+                "reads potentially sensitive desktop information that may be sent to the configured model provider"
             }
             Self::ComputerControl => "sends mouse or keyboard input to the active application",
         }

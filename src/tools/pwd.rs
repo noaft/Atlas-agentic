@@ -31,8 +31,9 @@ impl Tool for PwdTool {
     }
 
     fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
-        Ok(ToolResult {
-            message: format!("Workspace: {}", self.workspace.display()),
-        })
+        Ok(ToolResult::text(format!(
+            "Workspace: {}",
+            self.workspace.display()
+        )))
     }
 }

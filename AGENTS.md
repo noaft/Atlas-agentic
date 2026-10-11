@@ -67,6 +67,7 @@ The built-in runtime tools are:
 - `type_text`: type bounded Unicode text into the active application
 - `key_press`: press named or Unicode keys with optional modifiers
 - `get_ui_state`: read pointer, primary-display, and active-window metadata
+- `capture_screen`: capture the primary display as an in-memory PNG for model vision
 
 The displayed workspace is a starting directory, not a shell sandbox.
 `exec_command` is available on Linux, WSL, macOS, and Windows and is intentionally
@@ -89,7 +90,16 @@ reject input into a higher-integrity process, macOS requires user-granted
 Accessibility access, and Linux currently requires a usable X11 display.
 Wayland-only sessions return an actionable error. Keep these capabilities in
 the Rust backend; do not broaden frontend Tauri shell, process, accessibility,
-or filesystem permissions.
+screen-capture, or filesystem permissions.
+
+`capture_screen` uses `ComputerObserve`. Ask and Workspace modes require
+approval because visible desktop data may be sent to the configured model
+provider. Captures are primary-display-only, remain in memory for the current
+turn, and are never written to disk or conversation history. The DeepSeek
+adapter rejects images over 8192 pixels per side or 32 MiB. Windows uses native
+capture, macOS requires Screen Recording permission, and Linux requires X11.
+Linux development/runtime environments need `libxcb`, `libxrandr`, and `dbus`
+(Debian/Ubuntu packages: `libxcb1 libxrandr2 libdbus-1-3`).
 
 ## Configure and Run
 

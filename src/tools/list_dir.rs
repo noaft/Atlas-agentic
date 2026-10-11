@@ -74,9 +74,7 @@ impl Tool for ListDirTool {
 
         entries.sort();
 
-        Ok(ToolResult {
-            message: entries.join("\n"),
-        })
+        Ok(ToolResult::text(entries.join("\n")))
     }
 }
 

@@ -21,10 +21,10 @@ mod search_files;
 mod workspace_path;
 
 pub use computer::{
-    system_computer_controller, ActiveWindowState, ComputerController, ComputerKey,
-    ComputerUiState, CoordinateMode, GetUiStateTool, KeyDirection, KeyPressTool, MouseButton,
-    MouseClickTool, MouseMoveTool, MouseScrollTool, Observation, Point, ScrollAxis,
-    SharedComputerController, Size, TypeTextTool, UnavailableState, WindowBounds,
+    system_computer_controller, ActiveWindowState, CaptureScreenTool, CapturedImage,
+    ComputerController, ComputerKey, ComputerUiState, CoordinateMode, GetUiStateTool, KeyDirection,
+    KeyPressTool, MouseButton, MouseClickTool, MouseMoveTool, MouseScrollTool, Observation, Point,
+    ScrollAxis, SharedComputerController, Size, TypeTextTool, UnavailableState, WindowBounds,
 };
 pub use copy_file::CopyFileTool;
 pub use create_directory::CreateDirectoryTool;
@@ -48,6 +48,7 @@ pub use search_files::SearchFilesTool;
 use std::collections::HashMap;
 
 use crate::agent_output::AgentOutput;
+use crate::media::ImageData;
 use crate::permissions::ToolRisk;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +60,28 @@ pub struct ToolDefinition {
 
 pub struct ToolResult {
     pub message: String,
+    pub attachments: Vec<ToolAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolAttachment {
+    Image(ImageData),
+}
+
+impl ToolResult {
+    pub fn text(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub fn with_image(message: impl Into<String>, image: ImageData) -> Self {
+        Self {
+            message: message.into(),
+            attachments: vec![ToolAttachment::Image(image)],
+        }
+    }
 }
 
 pub trait Tool {
@@ -143,9 +166,7 @@ impl ToolRegistry {
 
     pub fn execute(&self, output: &AgentOutput) -> Result<ToolResult, String> {
         match output {
-            AgentOutput::Final { content } => Ok(ToolResult {
-                message: content.clone(),
-            }),
+            AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
             AgentOutput::ToolCall { tool, args } => self
                 .tools
                 .get(tool)
@@ -168,5 +189,18 @@ impl ToolRegistry {
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|tool| tool.definition()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolResult;
+
+    #[test]
+    fn tool_result_text_has_no_attachments() {
+        let result = ToolResult::text("done");
+
+        assert_eq!(result.message, "done");
+        assert!(result.attachments.is_empty());
     }
 }

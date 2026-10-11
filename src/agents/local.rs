@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 use crate::{
     conversations::ConversationMessage,
+    media::ImageData,
     models::{ModelProvider, ModelRequest},
     tools::ToolDefinition,
 };
@@ -36,6 +37,10 @@ impl Agent for LocalAgent {
         self.definition.max_tool_calls
     }
 
+    fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
+        self.model.validate_images(images)
+    }
+
     fn process(
         &self,
         input: &str,
@@ -47,6 +52,7 @@ impl Agent for LocalAgent {
             user_prompt: input,
             history,
             tools,
+            images: &[],
             temperature: self.definition.temperature,
             top_p: self.definition.top_p,
         })
@@ -65,6 +71,29 @@ impl Agent for LocalAgent {
                 user_prompt: input,
                 history,
                 tools,
+                images: &[],
+                temperature: self.definition.temperature,
+                top_p: self.definition.top_p,
+            },
+            on_delta,
+        )
+    }
+
+    fn process_stream_with_images(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[ToolDefinition],
+        images: &[ImageData],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.model.stream(
+            &ModelRequest {
+                system_prompt: self.system_prompt(),
+                user_prompt: input,
+                history,
+                tools,
+                images,
                 temperature: self.definition.temperature,
                 top_p: self.definition.top_p,
             },
@@ -78,6 +107,7 @@ impl Agent for LocalAgent {
             user_prompt: first_input,
             history: &[],
             tools: &[],
+            images: &[],
             temperature: self.definition.temperature,
             top_p: self.definition.top_p,
         })

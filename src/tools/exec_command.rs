@@ -133,7 +133,7 @@ impl Tool for ExecCommandTool {
         }))
         .map_err(|error| format!("failed to serialize exec_command result: {error}"))?;
 
-        Ok(ToolResult { message })
+        Ok(ToolResult::text(message))
     }
 }
 

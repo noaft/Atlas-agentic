@@ -57,14 +57,12 @@ impl Tool for MouseMoveTool {
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
         let args = parse_mouse_move(args)?;
         controller(&self.controller)?.move_mouse(args.x, args.y, args.coordinate)?;
-        Ok(ToolResult {
-            message: format!(
-                "Moved mouse to ({}, {}) using {} coordinates.",
-                args.x,
-                args.y,
-                coordinate_name(args.coordinate)
-            ),
-        })
+        Ok(ToolResult::text(format!(
+            "Moved mouse to ({}, {}) using {} coordinates.",
+            args.x,
+            args.y,
+            coordinate_name(args.coordinate)
+        )))
     }
 }
 
@@ -113,13 +111,11 @@ impl Tool for MouseClickTool {
         for _ in 0..args.count {
             controller.click(args.button)?;
         }
-        Ok(ToolResult {
-            message: format!(
-                "Clicked {} mouse button {} time(s).",
-                button_name(args.button),
-                args.count
-            ),
-        })
+        Ok(ToolResult::text(format!(
+            "Clicked {} mouse button {} time(s).",
+            button_name(args.button),
+            args.count
+        )))
     }
 }
 
@@ -168,9 +164,10 @@ impl Tool for MouseScrollTool {
         if args.delta_y != 0 {
             controller.scroll(args.delta_y, ScrollAxis::Vertical)?;
         }
-        Ok(ToolResult {
-            message: format!("Scrolled mouse by ({}, {}).", args.delta_x, args.delta_y),
-        })
+        Ok(ToolResult::text(format!(
+            "Scrolled mouse by ({}, {}).",
+            args.delta_x, args.delta_y
+        )))
     }
 }
 
@@ -229,9 +226,9 @@ impl Tool for TypeTextTool {
         let args = parse_type_text(args)?;
         let count = args.text.chars().count();
         controller(&self.controller)?.type_text(&args.text)?;
-        Ok(ToolResult {
-            message: format!("Typed {count} characters into the active application."),
-        })
+        Ok(ToolResult::text(format!(
+            "Typed {count} characters into the active application."
+        )))
     }
 }
 
@@ -331,9 +328,10 @@ impl Tool for KeyPressTool {
             return Err(format!("failed to release modifier: {error}"));
         }
 
-        Ok(ToolResult {
-            message: format!("Pressed {} {} time(s).", args.label, args.repeat),
-        })
+        Ok(ToolResult::text(format!(
+            "Pressed {} {} time(s).",
+            args.label, args.repeat
+        )))
     }
 }
 

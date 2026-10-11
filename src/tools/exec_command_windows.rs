@@ -160,7 +160,7 @@ impl Tool for ExecCommandTool {
             "stderr_truncated": stderr.1,
         }))
         .map_err(|error| format!("failed to serialize exec_command result: {error}"))?;
-        Ok(ToolResult { message })
+        Ok(ToolResult::text(message))
     }
 }
 

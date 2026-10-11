@@ -85,9 +85,7 @@ impl Tool for CreateFileTool {
         file.write_all(args.content.as_bytes())
             .map_err(|error| format!("failed to create file: {error}"))?;
 
-        Ok(ToolResult {
-            message: format!("Created file: {}", args.path),
-        })
+        Ok(ToolResult::text(format!("Created file: {}", args.path)))
     }
 }
 

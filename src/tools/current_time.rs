@@ -35,8 +35,9 @@ impl Tool for CurrentTimeTool {
     }
 
     fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
-        Ok(ToolResult {
-            message: format!("Local date and time: {}", Local::now().to_rfc3339()),
-        })
+        Ok(ToolResult::text(format!(
+            "Local date and time: {}",
+            Local::now().to_rfc3339()
+        )))
     }
 }

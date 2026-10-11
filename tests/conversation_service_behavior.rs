@@ -14,6 +14,7 @@ use atlas_agentic::{
     conversations::{
         ConversationId, ConversationMessage, ConversationService, ConversationStore, MessageRole,
     },
+    media::{ImageData, ImageDetail},
     models::{ModelProvider, ModelRequest},
     permissions::{
         AuthorizationDecision, AuthorizationRequest, PermissionMode, ToolAuthorizer, ToolRisk,
@@ -24,6 +25,108 @@ use atlas_agentic::{
 
 struct CountingRiskyTool {
     executions: Rc<Cell<usize>>,
+}
+
+struct PersistedImageTool;
+
+impl Tool for PersistedImageTool {
+    fn name(&self) -> &str {
+        "capture_test"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Return a synthetic image.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
+        Ok(ToolResult::with_image(
+            "Captured synthetic screen.",
+            ImageData {
+                mime_type: "image/png".to_string(),
+                bytes: b"PERSISTENCE_IMAGE_MARKER".to_vec(),
+                width: 2,
+                height: 1,
+                detail: ImageDetail::Original,
+            },
+        ))
+    }
+}
+
+struct PersistenceImageModel {
+    responses: RefCell<VecDeque<String>>,
+    images: Rc<RefCell<Vec<Vec<ImageData>>>>,
+}
+
+impl ModelProvider for PersistenceImageModel {
+    fn validate_images(&self, _images: &[ImageData]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+        if request.tools.is_empty() {
+            return Ok("Screen inspection".to_string());
+        }
+        self.images.borrow_mut().push(request.images.to_vec());
+        self.responses
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| "no persistence response queued".to_string())
+    }
+}
+
+#[test]
+fn successful_turn_persists_only_user_and_final_text_not_tool_images() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let store = ConversationStore::at(data.clone());
+    let images = Rc::new(RefCell::new(Vec::new()));
+    let model = PersistenceImageModel {
+        responses: RefCell::new(
+            [
+                r#"{"type":"tool_call","tool":"capture_test","args":{}}"#.to_string(),
+                r#"{"type":"final","content":"I inspected the screen."}"#.to_string(),
+            ]
+            .into(),
+        ),
+        images: Rc::clone(&images),
+    };
+    let definition = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+system_prompt = "You are Atlas."
+conversation_title_prompt = "Return a conversation title."
+"#,
+    )
+    .unwrap();
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition,
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PersistedImageTool)]));
+
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask("inspect my screen", None, &mut |_| {})
+        .unwrap();
+
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.messages[0].content, "inspect my screen");
+    assert_eq!(saved.messages[1].content, "I inspected the screen.");
+    assert_eq!(images.borrow()[1][0].bytes, b"PERSISTENCE_IMAGE_MARKER");
+    let jsonl = fs::read_to_string(
+        data.join("conversations")
+            .join(format!("{}.jsonl", result.metadata.id)),
+    )
+    .unwrap();
+    assert!(!jsonl.contains("PERSISTENCE_IMAGE_MARKER"));
+    assert!(!jsonl.contains("data:image"));
 }
 
 impl Tool for CountingRiskyTool {
@@ -45,9 +148,7 @@ impl Tool for CountingRiskyTool {
 
     fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
         self.executions.set(self.executions.get() + 1);
-        Ok(ToolResult {
-            message: "executed".to_string(),
-        })
+        Ok(ToolResult::text("executed"))
     }
 }
 

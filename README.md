@@ -23,6 +23,9 @@ install the frontend dependencies:
 npm ci --prefix desktop
 ```
 
+Linux builds also need the native libraries used by screen capture: `libxcb`,
+`libxrandr`, and `dbus` (for Debian/Ubuntu: `libxcb1 libxrandr2 libdbus-1-3`).
+
 Launch the development app from the repository root:
 
 ```bash
@@ -240,6 +243,7 @@ Default runtime tools:
 - `type_text`: type Unicode text into the active application
 - `key_press`: press a named or Unicode key with optional modifiers
 - `get_ui_state`: read pointer, primary-display, and active-window metadata
+- `capture_screen`: capture the primary display as an in-memory PNG for model vision
 
 Computer-control tools act on the application active when the tool executes;
 focus may change after approval, and a successful result means the OS accepted
@@ -250,9 +254,18 @@ usable X11 display; unsupported Wayland-only sessions return an actionable
 connection error. Full access skips the Atlas confirmation but does not bypass
 these operating-system protections.
 
-Desktop control stays in the Rust backend. The frontend retains only its narrow
+`capture_screen` observes only the primary display. In Ask and Workspace modes,
+Atlas requests approval before capture and explains that visible desktop data may
+be sent to the configured model provider. The PNG is held only in memory for the
+current agent turn and provider request; it is not written to disk or saved in
+conversation history. DeepSeek image requests reject dimensions above 8192
+pixels per side and PNGs above 32 MiB. Windows uses native capture, macOS requires
+Screen Recording permission, and Linux capture currently requires X11; a
+Wayland-only session returns an actionable error.
+
+Desktop control and capture stay in the Rust backend. The frontend retains only its narrow
 dialog and fullscreen capabilities; it receives no shell, process,
-accessibility, or unrestricted filesystem permission.
+accessibility, screen-capture, or unrestricted filesystem permission.
 
 The workspace shown in the app is the tools' starting directory and conversation
 label. Structured path-based file helpers reject absolute paths, parent traversal,

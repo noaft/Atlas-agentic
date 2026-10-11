@@ -78,7 +78,7 @@ impl Tool for ReadFileTool {
             .map_err(|error| format!("failed to read file: {error}"))?;
 
         let message = decode_output(&bytes)?;
-        Ok(ToolResult { message })
+        Ok(ToolResult::text(message))
     }
 }
 

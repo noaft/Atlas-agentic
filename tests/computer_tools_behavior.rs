@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_agentic::{
+    media::ImageDetail,
     permissions::ToolRisk,
     tools::{
-        ActiveWindowState, ComputerController, ComputerKey, ComputerUiState, CoordinateMode,
-        GetUiStateTool, KeyDirection, KeyPressTool, MouseButton, MouseClickTool, MouseMoveTool,
-        MouseScrollTool, Observation, Point, ScrollAxis, SharedComputerController, Size, Tool,
-        ToolRegistry, TypeTextTool,
+        ActiveWindowState, CaptureScreenTool, CapturedImage, ComputerController, ComputerKey,
+        ComputerUiState, CoordinateMode, GetUiStateTool, KeyDirection, KeyPressTool, MouseButton,
+        MouseClickTool, MouseMoveTool, MouseScrollTool, Observation, Point, ScrollAxis,
+        SharedComputerController, Size, Tool, ToolAttachment, ToolRegistry, TypeTextTool,
     },
 };
 
@@ -18,12 +19,14 @@ enum Event {
     Text(String),
     Key(ComputerKey, KeyDirection),
     Observe,
+    Capture,
 }
 
 struct RecordingController {
     events: Arc<Mutex<Vec<Event>>>,
     state: ComputerUiState,
     fail_key: Option<(ComputerKey, KeyDirection)>,
+    captured: CapturedImage,
 }
 
 impl ComputerController for RecordingController {
@@ -69,10 +72,29 @@ impl ComputerController for RecordingController {
         self.events.lock().unwrap().push(Event::Observe);
         Ok(self.state.clone())
     }
+
+    fn capture_primary_display(&mut self) -> Result<CapturedImage, String> {
+        self.events.lock().unwrap().push(Event::Capture);
+        Ok(self.captured.clone())
+    }
 }
 
 fn controller(
     fail_key: Option<(ComputerKey, KeyDirection)>,
+) -> (SharedComputerController, Arc<Mutex<Vec<Event>>>) {
+    controller_with_capture(
+        fail_key,
+        CapturedImage {
+            png: vec![137, 80, 78, 71],
+            width: 2,
+            height: 1,
+        },
+    )
+}
+
+fn controller_with_capture(
+    fail_key: Option<(ComputerKey, KeyDirection)>,
+    captured: CapturedImage,
 ) -> (SharedComputerController, Arc<Mutex<Vec<Event>>>) {
     let events = Arc::new(Mutex::new(Vec::new()));
     let state = ComputerUiState {
@@ -93,12 +115,13 @@ fn controller(
         events: Arc::clone(&events),
         state,
         fail_key,
+        captured,
     })));
     (shared, events)
 }
 
 #[test]
-fn definitions_and_risks_describe_the_six_computer_tools() {
+fn definitions_and_risks_describe_the_seven_computer_tools() {
     let (controller, _) = controller(None);
     let tools: Vec<Box<dyn Tool>> = vec![
         Box::new(MouseMoveTool::new(Arc::clone(&controller))),
@@ -106,7 +129,8 @@ fn definitions_and_risks_describe_the_six_computer_tools() {
         Box::new(MouseScrollTool::new(Arc::clone(&controller))),
         Box::new(TypeTextTool::new(Arc::clone(&controller))),
         Box::new(KeyPressTool::new(Arc::clone(&controller))),
-        Box::new(GetUiStateTool::new(controller)),
+        Box::new(GetUiStateTool::new(Arc::clone(&controller))),
+        Box::new(CaptureScreenTool::new(controller)),
     ];
 
     let names = tools
@@ -121,7 +145,8 @@ fn definitions_and_risks_describe_the_six_computer_tools() {
             "mouse_scroll",
             "type_text",
             "key_press",
-            "get_ui_state"
+            "get_ui_state",
+            "capture_screen"
         ]
     );
     assert_eq!(
@@ -150,12 +175,69 @@ fn definitions_and_risks_describe_the_six_computer_tools() {
         tools[5].risk(&serde_json::json!({})).unwrap(),
         ToolRisk::ComputerObserve
     );
+    assert_eq!(
+        tools[6].risk(&serde_json::json!({})).unwrap(),
+        ToolRisk::ComputerObserve
+    );
 
     let click_schema = tools[1].definition().input_schema;
     assert_eq!(click_schema["properties"]["count"]["minimum"], 1);
     assert_eq!(click_schema["properties"]["count"]["maximum"], 3);
     let key_schema = tools[4].definition().input_schema;
     assert_eq!(key_schema["required"], serde_json::json!(["key"]));
+}
+
+#[test]
+fn capture_screen_returns_an_original_png_attachment_and_validates_before_capture() {
+    let (controller, events) = controller(None);
+    let tool = CaptureScreenTool::new(controller);
+
+    assert_eq!(
+        tool.summarize(&serde_json::json!({})),
+        r#"{"scope":"primary_display"}"#
+    );
+    assert!(events.lock().unwrap().is_empty());
+    let result = tool.execute(&serde_json::json!({})).unwrap();
+    assert!(result.message.contains("2x1"));
+    assert!(result.message.contains("PNG"));
+    assert_eq!(
+        result.attachments,
+        vec![ToolAttachment::Image(atlas_agentic::media::ImageData {
+            mime_type: "image/png".to_string(),
+            bytes: vec![137, 80, 78, 71],
+            width: 2,
+            height: 1,
+            detail: ImageDetail::Original,
+        })]
+    );
+    assert_eq!(*events.lock().unwrap(), [Event::Capture]);
+
+    events.lock().unwrap().clear();
+    assert!(tool
+        .execute(&serde_json::json!({"unexpected": true}))
+        .is_err());
+    assert!(events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn capture_screen_rejects_invalid_controller_output() {
+    for captured in [
+        CapturedImage {
+            png: vec![],
+            width: 2,
+            height: 1,
+        },
+        CapturedImage {
+            png: vec![1],
+            width: 0,
+            height: 1,
+        },
+    ] {
+        let (controller, _) = controller_with_capture(None, captured);
+        assert!(CaptureScreenTool::new(controller)
+            .execute(&serde_json::json!({}))
+            .is_err());
+    }
 }
 
 #[test]

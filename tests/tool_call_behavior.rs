@@ -9,6 +9,7 @@ use atlas_agentic::{
     agent_output::AgentOutput,
     agents::{AgentRegistry, LocalAgent, LocalAgentDefinition},
     conversations::{ConversationMessage, MessageRole},
+    media::{ImageData, ImageDetail},
     models::{ModelProvider, ModelRequest},
     permissions::{AllowAllAuthorizer, PermissionMode, ToolEvent},
     tools::{
@@ -288,6 +289,89 @@ struct CountingTool {
 
 struct FailingTool;
 
+enum SyntheticToolOutput {
+    Image(&'static [u8]),
+    OversizedImage(&'static [u8]),
+    Text,
+    Failure,
+}
+
+struct SyntheticTool {
+    name: &'static str,
+    output: SyntheticToolOutput,
+}
+
+impl Tool for SyntheticTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.to_string(),
+            description: "Synthetic lifecycle tool.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
+        match self.output {
+            SyntheticToolOutput::Image(bytes) => Ok(ToolResult::with_image(
+                "Captured synthetic screen.",
+                ImageData {
+                    mime_type: "image/png".to_string(),
+                    bytes: bytes.to_vec(),
+                    width: 2,
+                    height: 1,
+                    detail: ImageDetail::Original,
+                },
+            )),
+            SyntheticToolOutput::OversizedImage(bytes) => Ok(ToolResult::with_image(
+                "Captured oversized synthetic screen.",
+                ImageData {
+                    mime_type: "image/png".to_string(),
+                    bytes: bytes.to_vec(),
+                    width: 8193,
+                    height: 1,
+                    detail: ImageDetail::Original,
+                },
+            )),
+            SyntheticToolOutput::Text => Ok(ToolResult::text("text-only result")),
+            SyntheticToolOutput::Failure => Err("synthetic capture failed".to_string()),
+        }
+    }
+}
+
+struct ImageLifecycleModel {
+    responses: RefCell<VecDeque<String>>,
+    images: Rc<RefCell<Vec<Vec<ImageData>>>>,
+    prompts: Rc<RefCell<Vec<String>>>,
+}
+
+type CapturedImageBatches = Rc<RefCell<Vec<Vec<ImageData>>>>;
+type CapturedPrompts = Rc<RefCell<Vec<String>>>;
+
+impl ModelProvider for ImageLifecycleModel {
+    fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
+        if images.iter().any(|image| image.width > 8192) {
+            Err("synthetic provider rejects images wider than 8192 pixels".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+        self.images.borrow_mut().push(request.images.to_vec());
+        self.prompts
+            .borrow_mut()
+            .push(request.user_prompt.to_string());
+        self.responses
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| "no lifecycle response queued".to_string())
+    }
+}
+
 impl Tool for FailingTool {
     fn name(&self) -> &str {
         "failing"
@@ -321,9 +405,7 @@ impl Tool for CountingTool {
 
     fn execute(&self, _args: &serde_json::Value) -> Result<ToolResult, String> {
         self.executions.set(self.executions.get() + 1);
-        Ok(ToolResult {
-            message: "counted".to_string(),
-        })
+        Ok(ToolResult::text("counted"))
     }
 }
 
@@ -365,6 +447,169 @@ fn ask(runtime: &Runtime, prompt: &str) -> Result<String, String> {
         &mut |_| {},
         &mut |_| {},
     )
+}
+
+fn image_lifecycle_runtime(
+    responses: impl IntoIterator<Item = &'static str>,
+    tools: Vec<Box<dyn Tool>>,
+) -> (Runtime, CapturedImageBatches, CapturedPrompts) {
+    let images = Rc::new(RefCell::new(Vec::new()));
+    let prompts = Rc::new(RefCell::new(Vec::new()));
+    let model = ImageLifecycleModel {
+        responses: RefCell::new(responses.into_iter().map(str::to_string).collect()),
+        images: Rc::clone(&images),
+        prompts: Rc::clone(&prompts),
+    };
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(tools));
+    (runtime, images, prompts)
+}
+
+#[test]
+fn runtime_forwards_capture_as_image_without_embedding_bytes_in_tool_results() {
+    const FIRST: &[u8] = b"FIRST_IMAGE_MARKER";
+    let (runtime, images, prompts) = image_lifecycle_runtime(
+        [
+            r#"{"type":"tool_call","tool":"capture_first","args":{}}"#,
+            r#"{"type":"final","content":"seen"}"#,
+        ],
+        vec![Box::new(SyntheticTool {
+            name: "capture_first",
+            output: SyntheticToolOutput::Image(FIRST),
+        })],
+    );
+
+    assert_eq!(ask(&runtime, "inspect").unwrap(), "seen");
+    let images = images.borrow();
+    assert!(images[0].is_empty());
+    assert_eq!(images[1][0].bytes, FIRST);
+    let continuation = &prompts.borrow()[1];
+    assert!(!continuation.contains("FIRST_IMAGE_MARKER"));
+    assert!(!continuation.contains("data:image"));
+}
+
+#[test]
+fn runtime_keeps_latest_image_across_text_tools_and_replaces_it_after_recapture() {
+    const FIRST: &[u8] = b"FIRST_IMAGE_MARKER";
+    const SECOND: &[u8] = b"SECOND_IMAGE_MARKER";
+    let (runtime, images, _) = image_lifecycle_runtime(
+        [
+            r#"{"type":"tool_call","tool":"capture_first","args":{}}"#,
+            r#"{"type":"tool_call","tool":"text","args":{}}"#,
+            r#"{"type":"tool_call","tool":"capture_second","args":{}}"#,
+            r#"{"type":"final","content":"done"}"#,
+        ],
+        vec![
+            Box::new(SyntheticTool {
+                name: "capture_first",
+                output: SyntheticToolOutput::Image(FIRST),
+            }),
+            Box::new(SyntheticTool {
+                name: "text",
+                output: SyntheticToolOutput::Text,
+            }),
+            Box::new(SyntheticTool {
+                name: "capture_second",
+                output: SyntheticToolOutput::Image(SECOND),
+            }),
+        ],
+    );
+
+    assert_eq!(ask(&runtime, "inspect twice").unwrap(), "done");
+    let markers = images
+        .borrow()
+        .iter()
+        .map(|batch| batch.first().map(|image| image.bytes.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers,
+        vec![
+            None,
+            Some(FIRST.to_vec()),
+            Some(FIRST.to_vec()),
+            Some(SECOND.to_vec())
+        ]
+    );
+}
+
+#[test]
+fn runtime_keeps_last_successful_image_when_a_later_capture_fails() {
+    const FIRST: &[u8] = b"FIRST_IMAGE_MARKER";
+    let (runtime, images, _) = image_lifecycle_runtime(
+        [
+            r#"{"type":"tool_call","tool":"capture_first","args":{}}"#,
+            r#"{"type":"tool_call","tool":"capture_fail","args":{}}"#,
+            r#"{"type":"final","content":"recovered"}"#,
+        ],
+        vec![
+            Box::new(SyntheticTool {
+                name: "capture_first",
+                output: SyntheticToolOutput::Image(FIRST),
+            }),
+            Box::new(SyntheticTool {
+                name: "capture_fail",
+                output: SyntheticToolOutput::Failure,
+            }),
+        ],
+    );
+
+    assert_eq!(ask(&runtime, "inspect safely").unwrap(), "recovered");
+    let images = images.borrow();
+    assert_eq!(images[1][0].bytes, FIRST);
+    assert_eq!(images[2][0].bytes, FIRST);
+}
+
+#[test]
+fn runtime_turns_provider_image_rejection_into_a_recoverable_tool_failure() {
+    const FIRST: &[u8] = b"FIRST_IMAGE_MARKER";
+    const OVERSIZED: &[u8] = b"OVERSIZED_IMAGE_MARKER";
+    let (runtime, images, prompts) = image_lifecycle_runtime(
+        [
+            r#"{"type":"tool_call","tool":"capture_first","args":{}}"#,
+            r#"{"type":"tool_call","tool":"capture_oversized","args":{}}"#,
+            r#"{"type":"final","content":"recovered"}"#,
+        ],
+        vec![
+            Box::new(SyntheticTool {
+                name: "capture_first",
+                output: SyntheticToolOutput::Image(FIRST),
+            }),
+            Box::new(SyntheticTool {
+                name: "capture_oversized",
+                output: SyntheticToolOutput::OversizedImage(OVERSIZED),
+            }),
+        ],
+    );
+    let events = Rc::new(RefCell::new(Vec::new()));
+
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "inspect safely",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.borrow_mut().push(event.clone()),
+        )
+        .unwrap();
+
+    assert_eq!(answer, "recovered");
+    let images = images.borrow();
+    assert_eq!(images[1][0].bytes, FIRST);
+    assert_eq!(images[2][0].bytes, FIRST);
+    let continuation = &prompts.borrow()[2];
+    assert!(continuation.contains("synthetic provider rejects"));
+    assert!(!continuation.contains("OVERSIZED_IMAGE_MARKER"));
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        ToolEvent::Finished {
+            tool,
+            success: false
+        } if tool == "capture_oversized"
+    )));
 }
 
 #[test]

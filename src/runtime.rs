@@ -4,11 +4,12 @@ use crate::{
     agent_output::AgentOutput,
     agents::AgentRegistry,
     conversations::ConversationMessage,
+    media::ImageData,
     permissions::{
         requires_confirmation, AuthorizationDecision, AuthorizationRequest, MissingAuthorizer,
         PermissionMode, ToolAuthorizer, ToolEvent,
     },
-    tools::ToolRegistry,
+    tools::{ToolAttachment, ToolRegistry},
 };
 
 #[derive(Serialize)]
@@ -103,15 +104,21 @@ impl Runtime {
 
         let mut input = prompt.to_string();
         let mut tool_results = Vec::new();
+        let mut latest_images: Vec<ImageData> = Vec::new();
         let mut retried_invalid_response = false;
         let allow_plain_final = tool_definitions.is_empty();
 
         loop {
             let mut final_stream = FinalContentStream::new(allow_plain_final);
-            let response =
-                agent.process_stream(&input, history, &tool_definitions, &mut |delta| {
+            let response = agent.process_stream_with_images(
+                &input,
+                history,
+                &tool_definitions,
+                &latest_images,
+                &mut |delta| {
                     final_stream.push(delta, on_delta);
-                })?;
+                },
+            )?;
             let parsed = if allow_plain_final {
                 AgentOutput::parse(&response)
             } else {
@@ -177,14 +184,38 @@ impl Runtime {
                         args: args.clone(),
                     };
                     let result = self.tools.execute(&tool_call);
-                    on_tool_event(&ToolEvent::Finished {
-                        tool: tool.clone(),
-                        success: result.is_ok(),
-                    });
                     let (success, output) = match result {
-                        Ok(result) => (true, result.message),
+                        Ok(result) => {
+                            let images = result
+                                .attachments
+                                .into_iter()
+                                .map(|attachment| match attachment {
+                                    ToolAttachment::Image(image) => image,
+                                })
+                                .collect::<Vec<_>>();
+                            if images.is_empty() {
+                                (true, result.message)
+                            } else {
+                                match agent.validate_images(&images) {
+                                    Ok(()) => {
+                                        latest_images = images;
+                                        (true, result.message)
+                                    }
+                                    Err(error) => (
+                                        false,
+                                        format!(
+                                            "Tool {tool} produced unusable image input: {error}"
+                                        ),
+                                    ),
+                                }
+                            }
+                        }
                         Err(error) => (false, error),
                     };
+                    on_tool_event(&ToolEvent::Finished {
+                        tool: tool.clone(),
+                        success,
+                    });
                     tool_results.push(ToolExecutionRecord {
                         tool,
                         args,

@@ -1,12 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    io::Cursor,
+    sync::{Arc, Mutex},
+};
 
 use active_win_pos_rs::ActiveWindow;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 use super::controller::{
-    ActiveWindowState, ComputerController, ComputerKey, ComputerUiState, CoordinateMode,
-    KeyDirection, MouseButton, Observation, Point, ScrollAxis, SharedComputerController, Size,
-    WindowBounds,
+    ActiveWindowState, CapturedImage, ComputerController, ComputerKey, ComputerUiState,
+    CoordinateMode, KeyDirection, MouseButton, Observation, Point, ScrollAxis,
+    SharedComputerController, Size, WindowBounds,
 };
 
 pub struct SystemComputerController {
@@ -107,6 +110,117 @@ impl ComputerController for SystemComputerController {
             active_window,
         })
     }
+
+    fn capture_primary_display(&mut self) -> Result<CapturedImage, String> {
+        #[cfg(target_os = "linux")]
+        if linux_session_is_wayland(
+            std::env::var_os("XDG_SESSION_TYPE").as_deref(),
+            std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        ) {
+            return Err(capture_error(
+                "linux",
+                "Wayland sessions are not supported by this capture backend",
+            ));
+        }
+
+        run_with_screen_capture_permission(
+            std::env::consts::OS,
+            native_screen_capture_authorized,
+            || {
+                let screens = screenshots::Screen::all()
+                    .map_err(|error| capture_error(std::env::consts::OS, &error.to_string()))?;
+                let primary = select_primary_screen_index(
+                    &screens
+                        .iter()
+                        .map(|screen| screen.display_info.is_primary)
+                        .collect::<Vec<_>>(),
+                )?;
+                let image = screens[primary]
+                    .capture()
+                    .map_err(|error| capture_error(std::env::consts::OS, &error.to_string()))?;
+                let width = image.width();
+                let height = image.height();
+                let png = encode_rgba_png(width, height, image.as_raw())?;
+                Ok(CapturedImage { png, width, height })
+            },
+        )
+    }
+}
+
+fn run_with_screen_capture_permission<T>(
+    platform: &str,
+    permission_check: impl FnOnce() -> bool,
+    capture: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if platform == "macos" && !permission_check() {
+        return Err(capture_error(
+            "macos",
+            "Screen Recording permission is not granted",
+        ));
+    }
+    capture()
+}
+
+#[cfg(target_os = "macos")]
+fn native_screen_capture_authorized() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+    }
+
+    // SAFETY: This parameterless CoreGraphics query has no ownership or pointer contract.
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_screen_capture_authorized() -> bool {
+    true
+}
+
+fn select_primary_screen_index(primary_flags: &[bool]) -> Result<usize, String> {
+    primary_flags
+        .iter()
+        .position(|is_primary| *is_primary)
+        .ok_or_else(|| "capture_screen could not find a primary display".to_string())
+}
+
+fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 {
+        return Err("capture_screen cannot encode a zero-sized image".to_string());
+    }
+    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec())
+        .ok_or_else(|| "capture_screen received invalid RGBA pixel data".to_string())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut Cursor::new(&mut png), image::ImageOutputFormat::Png)
+        .map_err(|error| format!("capture_screen failed to encode PNG: {error}"))?;
+    Ok(png)
+}
+
+fn capture_error(platform: &str, error: &str) -> String {
+    match platform {
+        "macos" => format!(
+            "capture_screen failed: {error}; grant Atlas Screen Recording permission in macOS System Settings"
+        ),
+        "linux" => format!(
+            "capture_screen failed: {error}; Linux screen capture requires a usable X11 session and DISPLAY"
+        ),
+        _ => format!("capture_screen failed: {error}"),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_session_is_wayland(
+    xdg_session_type: Option<&std::ffi::OsStr>,
+    wayland_display: Option<&std::ffi::OsStr>,
+) -> bool {
+    xdg_session_type.is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("wayland"))
+        || wayland_display.is_some_and(|value| {
+            value
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("wayland")
+        })
 }
 
 #[cfg(target_os = "linux")]
@@ -295,7 +409,9 @@ mod tests {
     use enigo::{Axis, Button, Coordinate, Key};
 
     use super::{
-        active_window_state, coordinate, key, mouse_button, primary_display_size, scroll_axis,
+        active_window_state, capture_error, coordinate, encode_rgba_png, key,
+        linux_session_is_wayland, mouse_button, primary_display_size,
+        run_with_screen_capture_permission, scroll_axis, select_primary_screen_index,
         SystemComputerController,
     };
     use crate::tools::computer::controller::{
@@ -399,6 +515,63 @@ mod tests {
         assert!(primary_display_size(Some(20), &[], &[]).is_err());
         assert!(primary_display_size(Some(20), &[(20, 0)], &[]).is_err());
         assert!(primary_display_size(Some(20), &[(20, 200)], &[]).is_err());
+    }
+
+    #[test]
+    fn capture_selects_primary_screen_metadata() {
+        assert_eq!(
+            select_primary_screen_index(&[false, true, false]).unwrap(),
+            1
+        );
+        assert!(select_primary_screen_index(&[false, false]).is_err());
+    }
+
+    #[test]
+    fn capture_encodes_rgba_as_png_and_rejects_zero_dimensions() {
+        let png = encode_rgba_png(2, 1, &[255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+        assert_eq!(decoded.width(), 2);
+        assert_eq!(decoded.height(), 1);
+        assert!(encode_rgba_png(0, 1, &[]).is_err());
+        assert!(encode_rgba_png(1, 0, &[]).is_err());
+    }
+
+    #[test]
+    fn capture_errors_include_platform_guidance() {
+        assert!(capture_error("macos", "permission denied").contains("Screen Recording"));
+        assert!(capture_error("linux", "display unavailable").contains("X11"));
+        assert!(capture_error("windows", "native failure").contains("native failure"));
+    }
+
+    #[test]
+    fn macos_capture_permission_denial_stops_before_capture() {
+        let capture_called = std::cell::Cell::new(false);
+
+        let error = run_with_screen_capture_permission(
+            "macos",
+            || false,
+            || {
+                capture_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Screen Recording"));
+        assert!(!capture_called.get());
+    }
+
+    #[test]
+    fn capture_rejects_wayland_session_markers() {
+        use std::ffi::OsStr;
+
+        assert!(linux_session_is_wayland(Some(OsStr::new("wayland")), None));
+        assert!(linux_session_is_wayland(
+            None,
+            Some(OsStr::new("wayland-0"))
+        ));
+        assert!(!linux_session_is_wayland(Some(OsStr::new("x11")), None));
     }
 
     #[test]

@@ -50,9 +50,10 @@ impl Tool for DeleteFileTool {
         workspace
             .remove_file(&path)
             .map_err(|error| format!("failed to delete file {}: {error}", path.display()))?;
-        Ok(ToolResult {
-            message: format!("Deleted file: {}", path.display()),
-        })
+        Ok(ToolResult::text(format!(
+            "Deleted file: {}",
+            path.display()
+        )))
     }
 }
 
