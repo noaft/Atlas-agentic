@@ -341,6 +341,21 @@ conversation_title_prompt = "Write a short conversation title."
     .unwrap()
 }
 
+fn definition_with_tool_call_limit(max_tool_calls: usize) -> LocalAgentDefinition {
+    LocalAgentDefinition::from_toml(&format!(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+max_tool_calls = {max_tool_calls}
+system_prompt = "You are Atlas."
+conversation_title_prompt = "Write a short conversation title."
+"#
+    ))
+    .unwrap()
+}
+
 fn ask(runtime: &Runtime, prompt: &str) -> Result<String, String> {
     runtime.ask_stream_with_history_and_authorization(
         prompt,
@@ -987,7 +1002,7 @@ fn runtime_sends_accumulated_tool_outputs_back_to_agent() {
 fn runtime_stops_an_agent_that_exceeds_the_tool_call_limit() {
     let executions = Rc::new(Cell::new(0));
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition(),
+        definition_with_tool_call_limit(8),
         Box::new(RepeatingToolModel),
     ))]))
     .with_tools(ToolRegistry::new(vec![Box::new(CountingTool {
@@ -1003,7 +1018,7 @@ fn runtime_stops_an_agent_that_exceeds_the_tool_call_limit() {
 #[test]
 fn runtime_counts_repeated_tool_failures_toward_the_tool_call_limit() {
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition(),
+        definition_with_tool_call_limit(8),
         Box::new(RepeatingMissingToolModel),
     ))]))
     .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
@@ -1011,6 +1026,25 @@ fn runtime_counts_repeated_tool_failures_toward_the_tool_call_limit() {
     let error = ask(&runtime, "keep trying a missing tool").unwrap_err();
 
     assert_eq!(error, "agent exceeded the maximum of 8 tool calls");
+}
+
+#[test]
+fn runtime_allows_more_than_eight_tool_calls_when_no_limit_is_configured() {
+    let executions = Rc::new(Cell::new(0));
+    let mut responses = vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#; 9];
+    responses.push(r#"{"type":"final","content":"Finished the long task."}"#);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(QueueModel::new(responses)),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(CountingTool {
+        executions: Rc::clone(&executions),
+    })]));
+
+    let result = ask(&runtime, "complete a long tool sequence").unwrap();
+
+    assert_eq!(result, "Finished the long task.");
+    assert_eq!(executions.get(), 9);
 }
 
 #[test]

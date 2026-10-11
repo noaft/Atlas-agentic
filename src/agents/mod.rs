@@ -7,6 +7,9 @@ use crate::conversations::ConversationMessage;
 pub trait Agent {
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;
+    fn max_tool_calls(&self) -> Option<usize> {
+        None
+    }
     fn process(
         &self,
         input: &str,

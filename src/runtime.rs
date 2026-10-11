@@ -11,8 +11,6 @@ use crate::{
     tools::ToolRegistry,
 };
 
-const MAX_TOOL_CALLS: usize = 8;
-
 #[derive(Serialize)]
 struct ToolExecutionRecord {
     tool: String,
@@ -101,6 +99,7 @@ impl Runtime {
             .default_agent()
             .ok_or_else(|| "no agent is registered".to_string())?;
         let tool_definitions = self.tools.definitions();
+        let max_tool_calls = agent.max_tool_calls();
 
         let mut input = prompt.to_string();
         let mut tool_results = Vec::new();
@@ -135,10 +134,12 @@ impl Runtime {
                     return Ok(content);
                 }
                 AgentOutput::ToolCall { tool, args } => {
-                    if tool_results.len() >= MAX_TOOL_CALLS {
-                        return Err(format!(
-                            "agent exceeded the maximum of {MAX_TOOL_CALLS} tool calls"
-                        ));
+                    if let Some(max_tool_calls) = max_tool_calls {
+                        if tool_results.len() >= max_tool_calls {
+                            return Err(format!(
+                                "agent exceeded the maximum of {max_tool_calls} tool calls"
+                            ));
+                        }
                     }
 
                     let (risk, arguments) = match self.tools.authorization(&tool, &args) {

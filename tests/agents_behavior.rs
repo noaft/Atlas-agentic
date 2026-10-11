@@ -24,6 +24,7 @@ model_provider = "fake"
 model = "deepseek-flash"
 temperature = 0.3
 top_p = 0.8
+max_tool_calls = 12
 system_prompt = "You are Atlas, the default local agent."
 conversation_title_prompt = "Write a short conversation title."
 "#,
@@ -34,6 +35,7 @@ conversation_title_prompt = "Write a short conversation title."
     assert_eq!(agent.name(), "atlas");
     assert_eq!(agent.definition().temperature, Some(0.3));
     assert_eq!(agent.definition().top_p, Some(0.8));
+    assert_eq!(agent.definition().max_tool_calls, Some(12));
     assert_eq!(
         agent.system_prompt(),
         "You are Atlas, the default local agent."
@@ -41,6 +43,38 @@ conversation_title_prompt = "Write a short conversation title."
     assert_eq!(
         agent.process("hello", &[], &[]).unwrap(),
         "You are Atlas, the default local agent. | hello"
+    );
+}
+
+#[test]
+fn tool_call_limit_is_optional_but_must_be_positive() {
+    let unlimited = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+system_prompt = "No configured tool-call limit."
+conversation_title_prompt = "Write a short conversation title."
+"#,
+    )
+    .unwrap();
+    assert_eq!(unlimited.max_tool_calls, None);
+
+    let invalid = LocalAgentDefinition::from_toml(
+        r#"
+name = "atlas"
+display_name = "Atlas"
+model_provider = "fake"
+model = "fake"
+max_tool_calls = 0
+system_prompt = "Invalid tool-call limit."
+conversation_title_prompt = "Write a short conversation title."
+"#,
+    );
+    assert_eq!(
+        invalid.unwrap_err(),
+        "max_tool_calls must be a positive integer when configured"
     );
 }
 
@@ -112,6 +146,7 @@ system_prompt = "Missing title prompt."
 #[test]
 fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_protocol() {
     let definition = LocalAgentDefinition::from_file("agents/atlas.toml").unwrap();
+    assert_eq!(definition.max_tool_calls, Some(32));
     let prompt = definition.system_prompt.to_lowercase();
 
     for required in [

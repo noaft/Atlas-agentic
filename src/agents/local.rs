@@ -32,6 +32,10 @@ impl Agent for LocalAgent {
         &self.definition.system_prompt
     }
 
+    fn max_tool_calls(&self) -> Option<usize> {
+        self.definition.max_tool_calls
+    }
+
     fn process(
         &self,
         input: &str,
@@ -88,6 +92,7 @@ pub struct LocalAgentDefinition {
     pub model: String,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    pub max_tool_calls: Option<usize>,
     pub system_prompt: String,
     pub conversation_title_prompt: String,
 }
@@ -115,6 +120,7 @@ struct RawLocalAgentDefinition {
     model: Option<String>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    max_tool_calls: Option<usize>,
     system_prompt: Option<String>,
     conversation_title_prompt: Option<String>,
 }
@@ -128,6 +134,7 @@ impl RawLocalAgentDefinition {
             model: required_field(self.model, "model")?,
             temperature: validate_range(self.temperature, "temperature", 0.0, 2.0)?,
             top_p: validate_range(self.top_p, "top_p", 0.0, 1.0)?,
+            max_tool_calls: validate_tool_call_limit(self.max_tool_calls)?,
             system_prompt: required_field(self.system_prompt, "system_prompt")?,
             conversation_title_prompt: required_field(
                 self.conversation_title_prompt,
@@ -135,6 +142,13 @@ impl RawLocalAgentDefinition {
             )?,
         })
     }
+}
+
+fn validate_tool_call_limit(value: Option<usize>) -> Result<Option<usize>, String> {
+    if value == Some(0) {
+        return Err("max_tool_calls must be a positive integer when configured".to_string());
+    }
+    Ok(value)
 }
 
 fn validate_range(

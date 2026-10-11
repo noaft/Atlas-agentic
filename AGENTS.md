@@ -167,7 +167,9 @@ request using only the first input and `conversation_title_prompt` from
 failure leaves `Untitled conversation`. Continuing and manual rename never
 regenerate the title. The default agent prompt guides workspace inspection,
 command execution, verification, preservation of unrelated changes, and honest
-reporting of results and blockers. Tool schemas and protocol remain runtime-injected.
+reporting of results and blockers. `max_tool_calls` is an optional positive
+per-turn agent limit; omit it for no Atlas-imposed limit. Tool schemas and
+protocol remain runtime-injected.
 
 Format and test the repository:
 
