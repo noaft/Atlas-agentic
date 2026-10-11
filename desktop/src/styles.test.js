@@ -117,6 +117,8 @@ test("activity details stay inside narrow message layouts", () => {
   const disclosure = getComputedStyle(document.querySelector(".activity-disclosure"));
   const output = getComputedStyle(document.querySelector(".activity-row pre"));
   expect(disclosure.maxWidth).toBe("100%");
+  expect(disclosure.borderStyle).toBe("none");
+  expect(disclosure.backgroundColor).toBe("rgba(0, 0, 0, 0)");
   expect(output.maxWidth).toBe("100%");
   expect(output.whiteSpace).toBe("pre-wrap");
   expect(output.overflowWrap).toBe("anywhere");

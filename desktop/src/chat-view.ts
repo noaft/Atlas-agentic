@@ -109,10 +109,11 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   } else {
     content.textContent = renderedContent;
   }
-  article.append(label, content);
+  article.append(label);
   if (message.role === "assistant" && message.activity?.length) {
     article.append(renderActivity(message.activity));
   }
+  article.append(content);
   if (message.delivery === "failed") {
     const failed = document.createElement("div");
     failed.className = "message-failed";
@@ -474,7 +475,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
           message.role === "assistant" &&
           state.toolActivity.length
         ) {
-          rendered.append(renderLiveActivity(state.toolActivity));
+          rendered
+            .querySelector(".message-content")
+            ?.before(renderLiveActivity(state.toolActivity));
         }
         messages.append(rendered);
       });

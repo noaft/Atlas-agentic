@@ -280,9 +280,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .message-failed { margin-top: 9px; color: #9c4a60; font-size: 12px; }
 
-.activity-disclosure { max-width: 100%; min-width: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(243, 239, 255, .42); color: var(--muted); font-size: 12px; }
-.activity-disclosure summary { padding: 8px 10px; cursor: pointer; color: #5e5870; font-weight: 700; }
-.activity-timeline { display: grid; gap: 8px; padding: 0 10px 10px; }
+.activity-disclosure { max-width: 100%; min-width: 0; margin: 0 0 10px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.activity-disclosure summary { padding: 0; cursor: pointer; color: #5e5870; font-weight: 700; }
+.activity-timeline { display: grid; gap: 8px; padding: 8px 0 0; }
 .activity-row { min-width: 0; padding: 8px; border-left: 3px solid #b8a8d5; border-radius: 6px; background: rgba(255, 255, 255, .58); }
 .activity-row[data-activity-outcome="succeeded"] { border-left-color: #63957d; }
 .activity-row[data-activity-outcome="failed"], .activity-row[data-activity-outcome="denied"] { border-left-color: #ba7183; }

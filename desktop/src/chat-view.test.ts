@@ -327,7 +327,12 @@ test("saved assistant activity renders as an accessible expandable timeline", as
   await store.selectConversation(metadata.id);
 
   const disclosure = root.querySelector<HTMLDetailsElement>("[data-activity]")!;
+  const assistant = disclosure.closest<HTMLElement>("[data-message-role='assistant']")!;
+  const content = assistant.querySelector<HTMLElement>(".message-content")!;
   expect(disclosure.open).toBe(false);
+  expect(
+    [...assistant.children].indexOf(disclosure),
+  ).toBeLessThan([...assistant.children].indexOf(content));
   expect(disclosure.querySelector("summary")?.textContent).toContain("Activity");
   expect(disclosure.textContent).toContain("Thinking");
   expect(disclosure.textContent).toContain("Succeeded");
