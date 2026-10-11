@@ -150,18 +150,28 @@ Conversation data belongs to the current OS user and is stored outside the repo:
 Atlas resolves these locations with a platform directory library.
 `ATLAS_DATA_DIR` can override the data root for development or tests. The root
 contains `conversations.json` (metadata), `conversations.lock`, one
-`conversations/<uuid>.jsonl` history file per conversation, and `trash/`.
-Delete removes the conversation from the index and moves its history to `trash/`.
-The command prints that file's location so the messages can be recovered manually;
-there is no CLI restore command.
+`conversations/<uuid>.jsonl` history file per conversation, optional
+`activities/<uuid>.jsonl` activity sidecars, and `trash/`. Delete removes the
+conversation from the index and moves its history and any activity sidecar to
+`trash/`. The command prints the history location so the messages can be
+recovered manually; there is no CLI restore command.
 
-Only successful user/final-assistant turns are saved. Tool calls, tool results,
-and partial failed answers are not part of saved conversation history. Atlas
-keeps complete history on disk and sends the most recent 40 messages by default
+Only successful user/final-assistant turns are saved to ordinary message
+history. Observable runtime status, tool calls, and tool results from a
+successful turn are stored separately in a bounded activity sidecar; a failed
+overall turn saves neither messages nor activity. Arguments are redacted and
+bounded, result details are bounded and local-only, and screenshot pixels and
+attachments are never persisted. The desktop shows this record in an expandable
+Activity section below each Atlas answer.
+
+Atlas keeps complete message history on disk and sends the most recent 40
+messages by default
 (up to 20 complete turns) to the model. Set `ATLAS_HISTORY_MESSAGES` to a positive
 integer to change that limit. A cut window drops a leading assistant message so
 the selected history begins with a user message; the new input is always added
-after the window and does not count toward the limit.
+after the window and does not count toward the limit. Later turns also receive a
+separately capped summary of activity belonging to that same recent history
+window. Raw activity details are not automatically sent to the provider.
 
 After the first successful answer, a separate, non-streaming LLM request generates
 a title using only the first user input and the agent's configured title prompt.
@@ -283,8 +293,9 @@ limited to 64 KiB before truncation.
 CLI parsing and rendering live in `src/lib.rs`, with command routing in
 `src/main.rs` and shared runtime setup in `src/app.rs`. `src/conversations/`
 contains provider-independent types
-and history-window selection (`types.rs`), local persistence (`store.rs`), ask/save
-orchestration (`service.rs`), and title sanitization (`title.rs`). `src/runtime.rs`
+and history-window selection (`types.rs`), activity sanitization and context
+rendering (`activity.rs`), local persistence (`store.rs`), ask/save orchestration
+(`service.rs`), and title sanitization (`title.rs`). `src/runtime.rs`
 coordinates agents and tools; agents and model providers pass typed user/assistant
 history without owning persistence. `src/settings.rs` owns versioned private
 settings and environment precedence; `src/workspace.rs` provisions Atlas home.

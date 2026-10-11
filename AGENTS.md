@@ -29,9 +29,10 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   ├── agent_output.rs     Final-answer and tool-call parsing
 │   ├── agents/             Agent traits and local agent implementation
 │   ├── conversations/      Local conversation types, storage, and orchestration
+│   │   ├── activity.rs     Bounded activity records, redaction, and model summaries
 │   │   ├── types.rs        UUIDs, messages, workspace metadata, and context policy
-│   │   ├── store.rs        Locked JSONL history and atomic workspace/metadata updates
-│   │   ├── service.rs      Ask, workspace persistence, successful turns, and titles
+│   │   ├── store.rs        Locked message/activity JSONL and atomic metadata updates
+│   │   ├── service.rs      Ask, activity capture, workspace persistence, and titles
 │   │   └── title.rs        Title sanitization
 │   ├── settings.rs         Versioned private settings and environment precedence
 │   ├── workspace.rs        Automatic Atlas home provisioning and validation
@@ -160,16 +161,21 @@ Conversation storage is resolved using a platform directory library: Linux/WSL
 uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses
 `~/Library/Application Support/atlas`, and Windows uses `%LOCALAPPDATA%\atlas`.
 `ATLAS_DATA_DIR` overrides the root for tests and development. The root contains
-`conversations.json`, `conversations.lock`, `conversations/<uuid>.jsonl`, and
-`trash/`. Delete moves history to `trash/` and reports its recovery location;
-recovery is manual, with no CLI restore command.
+`conversations.json`, `conversations.lock`, `conversations/<uuid>.jsonl`, optional
+`activities/<uuid>.jsonl` sidecars, and `trash/`. Delete moves history and any
+activity sidecar to `trash/` and reports the history recovery location; recovery
+is manual, with no CLI restore command.
 
 `ConversationService` coordinates the store and runtime. Save only successful
-user/final-assistant pairs, never internal tool calls/results or partial failed
-answers. Keep full history on disk, passing at most the latest 40 messages to the
-model by default. `ATLAS_HISTORY_MESSAGES` must be a positive integer; selected
-history stays chronological and drops a leading assistant message when needed.
-The current input is additional to that limit.
+user/final-assistant pairs to ordinary message history. Save sanitized, bounded
+runtime status and tool activity from successful turns in the separate sidecar;
+failed overall turns save neither. Never persist screenshot pixels, image data,
+or tool attachments. Raw activity details remain local, while later model turns
+receive only a separately capped summary from the same recent turns selected for
+message history. Keep full message history on disk, passing at most the latest 40
+messages to the model by default. `ATLAS_HISTORY_MESSAGES` must be a positive
+integer; selected history stays chronological and drops a leading assistant
+message when needed. The current input is additional to that limit.
 
 After the first successful answer, the agent makes one non-streaming, no-tool title
 request using only the first input and `conversation_title_prompt` from
