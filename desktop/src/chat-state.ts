@@ -1,4 +1,4 @@
-import { parseSlashCommand, taskArguments, taskUnavailableReason } from "./slash-commands";
+import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
 import type {
   TaskDescriptor,
@@ -373,21 +373,6 @@ export class ChatStore {
       return;
     const prompt = this.state.draftText.trim();
     if (!prompt) return;
-    const command = parseSlashCommand(prompt);
-    if (command) {
-      if (this.state.taskCatalogStatus !== "ready") {
-        this.update({errorMessage: "Task catalog unavailable. Retry loading tasks."}); return;
-      }
-      const task = this.state.tasks.find(task => task.command.toLowerCase() === command.name);
-      if (!task) {
-        const suggestions = this.state.tasks.map(task => `/${task.command}`).join(", ");
-        this.update({errorMessage: `${command.name ? "Unknown command" : "Choose a task"}. Available tasks: ${suggestions || "none"}`}); return;
-      }
-      let args: Record<string, unknown>;
-      try { args = taskArguments(task, command.argumentsText); }
-      catch (error) { this.update({errorMessage: errorMessage(error)}); return; }
-      await this.runTask(task, args); return;
-    }
     const workspace = this.state.activeWorkspace;
     if (!workspace) {
       this.update({ errorMessage: "Choose a workspace folder before sending." });

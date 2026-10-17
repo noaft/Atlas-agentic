@@ -1,7 +1,7 @@
 import { createSlashMenu } from "./slash-menu";
 import { createContextMeter, type ContextMeter } from "./context-meter";
 import type { ChatStore } from "./chat-state";
-import type { ChatState } from "./types";
+import type { ChatState, TaskDescriptor } from "./types";
 
 export interface ChatComposer {
   element: HTMLFormElement;
@@ -36,6 +36,7 @@ function resize(textarea: HTMLTextAreaElement) {
 export function createChatComposer(
   store: ChatStore,
   onSubmit: () => Promise<void>,
+  onTask: (task: TaskDescriptor) => Promise<void>,
 ): ChatComposer {
   const element = document.createElement("form");
   element.className = "composer-wrap";
@@ -72,10 +73,8 @@ export function createChatComposer(
 
   const menuHost = document.createElement("div");
   element.append(menuHost);
-  const slashMenu = createSlashMenu(textarea, menuHost, (command) => {
-    store.setDraft(command);
-    refreshLayout();
-    updateSendAvailability(store.getState());
+  const slashMenu = createSlashMenu(textarea, menuHost, (task) => {
+    void onTask(task);
   }, () => { void store.retryTasks(); });
   const updateMenu = (state: Readonly<ChatState>) => slashMenu.update({
     tasks: state.tasks, status: state.taskCatalogStatus, error: state.taskCatalogError,

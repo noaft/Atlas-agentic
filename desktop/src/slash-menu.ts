@@ -1,11 +1,11 @@
-import {filterTasks, taskUnavailableReason} from "./slash-commands";
+import {filterTasks, taskUnavailableReason, type TaskAvailabilityState} from "./slash-commands";
 import type {ChatState, TaskDescriptor} from "./types";
 
 interface MenuData {
   tasks: TaskDescriptor[];
   status: ChatState["taskCatalogStatus"];
   error: string | null;
-  state: Pick<ChatState, "activeConversationId" | "settings">;
+  state: TaskAvailabilityState;
   sessionId: string;
 }
 let nextMenuId = 0;
@@ -13,7 +13,7 @@ let nextMenuId = 0;
 export function createSlashMenu(
   textarea: HTMLTextAreaElement,
   host: HTMLElement,
-  onChoose: (command: string) => void,
+  onChoose: (task: TaskDescriptor) => void,
   onRetry: () => void,
 ) {
   const id = `slash-tasks-${++nextMenuId}`;
@@ -63,16 +63,10 @@ export function createSlashMenu(
     if (!data) return;
     const reason = taskUnavailableReason(task, data.state);
     if (reason) {announcement.textContent = reason; return;}
-    const match = /^(\s*)\/[^\s]*/.exec(textarea.value);
-    const prefix = match?.[1] ?? "";
-    const suffix = match ? textarea.value.slice(match[0].length) : "";
-    const command = `${prefix}/${task.command}${suffix}`;
-    textarea.value = command;
-    dismissed = command;
+    dismissed = textarea.value;
     close();
-    onChoose(command);
+    onChoose(task);
     textarea.focus();
-    textarea.setSelectionRange(prefix.length + task.command.length + 1, prefix.length + task.command.length + 1);
   }
   function render() {
     if (destroyed || !data) return;
@@ -114,6 +108,11 @@ export function createSlashMenu(
       }
       announcement.textContent = message.textContent;
     } else {
+      const heading = document.createElement("div"); heading.className = "slash-menu-heading";
+      heading.textContent = "Tasks";
+      const help = document.createElement("p"); help.className = "slash-menu-help";
+      help.textContent = "Click or press Enter to run · Esc to keep typing";
+      popup.append(heading, help);
       announcement.textContent = `${rows.length} ${rows.length === 1 ? "task" : "tasks"} available`;
       if (!rows.length) {
         textarea.removeAttribute("aria-activedescendant");
@@ -157,9 +156,9 @@ export function createSlashMenu(
       popup.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({block: "nearest"});
       return true;
     }
-    if ((event.key === "Enter" || event.key === "Tab") && data?.status === "ready" && rows.length) {
+    if (event.key === "Tab") {dismiss(); return false;}
+    if (event.key === "Enter" && data?.status === "ready" && rows.length) {
       const task = rows[active];
-      if (event.key === "Tab" && taskUnavailableReason(task, data.state)) {dismiss(); return false;}
       event.preventDefault(); choose(task); return true;
     }
     return false;

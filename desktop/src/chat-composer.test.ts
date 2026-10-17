@@ -100,11 +100,12 @@ async function setup() {
   const store = new ChatStore(new ComposerApi());
   await store.initialize();
   const submit = vi.fn(async () => {});
-  const composer = createChatComposer(store, submit);
+  const runTask = vi.fn(async () => {});
+  const composer = createChatComposer(store, submit, runTask);
   document.body.append(composer.element);
   mounted.push(composer.destroy);
   composer.updateState(store.getState());
-  return { composer, store, submit };
+  return { composer, store, submit, runTask };
 }
 
 afterEach(() => {
@@ -253,16 +254,13 @@ test("destroy removes window listeners", async () => {
   expect(composer.textarea.style.height).toBe("80px");
 });
 
-test("slash selection inserts then a subsequent Enter submits", async () => {
-  const {composer, store, submit} = await setup();
+test("Enter selects the task directly without inserting a command or submitting chat", async () => {
+  const {composer, store, submit, runTask} = await setup();
   const state = {...store.getState(), activeConversationId: "saved", settings: {...settings, apiKeySource: "settings" as const}};
   composer.updateState(state);
   composer.textarea.value = "/"; composer.textarea.focus();
-  composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
-  composer.updateState(state);
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true})); composer.updateState(state);
   composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
-  expect(composer.textarea.value).toBe("/compact"); expect(submit).not.toHaveBeenCalled();
-  expect(store.getState().draftText).toBe("/compact");
-  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
-  expect(submit).toHaveBeenCalledOnce();
+  expect(runTask).toHaveBeenCalledExactlyOnceWith(taskFixtures[0]);
+  expect(submit).not.toHaveBeenCalled(); expect(composer.textarea.value).toBe("/");
 });

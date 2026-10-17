@@ -201,17 +201,22 @@ The ring continues to show the last actual chat-model usage; summary usage is
 separate. Image token accounting is currently unavailable and explicitly disables
 automatic compaction for that request rather than pretending images use zero tokens.
 
-Type `/` at the start of the desktop composer to browse tasks. Filter by command,
-title, or description. Use Up/Down or Home/End to choose a row; Enter, Tab, or a
-click inserts the command. Press Enter again or Send to run it. Escape or an
-outside click closes the menu and keeps your draft. Tasks that need a saved chat
-or configured model show the missing requirement. Catalog failures offer Retry;
-ordinary messages still work. Unknown commands and unsupported arguments keep
-your draft and display an error instead of going to the chat model. Paths such as
-`/home/user/file.rs` and prose containing slash commands remain ordinary messages.
+Type `/` at the start of the desktop composer to browse tasks and read what each
+one does. Filter by command, title, or description; Up/Down or Home/End highlights
+a row. Click a task or press Enter on its highlighted row to **run it immediately**.
+Progress, cancellation, completion, and errors appear in the owning chat. Tab,
+Escape, or an outside click leaves the menu without running a task. Tasks that
+need a saved chat, configured model, or an idle chat explain what is unavailable.
 
-The first registered task is `/compact` (no arguments). Use it in a saved desktop
-chat with a configured model, or `atlas conversation compact <id>` from the CLI. Manual compaction produces one summary below 30% occupancy, two from 30%
+**Send always sends text to the agent.** Typing `/compact` alone does not execute
+a task: use Send, or dismiss the menu with Escape and press Enter, to send it as
+an ordinary message. Unknown slash text and paths are also ordinary messages.
+Task execution uses the selected catalog entry, not text parsed from the draft.
+Catalog failures offer Retry and cannot block normal messages.
+
+The first registered task is `/compact` (no arguments). Select it in a saved
+desktop chat with a configured model, or use `atlas conversation compact <id>`
+from the CLI. Manual compaction produces one summary below 30% occupancy, two from 30%
 to below 60%, and three at 60% or higher. Automatic compaction targets three.
 Short sources use fewer nonempty blocks. Each block produces one summary message;
 the latest **10 original messages** remain unchanged (extended to whole exchanges).

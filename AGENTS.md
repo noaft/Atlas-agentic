@@ -213,7 +213,7 @@ that from actual usage. Unknown model capacity or unsupported image accounting
 makes auto-compaction explicitly unavailable. Optional per-model context/output
 limits live in `conversation.modelLimits`; never infer capacities from model
 names. Known oversized requests fail without discarding the protected tail.
-The desktop `/compact` must not create a chat message or persist an unsaved draft;
+Selecting the desktop Compact task must not create a chat message or persist an unsaved draft;
 progress, checkpoint restoration, cancellation and memory details belong to the
 owning session while other chats continue independently.
 
@@ -225,10 +225,13 @@ before provider setup, obtains native ownership once, derives the saved workspac
 and delegates to the service's existing execution lease. CLI compact shares the
 registry; automatic compaction retains its direct runtime path without nested leases.
 All frontend task access stays in `atlas-api.ts`. The composer discovers tasks
-from the backend catalog, filters command/title/description, and inserts on
-Enter/Tab/click before a later Enter/Send executes. Keep unavailable tasks visible
-with reasons. Escape/outside click preserve input; unknown commands and invalid
-arguments never reach ordinary chat. Keep paths and prose as normal chat. Catalog
+from the backend catalog and filters command/title/description. Clicking a task
+or pressing Enter on the highlighted row runs the selected descriptor directly;
+never infer task execution or arguments from the text submitted through Send.
+Send always calls ordinary chat, including literal `/compact`, bare `/`, unknown
+slash text, paths and prose. Escape/outside click/Tab close the menu and preserve
+input; Tab does not run a task. Explain each task and show its progress/result in
+the owning chat. Keep unavailable tasks visible with reasons. Catalog
 failure/retry cannot block ordinary messages or overwrite drafts. Keep task/menu
 ownership per session. Do not add frontend fallback task names or automatic model
 routing in this release. Future handlers need registry validation/dispatch tests,

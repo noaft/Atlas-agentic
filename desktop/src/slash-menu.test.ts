@@ -16,20 +16,23 @@ function setup(tasks = taskFixtures) {
   const key = (key: string, init: KeyboardEventInit = {}) => {const event = new KeyboardEvent("keydown", {key, cancelable: true, ...init}); const consumed = menu.handleKeydown(event); return consumed;};
   update(); return {host, textarea, choose, retry, menu, type, key, update};
 }
-test("menu filters by catalog labels and inserts only once with typing focus", () => {
+test("menu filters descriptions and selects the task object without inserting text", () => {
   const s = setup(); s.type("/SUMMARIZE");
   expect(s.host.querySelector('[role="listbox"]')).not.toBeNull();
   expect(s.host.textContent).toContain("/compact"); expect(s.textarea.getAttribute("aria-activedescendant")).toBeTruthy();
-  expect(s.key("Enter")).toBe(true); expect(s.choose).toHaveBeenCalledExactlyOnceWith("/compact");
+  expect(s.key("Enter")).toBe(true); expect(s.choose).toHaveBeenCalledExactlyOnceWith(taskFixtures[0]);
+  expect(s.textarea.value).toBe("/SUMMARIZE");
   expect(document.activeElement).toBe(s.textarea); s.update();
   expect(s.host.querySelector('[role="listbox"]')).toBeNull(); expect(s.key("Enter")).toBe(false);
 });
-test("Tab and pointer insert without execution; arrows and Home/End select catalog rows", () => {
+test("Enter and pointer choose a task directly; Tab leaves text unchanged", () => {
   const second: TaskDescriptor = {...taskFixtures[0], id: "other", command: "other", title: "Other"};
   const s = setup([...taskFixtures, second]); s.type("/");
-  s.key("End"); expect(s.key("Tab")).toBe(true); expect(s.choose).toHaveBeenLastCalledWith("/other");
-  s.type("/c"); s.host.querySelector<HTMLElement>('[role="option"]')!.click(); expect(s.choose).toHaveBeenLastCalledWith("/compact");
-  s.type("/"); s.key("ArrowDown"); s.key("Home"); s.key("Enter"); expect(s.choose).toHaveBeenLastCalledWith("/compact");
+  s.key("End"); expect(s.key("Enter")).toBe(true); expect(s.choose).toHaveBeenLastCalledWith(second);
+  s.type("/c"); s.host.querySelector<HTMLElement>('[role="option"]')!.click(); expect(s.choose).toHaveBeenLastCalledWith(taskFixtures[0]);
+  s.type("/co"); s.choose.mockClear(); expect(s.key("Tab")).toBe(false);
+  expect(s.choose).not.toHaveBeenCalled(); expect(s.textarea.value).toBe("/co");
+  expect(s.host.querySelector('[role="listbox"]')).toBeNull();
 });
 test("Escape and outside dismissal preserve draft and suppress unchanged reopening", () => {
   const s = setup(); s.type("/c"); expect(s.key("Escape")).toBe(true); s.update();
@@ -82,4 +85,14 @@ test("Enter retries a failed catalog without submitting the command", () => {
   const s = setup(); s.type("/"); s.update({status: "error", error: "offline"});
   expect(s.key("Enter")).toBe(true); expect(s.retry).toHaveBeenCalledOnce();
   expect(document.activeElement).toBe(s.textarea); expect(s.textarea.value).toBe("/");
+});
+test.each([
+  {status: "streaming" as const}, {status: "loading" as const}, {historyLoaded: false},
+  {workspaceBusy: true}, {permissionBusy: true}, {modelListStatus: "saving" as const},
+])("busy chat %j explains why tasks cannot run", (busy) => {
+  const s = setup(); s.type("/"); s.update({state: {...available, ...busy}});
+  expect(s.host.querySelector('[role="option"]')?.getAttribute("aria-disabled")).toBe("true");
+  expect(s.host.textContent).toMatch(/busy/i);
+  s.key("Enter"); expect(s.choose).not.toHaveBeenCalled();
+  expect(s.host.querySelector('[role="listbox"]')).not.toBeNull(); expect(s.textarea.value).toBe("/");
 });

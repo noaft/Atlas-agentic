@@ -1,5 +1,17 @@
 # Shared task registry and slash menu
 
+> Interaction correction approved after implementation: selecting a task by
+> clicking its menu row or pressing Enter runs that task immediately. Rows explain
+> the action and progress/results remain visible in the owning chat. Menu selection
+> passes the descriptor directly, without inserting or parsing a draft command.
+> Send always sends literal text to the agent, including `/compact`, bare `/`, and
+> unknown slash text. Escape/outside click/Tab dismiss without running a task;
+> Enter after dismissal sends the text normally. This supersedes the original
+> insert-then-run, Tab selection, and text-command interception requirements below.
+> Backend registry/validation, ownership, cancellation, and automatic compaction
+> requirements remain in effect. The original implementation plan records the
+> earlier behavior; this correction is a bounded update approved in chat.
+
 ## Intent and scope
 
 The user selected a shared task registry and slash menu first, leaving automatic

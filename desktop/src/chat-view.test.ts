@@ -1723,19 +1723,50 @@ test("automatic compaction exposes cancellation while the answer is pending", as
  pending.resolve({answer:"done",metadata,created:false});await sending;
 });
 
-test("slash menu inserts before executing compact and does not append chat history", async () => {
+test.each(["Enter", "click"])("selecting a task with %s runs immediately and shows progress", async (selection) => {
   const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
-  let calls = 0; api.runTask = async (taskId, args, id, _onEvent) => {
+  const pending = deferred<import("./types").TaskResult>();
+  let calls = 0; api.runTask = (taskId, args, id, _onEvent) => {
     expect(taskId).toBe("conversation.compact"); expect(args).toEqual({}); expect(id).toBe(metadata.id);
-    calls++; return {taskId, outcome: {kind: "compaction", result: {memory: null, message: "Compacted"}}};
+    calls++; return pending.promise;
   };
   const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
   const before = store.getState().messages;
   const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+  textarea.value = selection === "click" ? "/SUMMARIZE" : "/"; textarea.focus(); textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  expect(root.textContent).toContain("Summarize older context");
+  if (selection === "Enter") textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  else root.querySelector<HTMLElement>('.slash-menu [role="option"]')!.click();
+  expect(calls).toBe(1); expect(textarea.value).toBe(""); expect(api.askCount).toBe(0);
+  expect(root.textContent).toContain("Compacting context"); expect(store.getState().messages).toEqual(before);
+  pending.resolve({taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Compacted"}}});
+  await flush(); expect(root.textContent).toContain("Compacted");
+});
+
+test("Send or Enter after dismissing the menu sends literal slash text to the agent", async () => {
+  const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
+  let tasks = 0; api.runTask = async () => {tasks++; throw new Error("must not run");};
+  const {root, store} = setup(api); await store.initialize();
+  const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+  textarea.value = "/compact"; textarea.focus(); textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  root.querySelector<HTMLButtonElement>("[data-send]")!.click(); await flush();
+  expect(api.askCount).toBe(1); expect(tasks).toBe(0);
+  expect(store.getState().messages.some(message => message.role === "user" && message.content === "/compact")).toBe(true);
+  textarea.value = "/compact"; textarea.focus(); textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
+  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true})); await flush();
+  expect(api.askCount).toBe(2); expect(tasks).toBe(0);
+});
+
+test("a selected task cannot replace the composer after switching chats", async () => {
+  const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
+  const pending = deferred<import("./types").TaskResult>(); api.runTask = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
   textarea.value = "/"; textarea.focus(); textarea.dispatchEvent(new Event("input", {bubbles: true}));
-  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
-  expect(textarea.value).toBe("/compact"); expect(calls).toBe(0);
-  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
-  await flush(); expect(calls).toBe(1); expect(store.getState().messages).toEqual(before);
-  expect(root.textContent).toContain("Compacted");
+  root.querySelector<HTMLElement>('.slash-menu [role="option"]')!.click();
+  await store.newChat(); textarea.value = "other chat draft"; textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  pending.resolve({taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Compacted"}}}); await flush();
+  expect(textarea.value).toBe("other chat draft"); expect(store.getState().draftText).toBe("other chat draft");
+  expect(root.textContent).not.toContain("Compacted");
 });

@@ -183,9 +183,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     renameOpen = false;
   });
 
-  const composer = createChatComposer(store, async () => {
+  const composer = createChatComposer(
+    store,
+    () => syncComposerRequest(() => store.send()),
+    (task) => syncComposerRequest(() => store.runTask(task, {})),
+  );
+  async function syncComposerRequest(start: () => Promise<void>): Promise<void> {
     const owner = store.getState().activeSessionId;
-    const sending = store.send();
+    const sending = start();
     const clearedDraft = store.getState().draftText;
     composer.replaceDraft(clearedDraft);
     await sending;
@@ -195,7 +200,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     } else {
       store.setDraft(composer.textarea.value);
     }
-  });
+  }
   chatScreen.append(composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
