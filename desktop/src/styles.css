@@ -308,9 +308,24 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .permission-warning { color: #9c4a60; font-weight: 650; white-space: nowrap; }
 .model-picker-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-picker-feedback { display: flex; width: 100%; max-width: none; align-items: flex-start; gap: 8px; margin: 7px 0 0; padding: 0 4px; color: #9c4a60; font-size: 11px; line-height: 1.4; }
-.model-context { margin: 7px 0 0; padding: 0 4px; color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .model-picker-error { min-width: 0; overflow-wrap: anywhere; }
 .model-picker-retry { flex: 0 0 auto; padding: 4px 8px; border: 0; border-radius: 7px; background: var(--lavender); color: var(--ink); }
+
+.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; }
+.context-meter { position: relative; }
+.context-meter[hidden] { display: none; }
+.context-meter-toggle { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); }
+.context-meter-toggle:hover { background: var(--lavender); }
+.context-ring { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: conic-gradient(#8c78b5 var(--context-progress, 0%), #e2dce9 0); }
+.context-ring > span { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--surface); font-size: 9px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.context-ring-unknown { border: 2px dashed #c8bfd5; background: transparent; }
+.context-ring-unknown > span { background: transparent; }
+.context-tooltip { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 10px); display: grid; gap: 6px; width: min(270px, calc(100vw - 40px)); padding: 13px 15px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 24px var(--shadow); font-size: 11px; line-height: 1.4; }
+.context-tooltip[hidden] { display: none; }
+.context-tooltip::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 12px; }
+.context-tooltip strong { font-size: 12px; }
+.context-token-ratio { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.context-tooltip [data-model-context], .context-help { color: var(--muted); }
 
 .send-button { display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #8069b9, #689fc2); color: white; font-size: 18px; box-shadow: 0 7px 16px rgba(108, 88, 157, .24); }
 

@@ -1,3 +1,4 @@
+import { createContextMeter, type ContextMeter } from "./context-meter";
 import type { ChatStore } from "./chat-state";
 import type { ChatState } from "./types";
 
@@ -7,6 +8,7 @@ export interface ChatComposer {
   modelHost: HTMLElement;
   permissionHost: HTMLElement;
   feedbackHost: HTMLElement;
+  contextMeter: ContextMeter;
   sendButton: HTMLButtonElement;
   updateState(state: Readonly<ChatState>): void;
   replaceDraft(text: string): void;
@@ -42,7 +44,7 @@ export function createChatComposer(
       <textarea rows="1" aria-label="Message Atlas" data-composer></textarea>
       <div class="composer-controls" data-composer-controls>
         <div class="composer-pickers"><div class="model-picker" data-model-picker></div><div class="permission-picker" data-permission-picker></div></div>
-        <button type="submit" class="send-button" aria-label="Send message" data-send>↑</button>
+        <div class="composer-actions" data-composer-actions><span data-context-meter-host></span><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
       </div>
     </div>
     <div data-model-feedback-host></div>
@@ -54,6 +56,9 @@ export function createChatComposer(
   const feedbackHost = element.querySelector<HTMLElement>("[data-model-feedback-host]")!;
   const sendButton = element.querySelector<HTMLButtonElement>("[data-send]")!;
   const note = element.querySelector<HTMLElement>("[data-composer-note]")!;
+  const contextMeter = createContextMeter();
+  contextMeter.element.hidden = true;
+  element.querySelector("[data-context-meter-host]")!.append(contextMeter.element);
 
   const updateSendAvailability = (state: Readonly<ChatState>) => {
     sendButton.disabled =
@@ -101,6 +106,7 @@ export function createChatComposer(
     modelHost,
     permissionHost,
     feedbackHost,
+    contextMeter,
     sendButton,
     updateState(state) {
       textarea.placeholder = state.activeWorkspace
@@ -124,6 +130,7 @@ export function createChatComposer(
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     },
     destroy() {
+      contextMeter.destroy();
       window.removeEventListener("resize", resizeOnWindowChange);
     },
   };

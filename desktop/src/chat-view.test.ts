@@ -438,8 +438,8 @@ test("chat model picker shows discovered models and saves the selection", async 
   const picker = root.querySelector<HTMLSelectElement>("[data-model-select]");
   expect(picker).not.toBeNull();
   expect([...picker!.options].map((option) => option.textContent)).toEqual([
-    "DeepSeek Flash · context unknown",
-    "DeepSeek V4 Pro · context unknown",
+    "DeepSeek Flash",
+    "DeepSeek V4 Pro",
   ]);
   expect(picker!.getAttribute("aria-label")).toBe("Model");
   expect(picker!.parentElement?.firstChild).toBe(picker);
@@ -1562,7 +1562,7 @@ test("a failed history load disables sending until the conversation can be reloa
 });
 
 
-test("model options expose provider context limits before selection and update the selected limit", async () => {
+test("model names stay clean while the context ring follows the selected limit", async () => {
   const api = new ViewApi();
   api.settings = { ...settings, apiKeySource: "settings" };
   api.availableModels = [
@@ -1572,8 +1572,13 @@ test("model options expose provider context limits before selection and update t
   const { root, store } = setup(api);
   await store.initialize();
   const picker = root.querySelector<HTMLSelectElement>("[data-model-select]")!;
-  expect(picker.options[0].textContent).toContain("1,048,576");
-  expect(picker.options[1].textContent).toContain("128,000");
+  expect([...picker.options].map((option) => option.textContent)).toEqual(["Flash", "Pro"]);
+  const ring = root.querySelector<HTMLButtonElement>("[data-context-meter]");
+  expect(ring).not.toBeNull();
+  expect(root.querySelector("[data-composer-controls]")?.contains(ring)).toBe(true);
+  expect(root.querySelector("[data-model-picker]")?.contains(ring)).toBe(false);
+  expect(root.querySelector("[data-context-percent]")?.textContent).toBe("—");
+  expect(root.querySelector("[data-model-feedback-host] [data-model-context]")).toBeNull();
   expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: 1,048,576 tokens (input + output)");
   picker.value = "deepseek-v4-pro";
   picker.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1603,4 +1608,28 @@ test("invalid or unlisted model context limits are never guessed", async () => {
   api.availableModels = [{ id: "another-model", name: "Another", contextWindow: 128000 }];
   await store.retryModels();
   expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: Unknown");
+});
+
+
+test("the context ring opens details without sending and survives streamed updates", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.availableModels = [{ id: "deepseek-flash", name: "Flash", contextWindow: 128000 }];
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const { root, store } = setup(api);
+  await store.initialize();
+  inputComposer(root, "work");
+  const ring = root.querySelector<HTMLButtonElement>("[data-context-meter]")!;
+  ring.click();
+  expect(api.askCount).toBe(0);
+  expect(root.querySelector<HTMLElement>("[data-context-tooltip]")!.hidden).toBe(false);
+  expect(root.querySelector("[data-context-ratio]")?.textContent).toBe("— / 128,000 tokens");
+  click(root, "[data-send]");
+  expect(root.querySelector("[data-context-meter]")).toBe(ring);
+  api.eventSink!({ event: "delta", data: { content: "working" } });
+  await flushStreaming();
+  expect(root.querySelector("[data-context-meter]")).toBe(ring);
+  pending.resolve({ answer: "done", metadata, created: true });
+  await flush();
 });

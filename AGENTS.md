@@ -243,10 +243,12 @@ storage/settings operations run on background workers rather than the Tauri
 event thread. Do not broaden frontend permissions to achieve concurrency.
 
 Model discovery preserves optional provider-reported `contextWindow` and
-`maxOutputTokens` limits in the shared model catalog. The model picker displays
-maximum context, including input and output, for each option and the selected
-model. Missing or zero limits remain unknown; do not infer limits from model
-names or use hard-coded capacities.
+`maxOutputTokens` limits in the shared model catalog. Model options contain names
+only; a compact context ring beside Send exposes exact used/max token details
+on hover, focus, or tap. Until runtime token tracking supplies real usage, show
+an em dash, not zero or an invented percentage. Maximum context includes input
+and output. Missing or zero limits remain unknown; do not infer limits from
+model names or use hard-coded capacities.
 
 Keep native platform access narrow. Folder selection uses
 `@tauri-apps/plugin-dialog` with `dialog:allow-open`, and the fullscreen
