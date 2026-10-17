@@ -1770,3 +1770,63 @@ test("a selected task cannot replace the composer after switching chats", async 
   expect(textarea.value).toBe("other chat draft"); expect(store.getState().draftText).toBe("other chat draft");
   expect(root.textContent).not.toContain("Compacted");
 });
+
+test("failed compaction has a retry card without duplicating the raw error banner", async () => {
+  const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
+  let count = 0; const pending = deferred<import("./types").TaskResult>();
+  api.runTask = (taskId, args, id) => {
+    count++; expect(taskId).toBe("conversation.compact"); expect(args).toEqual({}); expect(id).toBe(metadata.id);
+    return count === 1 ? Promise.reject(new Error("Summary reached its 2048-token output limit")) : pending.promise;
+  };
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  store.setDraft("/"); await store.runTask(taskFixtures[0], {});
+  const card = root.querySelector<HTMLElement>('[data-compaction-status]')!;
+  expect(card).not.toBeNull(); expect(card.textContent).toContain("Compaction failed");
+  expect(root.querySelector('.error-notice')).toBeNull();
+  const textarea = composer(root); textarea.value = "my next message"; textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  card.querySelector<HTMLButtonElement>('[data-retry-compaction]')!.click();
+  expect(count).toBe(2); expect(root.textContent).toContain("Compacting context");
+  expect(textarea.value).toBe("my next message");
+  pending.resolve({taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Compacted"}}}); await flush();
+  expect(root.textContent).toContain("Compaction finished"); expect(textarea.value).toBe("my next message");
+  expect(store.getState().draftText).toBe("my next message");
+});
+
+test("automatic compaction failures show the compaction card and keep the failed prompt", async () => {
+  const api = new ViewApi(); const pending = deferred<ConversationAskResult>(); api.askImpl = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  store.setDraft("continue working"); const sending = store.send();
+  api.eventSink!({event: "compaction", data: {progress: {completedBlocks: 0, totalBlocks: 3}}});
+  pending.reject(new Error("Summary response was empty; original memory retained")); await sending;
+  expect(root.querySelector('[data-compaction-status]')?.textContent).toContain("Compaction failed");
+  expect(root.querySelector('.error-notice')).toBeNull(); expect(store.getState().draftText).toBe("continue working");
+});
+
+test("a background compaction failure and retry remain in their owning chat", async () => {
+  const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
+  const pending = deferred<import("./types").TaskResult>(); api.runTask = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const owner = store.getState().activeSessionId;
+  const running = store.runTask(taskFixtures[0], {}); await store.newChat(); store.setDraft("other draft");
+  pending.reject(new Error("Summary response was empty")); await running;
+  expect(root.querySelector<HTMLElement>('[data-compaction-status]')?.hidden).toBe(true);
+  expect(store.getState().draftText).toBe("other draft");
+  await store.selectSession(owner);
+  expect(root.querySelector('[data-compaction-status]')?.textContent).toContain("Compaction failed");
+  expect(root.querySelector('[data-retry-compaction]')).not.toBeNull();
+});
+
+test("visible compaction stays in the existing notice grid row", async () => {
+  const api = new ViewApi(); const pending = deferred<ConversationAskResult>(); api.askImpl = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  store.setDraft("next"); const sending = store.send();
+  api.eventSink!({event: "compaction", data: {progress: {completedBlocks: 0, totalBlocks: 3}}});
+  const card = root.querySelector<HTMLElement>('[data-compaction-status]')!;
+  const notices = root.querySelector<HTMLElement>('[data-notices]')!;
+  expect(card.hidden).toBe(false);
+  // display:contents exposes direct children to the four-row main grid.
+  // Card and notices must share its one feedback item, leaving messages/composer tracks intact.
+  expect(card.parentElement).toBe(notices.parentElement);
+  expect(card.parentElement?.classList.contains("notice-area")).toBe(true);
+  pending.resolve({answer: "done", metadata, created: false}); await sending;
+});

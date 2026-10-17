@@ -77,7 +77,7 @@ impl ModelProvider for DeepSeekProvider {
         }))
     }
     fn summarize(&self, request: &super::SummaryRequest) -> Result<super::SummaryResponse, String> {
-        let payload = self.chat_request(
+        let mut payload = self.chat_request(
             &ModelRequest {
                 memory_blocks: &[],
                 max_output_tokens: Some(request.max_output_tokens),
@@ -92,6 +92,8 @@ impl ModelProvider for DeepSeekProvider {
             },
             false,
         )?;
+        // A bounded memory job needs its budget for the final summary, not reasoning.
+        payload.thinking = Some(ThinkingMode { mode: "disabled" });
         let response = self
             .client
             .post(self.chat_url())
@@ -297,6 +299,7 @@ impl DeepSeekProvider {
 
         Ok(ChatRequest {
             model: self.config.model.clone(),
+            thinking: None,
             messages,
             stream,
             max_tokens: request.max_output_tokens,
@@ -374,6 +377,8 @@ pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingMode>,
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,6 +391,12 @@ struct ChatRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct ThinkingMode {
+    #[serde(rename = "type")]
+    mode: &'static str,
 }
 
 #[derive(Serialize)]

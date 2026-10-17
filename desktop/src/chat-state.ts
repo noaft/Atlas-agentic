@@ -46,7 +46,7 @@ export function groupConversations(
 
 const initialState = (): ChatState => ({
   tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
-  memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
+  compactionFailure: null, memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
   sessions: [],
   conversations: [],
@@ -130,7 +130,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : [{ id: configured, name: configured }, ...models];
 
 const sessionKeys = [
-  "memory", "compactionProgress", "contextStatus", "compactionMessage",
+  "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
   "pendingApproval", "toolActivity",
@@ -292,7 +292,7 @@ export class ChatStore {
       if (token !== this.selectionToken) return;
       const latestActivity = conversation.activities?.at(-1);
       this.updateSession(sessionId, {
-        memory: conversation.memory ?? null, contextStatus: null, compactionMessage: null,
+        memory: conversation.memory ?? null, contextStatus: null, compactionMessage: null, compactionFailure: null,
         contextUsage: latestActivity?.assistantMessageIndex === conversation.messages.length - 1
           ? latestActivity.usage ?? null : null,
         activeConversationId: conversation.metadata.id,
@@ -403,7 +403,7 @@ export class ChatStore {
       ...this.state,
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: "",
-      compactionMessage: null, contextStatus: null,
+      compactionMessage: null, contextStatus: null, compactionFailure: null,
       status: "streaming",
       errorMessage: null,
       pendingApproval: null,
@@ -451,6 +451,7 @@ export class ChatStore {
     } catch (error) {
       if (generation !== chat.generation) return;
       this.updateSession(owner, {
+        compactionFailure: chat.state.compactionProgress ? {message: errorMessage(error), task: null} : null,
         contextUsage: null, compactionProgress: null,
         messages: chat.state.messages.map((message) => ({
           ...message,
@@ -482,7 +483,15 @@ export class ChatStore {
       }
     }
   }
-  async runTask(task: TaskDescriptor, args: Record<string, unknown>): Promise<void> {
+  async retryCompaction(): Promise<void> {
+    const failed = this.state.compactionFailure?.task;
+    if (!failed) return;
+    const task = this.state.tasks.find(task => task.id === failed.id);
+    if (!task) return;
+    await this.runTask(task, failed.arguments, {preserveDraft: true});
+  }
+
+  async runTask(task: TaskDescriptor, args: Record<string, unknown>, options: {preserveDraft?: boolean} = {}): Promise<void> {
     if (!this.state.historyLoaded || this.state.status === "streaming" || this.state.status === "loading" ||
         this.state.workspaceBusy || this.state.permissionBusy || this.state.modelListStatus === "saving") return;
     const unavailable = taskUnavailableReason(task, this.state);
@@ -491,7 +500,7 @@ export class ChatStore {
     const chat = this.chats.get(owner)!;
     const submittedDraft = chat.state.draftText;
     const generation = ++chat.generation;
-    this.updateSession(owner, {status: "streaming", draftText: "", errorMessage: null, compactionMessage: null,
+    this.updateSession(owner, {status: "streaming", draftText: options.preserveDraft ? submittedDraft : "", errorMessage: null, compactionMessage: null, compactionFailure: null,
       compactionProgress: task.cancellable ? {completedBlocks: 0, totalBlocks: 0} : null});
     try {
       const result = await this.api.runTask(task.id, args, chat.state.activeConversationId,
@@ -501,7 +510,7 @@ export class ChatStore {
       this.applyTaskResult(owner, result);
     } catch (error) {
       if (generation !== chat.generation) return;
-      this.updateSession(owner, {status: "error", compactionProgress: null, errorMessage: errorMessage(error),
+      this.updateSession(owner, {compactionFailure: {message: errorMessage(error), task: {id: task.id, arguments: args}}, status: "error", compactionProgress: null, errorMessage: errorMessage(error),
         draftText: chat.state.draftText || submittedDraft});
     }
   }
@@ -510,7 +519,7 @@ export class ChatStore {
     switch (result.outcome.kind) {
       case "compaction": {
         const {memory, message} = result.outcome.result;
-        this.updateSession(owner, {memory, status: "idle", compactionProgress: null, compactionMessage: message});
+        this.updateSession(owner, {memory, status: "idle", compactionProgress: null, compactionMessage: message, compactionFailure: null, errorMessage: null});
         break;
       }
     }

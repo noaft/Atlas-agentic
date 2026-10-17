@@ -216,6 +216,16 @@ names. Known oversized requests fail without discarding the protected tail.
 Selecting the desktop Compact task must not create a chat message or persist an unsaved draft;
 progress, checkpoint restoration, cancellation and memory details belong to the
 owning session while other chats continue independently.
+Compaction progress/results/failures use the persistent status card. Keep failure
+metadata and retry task arguments per session; retries dispatch that saved task
+without consuming a newer draft. Preserve open diagnostic details during unrelated
+UI updates. Automatic compaction failures keep their chat prompt available for a
+normal resend; do not silently launch another summary job.
+DeepSeek summary requests explicitly disable thinking to reserve the bounded output
+budget for summary content. Keep this provider-specific switch in the adapter,
+not shared runtime logic. Distinguish empty output, output-limit truncation, and
+unexpected finish reasons; none may publish partial memory or echo response text.
+
 
 `src/tasks/mod.rs` is the authoritative built-in task registry, initially
 `conversation.compact` (`/compact`, empty-object arguments). Keep descriptors,

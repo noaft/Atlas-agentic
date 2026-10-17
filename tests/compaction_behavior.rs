@@ -140,9 +140,19 @@ fn incomplete_empty_and_cancelled_summaries_keep_original_history() {
         let runtime = runtime_with_output(calls.clone(), false, finish, summary);
         let service = ConversationService::new(&runtime, &store, 40);
         let flag = std::sync::atomic::AtomicBool::new(cancelled);
-        assert!(service
+        let error = service
             .compact_cancellable(&meta.id, &mut |_| {}, Some(&flag))
-            .is_err());
+            .unwrap_err();
+        let expected = if cancelled {
+            "cancelled"
+        } else if finish == "length" {
+            "output limit"
+        } else if finish != "stop" {
+            "finish reason"
+        } else {
+            "empty"
+        };
+        assert!(error.contains(expected), "expected {expected}: {error}");
         assert!(store.load_memory(&meta.id).unwrap().is_none());
         assert_eq!(store.load(&meta.id).unwrap().messages.len(), 14);
         if cancelled {
@@ -211,4 +221,25 @@ fn manual_recompaction_can_replace_existing_memory_without_new_older_messages() 
         first.compacted_message_count,
         second.compacted_message_count
     );
+}
+
+#[test]
+fn truncated_summary_keeps_an_existing_checkpoint_and_full_history() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let meta = store.create_turn("first", "answer").unwrap();
+    for _ in 0..9 {
+        store.append_turn(&meta.id, "more", "answer").unwrap();
+    }
+    let good = runtime(Default::default(), false);
+    ConversationService::new(&good, &store, 40)
+        .compact(&meta.id, &mut |_| {})
+        .unwrap();
+    let before = store.load(&meta.id).unwrap();
+    let broken = runtime_with_output(Default::default(), false, "length", "partial");
+    let error = ConversationService::new(&broken, &store, 40)
+        .compact(&meta.id, &mut |_| {})
+        .unwrap_err();
+    assert!(error.contains("output limit"));
+    assert_eq!(store.load(&meta.id).unwrap(), before);
 }

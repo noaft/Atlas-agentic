@@ -1,3 +1,5 @@
+import { createCompactionStatus } from "./compaction-status";
+import { taskUnavailableReason } from "./slash-commands";
 import { renderMemory } from "./memory-view";
 import { createComposerPicker } from "./composer-picker";
 import { createChatComposer } from "./chat-composer";
@@ -160,7 +162,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       <main class="chat-main" data-main>
         <div data-chat-screen>
           <header class="chat-header" data-chat-header></header>
-          <div class="notice-area" data-notices></div>
+          <div class="notice-area"><div data-notices></div></div>
           <section class="messages" aria-label="Conversation messages" aria-live="polite" data-messages></section>
         </div>
         <div data-settings-screen></div>
@@ -201,6 +203,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       store.setDraft(composer.textarea.value);
     }
   }
+  const compactionStatus = createCompactionStatus(
+    () => {void store.cancelCompaction();},
+    () => {void syncComposerRequest(() => store.retryCompaction());},
+  );
+  notices.before(compactionStatus.element);
   chatScreen.append(composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
@@ -499,21 +506,19 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     notices.replaceChildren();
-    if (state.compactionProgress || state.compactionMessage || state.contextStatus) {
-      const status = document.createElement("p");
-      status.className = "memory-status";
-      status.setAttribute("role", "status");
-      status.textContent = state.compactionProgress
-        ? `Compacting context${state.compactionProgress.totalBlocks ? ` · ${state.compactionProgress.completedBlocks} of ${state.compactionProgress.totalBlocks} blocks` : "…"}`
-        : state.compactionMessage ?? (state.contextStatus?.available
-          ? `Context estimate: ${state.contextStatus.inputTokens?.toLocaleString()} input tokens · Auto-compact at 90%`
-          : state.contextStatus?.message ?? "");
+    const retryTask = state.tasks.find(task => task.id === state.compactionFailure?.task?.id);
+    compactionStatus.update({
+      sessionId: state.activeSessionId, progress: state.compactionProgress, message: state.compactionMessage,
+      failure: state.compactionFailure?.message ?? null,
+      retryAvailable: !!retryTask,
+      retryDisabled: !retryTask || !!taskUnavailableReason(retryTask, state),
+    });
+    if (state.contextStatus && !state.compactionProgress && !state.compactionMessage && !state.compactionFailure) {
+      const status = document.createElement("p"); status.className = "memory-status"; status.setAttribute("role", "status");
+      status.textContent = state.contextStatus.available
+        ? `Context estimate: ${state.contextStatus.inputTokens?.toLocaleString()} input tokens · Auto-compact at 90%`
+        : state.contextStatus.message;
       notices.append(status);
-      if (state.compactionProgress) {
-        const cancel = button("Cancel compaction", "model-picker-retry");
-        cancel.addEventListener("click", () => void store.cancelCompaction());
-        notices.append(cancel);
-      }
     }
     if (state.pendingApproval) {
       const approval = document.createElement("section");
@@ -539,7 +544,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       approval.append(title, reason, argumentsText, actions);
       notices.append(approval);
     }
-    if (state.errorMessage) {
+    if (state.errorMessage && state.errorMessage !== state.compactionFailure?.message) {
       const error = document.createElement("div");
       error.className = "error-notice";
       error.setAttribute("role", "alert");

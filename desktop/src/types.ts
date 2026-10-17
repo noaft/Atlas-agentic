@@ -154,7 +154,13 @@ export interface ChatSessionSummary {
   needsApproval: boolean;
 }
 
+export interface CompactionFailure {
+  message: string;
+  task: {id: string; arguments: Record<string, unknown>} | null;
+}
+
 export interface ChatState {
+  compactionFailure: CompactionFailure | null;
   tasks: TaskDescriptor[];
   taskCatalogStatus: "idle" | "loading" | "ready" | "error";
   taskCatalogError: string | null;

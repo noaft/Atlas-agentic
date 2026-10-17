@@ -65,6 +65,7 @@ fn summary_uses_only_system_and_one_input_with_explicit_output_limit() {
     assert_eq!(response.usage.unwrap().total_tokens, 112);
     let request = rx.recv().unwrap();
     assert_eq!(request["max_tokens"], 12);
+    assert_eq!(request["thinking"], serde_json::json!({"type": "disabled"}));
     assert_eq!(request["stream"], false);
     assert!(request.get("tools").is_none());
     assert!(request.get("response_format").is_none());
@@ -105,6 +106,7 @@ fn memory_blocks_are_separate_messages_and_budget_counts_the_rendered_prompt() {
     assert!(count.tokens > 100);
     provider.complete(&request).unwrap();
     let wire = rx.recv().unwrap();
+    assert!(wire.get("thinking").is_none());
     let messages = wire["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 4);
     assert!(messages[1]["content"]

@@ -224,6 +224,18 @@ Later turns load the saved summaries plus originals from the saved boundary onwa
 Repeated compaction replaces the previous summaries together with that boundary.
 All original messages remain visible, and View memory shows each summary and its
 covered range. Summary requests use the selected provider and consume tokens.
+The compaction card shows preparation, completed blocks, cancellation, and the
+result. Failed manual jobs offer Retry compaction and expandable Details;
+retrying preserves any newer draft. Automatic-compaction failures keep the failed
+chat prompt available to send again. No partial checkpoint replaces saved memory.
+
+DeepSeek summary jobs explicitly disable thinking so their bounded output budget
+is available for the summary. Ordinary chat retains its existing provider mode.
+An empty response, token-limit cutoff, or unexpected finish reason produces a
+separate diagnostic instead of the former combined error. A genuinely truncated
+summary is still rejected; adjust the configured summary budget if necessary.
+See [DeepSeek thinking-mode documentation](https://api-docs.deepseek.com/guides/thinking_mode/).
+
 
 Memory checkpoints publish atomically only after every bounded, no-tool summary
 request succeeds and the prepared context fits. Empty, truncated, failed or

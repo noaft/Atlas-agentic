@@ -73,8 +73,25 @@ impl SummaryJob<'_> {
         {
             return Err("Compaction cancelled; original memory retained".into());
         }
-        if response.finish_reason != "stop" || response.content.trim().is_empty() {
-            return Err("Summary was empty or incomplete; original memory retained".into());
+        if response.finish_reason == "length" {
+            return Err(format!(
+                "Summary reached its {output}-token output limit; original memory retained"
+            ));
+        }
+        if response.finish_reason != "stop" {
+            // Do not echo unknown provider strings (which may contain arbitrary data).
+            let reason = match response.finish_reason.as_str() {
+                "content_filter" => "content_filter",
+                "tool_calls" => "tool_calls",
+                "" => "missing",
+                _ => "unrecognized",
+            };
+            return Err(format!(
+                "Summary ended with finish reason {reason}; original memory retained"
+            ));
+        }
+        if response.content.trim().is_empty() {
+            return Err("Summary response was empty; original memory retained".into());
         }
         if response
             .usage
