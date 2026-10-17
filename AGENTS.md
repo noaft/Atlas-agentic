@@ -242,6 +242,12 @@ and coalesce visible streaming renders to animation frames. Blocking native
 storage/settings operations run on background workers rather than the Tauri
 event thread. Do not broaden frontend permissions to achieve concurrency.
 
+Model discovery preserves optional provider-reported `contextWindow` and
+`maxOutputTokens` limits in the shared model catalog. The model picker displays
+maximum context, including input and output, for each option and the selected
+model. Missing or zero limits remain unknown; do not infer limits from model
+names or use hard-coded capacities.
+
 Keep native platform access narrow. Folder selection uses
 `@tauri-apps/plugin-dialog` with `dialog:allow-open`, and the fullscreen
 control uses only `core:window:allow-set-fullscreen`; do not add shell,

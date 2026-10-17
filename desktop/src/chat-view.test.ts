@@ -4,6 +4,7 @@ import type { AtlasApi } from "./atlas-api";
 import { ChatStore } from "./chat-state";
 import { mountChat } from "./chat-view";
 import type {
+  ModelInfo,
   Conversation,
   ConversationAskResult,
   ConversationMetadata,
@@ -93,7 +94,7 @@ class ViewApi implements AtlasApi {
   askCount = 0;
   loadCount = 0;
   settings = settings;
-  availableModels = [
+  availableModels: ModelInfo[] = [
     { id: "deepseek-flash", name: "DeepSeek Flash" },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
   ];
@@ -437,8 +438,8 @@ test("chat model picker shows discovered models and saves the selection", async 
   const picker = root.querySelector<HTMLSelectElement>("[data-model-select]");
   expect(picker).not.toBeNull();
   expect([...picker!.options].map((option) => option.textContent)).toEqual([
-    "DeepSeek Flash",
-    "DeepSeek V4 Pro",
+    "DeepSeek Flash · context unknown",
+    "DeepSeek V4 Pro · context unknown",
   ]);
   expect(picker!.getAttribute("aria-label")).toBe("Model");
   expect(picker!.parentElement?.firstChild).toBe(picker);
@@ -1558,4 +1559,48 @@ test("a failed history load disables sending until the conversation can be reloa
   api.load = async () => conversation();
   await store.selectConversation(metadata.id);
   expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(false);
+});
+
+
+test("model options expose provider context limits before selection and update the selected limit", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.availableModels = [
+    { id: "deepseek-flash", name: "Flash", contextWindow: 1048576, maxOutputTokens: 393216 },
+    { id: "deepseek-v4-pro", name: "Pro", contextWindow: 128000 },
+  ];
+  const { root, store } = setup(api);
+  await store.initialize();
+  const picker = root.querySelector<HTMLSelectElement>("[data-model-select]")!;
+  expect(picker.options[0].textContent).toContain("1,048,576");
+  expect(picker.options[1].textContent).toContain("128,000");
+  expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: 1,048,576 tokens (input + output)");
+  picker.value = "deepseek-v4-pro";
+  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await flush();
+  expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: 128,000 tokens (input + output)");
+});
+
+test("missing model metadata stays unknown and discovery retry supplies the limit", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.listModels = async () => { throw new Error("catalog unavailable"); };
+  const { root, store } = setup(api);
+  await store.initialize();
+  expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: Unknown");
+  api.listModels = async () => [{ id: "deepseek-flash", name: "Flash", contextWindow: 64000 }];
+  await store.retryModels();
+  expect(root.querySelector("[data-model-context]")?.textContent).toContain("64,000");
+});
+
+test("invalid or unlisted model context limits are never guessed", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "environment", environmentOverrides: ["model"] };
+  api.availableModels = [{ id: "deepseek-flash", name: "Flash", contextWindow: 0 }];
+  const { root, store } = setup(api);
+  await store.initialize();
+  expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: Unknown");
+  api.availableModels = [{ id: "another-model", name: "Another", contextWindow: 128000 }];
+  await store.retryModels();
+  expect(root.querySelector("[data-model-context]")?.textContent).toBe("Max context: Unknown");
 });

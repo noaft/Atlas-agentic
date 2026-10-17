@@ -324,6 +324,8 @@ struct ModelListResponse {
 struct DeepSeekModel {
     id: String,
     name: Option<String>,
+    context_window: Option<u64>,
+    max_output_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -367,6 +369,8 @@ fn parse_model_list(response: &str) -> Result<Vec<ModelInfo>, String> {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| model.id.clone()),
             id: model.id,
+            context_window: model.context_window.filter(|limit| *limit > 0),
+            max_output_tokens: model.max_output_tokens.filter(|limit| *limit > 0),
         })
         .collect())
 }
@@ -637,6 +641,26 @@ mod tests {
         assert_eq!(models[0].name, "DeepSeek Flash");
         assert_eq!(models[1].id, "deepseek-v4-pro");
         assert_eq!(models[1].name, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn model_metadata_preserves_provider_limits_for_the_desktop() {
+        let models = parse_model_list(
+            r#"{"data":[
+            {"id":"large","context_window":1048576,"max_output_tokens":393216},
+            {"id":"unknown"},
+            {"id":"empty","context_window":null,"max_output_tokens":null},
+            {"id":"zero","context_window":0,"max_output_tokens":0}
+        ]}"#,
+        )
+        .unwrap();
+        let json = serde_json::to_value(&models).unwrap();
+        assert_eq!(json[0]["contextWindow"], 1048576);
+        assert_eq!(json[0]["maxOutputTokens"], 393216);
+        for index in 1..4 {
+            assert!(json[index]["contextWindow"].is_null());
+            assert!(json[index]["maxOutputTokens"].is_null());
+        }
     }
 
     #[test]

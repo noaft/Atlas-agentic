@@ -6,6 +6,7 @@ import type {
   ActivityRecord,
   ChatState,
   ChatSessionSummary,
+  ModelInfo,
   ConversationMetadata,
   DisplayMessage,
   ToolActivity,
@@ -15,6 +16,13 @@ function activeMetadata(state: Readonly<ChatState>): ConversationMetadata | unde
   return state.conversations.find(
     (conversation) => conversation.id === state.activeConversationId,
   );
+}
+
+function modelContext(model: ModelInfo | undefined): string | null {
+  const limit = model?.contextWindow;
+  return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0
+    ? limit.toLocaleString("en-US")
+    : null;
 }
 
 function button(label: string, className?: string): HTMLButtonElement {
@@ -587,13 +595,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       const select = document.createElement("select");
       select.dataset.modelSelect = "";
       select.setAttribute("aria-label", "Model");
-      const models = state.availableModels.length
+      const models: ModelInfo[] = state.availableModels.length
         ? state.availableModels
         : [{ id: state.settings.activeModel, name: state.settings.activeModel }];
       for (const model of models) {
         const option = document.createElement("option");
         option.value = model.id;
-        option.textContent = model.name;
+        const context = modelContext(model);
+        option.textContent = `${model.name} · ${context ? `${context} context` : "context unknown"}`;
         select.append(option);
       }
       select.value = state.settings.activeModel;
@@ -604,6 +613,15 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       select.addEventListener("change", () => void store.selectModel(select.value));
       label.append(select);
       composer.modelHost.append(label);
+      const selectedModel = models.find((model) => model.id === state.settings?.activeModel);
+      const context = modelContext(selectedModel);
+      const contextNote = document.createElement("p");
+      contextNote.className = "model-context";
+      contextNote.dataset.modelContext = "";
+      contextNote.textContent = state.modelListStatus === "loading"
+        ? "Max context: Loading…"
+        : context ? `Max context: ${context} tokens (input + output)` : "Max context: Unknown";
+      composer.feedbackHost.append(contextNote);
       const modelControlledByEnvironment =
         state.settings.environmentOverrides.includes("model");
       if (modelControlledByEnvironment || state.modelListStatus === "loading") {

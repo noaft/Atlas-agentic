@@ -61,6 +61,8 @@ export interface ActivityTurn {
 export interface ModelInfo {
   id: string;
   name: string;
+  contextWindow?: number | null;
+  maxOutputTokens?: number | null;
 }
 
 export interface AuthorizationRequest {

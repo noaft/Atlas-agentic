@@ -1263,7 +1263,7 @@ mod tests {
             let read = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..read]);
             assert!(request.starts_with("GET /models HTTP/1.1\r\n"), "{request}");
-            let body = r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","name":"DeepSeek Flash"}]}"#;
+            let body = r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","name":"DeepSeek Flash","context_window":1048576,"max_output_tokens":393216}]}"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1291,6 +1291,9 @@ mod tests {
         server.join().unwrap();
         assert_eq!(models[0].id, "deepseek-flash");
         assert_eq!(models[0].name, "DeepSeek Flash");
+        let metadata = serde_json::to_value(&models[0]).unwrap();
+        assert_eq!(metadata["contextWindow"], 1048576);
+        assert_eq!(metadata["maxOutputTokens"], 393216);
     }
 
     #[test]

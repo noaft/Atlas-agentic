@@ -67,7 +67,10 @@ their next successful turn.
 Use **Settings** to configure the DeepSeek API key, base URL, default model,
 history limit, default tool-access mode, and an optional custom default folder. After provider settings
 are saved, Atlas loads the available models from DeepSeek and shows a model
-picker above the chat composer. Choosing a model saves it globally and affects
+picker above the chat composer. The picker shows each model's provider-reported
+maximum context before selection and the selected model's exact token limit
+below the controls. Context includes input and output; unavailable limits show
+as unknown rather than being guessed. Choosing a model saves it globally and affects
 the next request without restarting Atlas. If model discovery fails, the saved
 model remains usable and the picker offers a retry. Resetting the default folder
 returns new chats to Atlas home. Conversation management and Settings remain

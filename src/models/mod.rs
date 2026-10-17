@@ -13,6 +13,8 @@ use deepseek::{DeepSeekConfig, DeepSeekProvider};
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
 
 pub trait ModelProvider {
