@@ -4,7 +4,9 @@
 
 Replace the fixed recent-message window with all available conversation context
 until compaction is needed. Support automatic compaction at 90% and a manual
-`/compact` command. Summarize older context in three separate blocks, retaining
+`/compact` command. Each source block becomes one separate summary message.
+Automatic compaction produces three messages; manual compaction produces one,
+two, or three according to current context occupancy, retaining
 at least the latest 10 original messages. Persist summaries for subsequent turns
 and show exactly which original messages they replace. This is conversation-local
 short-term memory, not cross-conversation personal memory.
@@ -25,7 +27,8 @@ system instructions, tool definitions, and applicable bounded activity context.
 After compaction, send:
 
 1. System instructions and runtime protocol.
-2. Three chronological memory blocks, clearly labeled as historical data.
+2. One to three separate chronological summary messages, one per memory block,
+   clearly labeled as historical data. Do not concatenate them into one message.
 3. All original messages after the compacted boundary, including the latest 10.
 4. Current input and current-turn tool results as required by the runtime.
 
@@ -65,14 +68,35 @@ never claim 90% is enforced using an invented capacity. Manual compaction still
 requires a safe input/output budget. Switching to a smaller model reruns these
 checks against that model before the next request.
 
-## Building three summaries
+## Choosing the number of summary messages
+
+Automatic compaction targets three blocks at the 90% trigger. For manual
+`/compact`, use the current prepared conversation context's token occupancy
+relative to the selected model's context capacity:
+
+| Context occupancy | Summary messages |
+| --- | --- |
+| Below 30% | 1 |
+| 30% to below 60% | 2 |
+| 60% and above, including 90% or more | 3 |
+
+These are strict less-than boundaries: exactly 30% selects two; exactly 60%
+selects three. Occupancy includes the prepared prompt, tools, memory, and original
+messages; output reserve is a separate capacity check. Use the current budget
+measurement (or explicitly labeled conservative estimate), not a stale last-call
+reading after a prior compaction. Store the measured/estimated occupancy and the
+requested block count with the checkpoint. Block count determines how many
+independent summary messages are generated, not the number of output tokens.
+
+## Building the selected summaries
 
 Exclude the latest 10 messages, extending the retained tail backward if needed
 to keep whole user/assistant exchanges. Ten means messages, not ten exchanges.
-Divide the remaining chronological context into three approximately token-balanced
-blocks at exchange boundaries. These are roughly thirds of older history, not
-strict 30% slices of total capacity; the recent tail and prompt overhead also
-consume space. If there are fewer than three older exchanges, use fewer blocks;
+Divide the remaining chronological context into the selected number of
+approximately token-balanced blocks at exchange boundaries. With three blocks,
+these are roughly thirds of older history, not strict 30% slices of total
+capacity; the recent tail and prompt overhead also consume space. If there are
+fewer older exchanges than the requested block count, use fewer nonempty blocks;
 with no eligible older history, `/compact` reports that nothing can be compacted.
 
 Run a dedicated no-tool summarization job with one bounded model request per block,
@@ -87,12 +111,14 @@ Summary generation usage is tracked separately and cannot replace chat usage.
 Large blocks are split into budget-safe subrequests and combined in bounded
 passes; an individual oversized message may be split for summarization with its
 source provenance preserved. Never submit an oversized block simply because it
-is one third of history. Bound passes and fail clearly if a useful checkpoint
-cannot fit; do not endlessly retry or truncate the memory silently.
+is one of the selected blocks of history. Bound passes and fail clearly if a
+useful checkpoint cannot fit; do not endlessly retry or truncate the memory silently.
 
-On later compaction, combine the previous three summaries with eligible newer
-messages into an ordered source sequence, repartition it, and produce three new
-summaries. Existing summaries carry their original source ranges. Do not reload
+On later compaction, combine the existing summaries with eligible newer
+messages into an ordered source sequence, choose the block count again using
+the trigger rules, repartition it, and produce that many new summaries. Existing
+summaries carry their original source ranges and stay atomic when partitioning
+so overlapping or fictitious source ranges cannot be created. Do not reload
 all previously compacted originals for every summary request or append summaries
 forever. Validate that the resulting memory plus retained tail/current input and
 output reserve fits below the trigger before publishing it. If the protected tail
@@ -100,12 +126,15 @@ or current-turn data alone cannot fit, report the constraint without dropping it
 
 ## Persistence and exact boundaries
 
-Add a versioned per-conversation memory sidecar containing:
+Add a versioned per-conversation `memory/<conversation-id>.json` sidecar containing:
 
 - Checkpoint ID, creation time, summarizer model, and policy version.
 - Covered original-message prefix length (exclusive end index).
 - Hash of that original prefix to detect stale or modified history.
-- Up to three ordered blocks, each with text and original-message source range.
+- Trigger occupancy, whether it was estimated, and requested/actual block counts.
+- Up to three ordered blocks, each with an ID, its own summary content, and
+  original-message source range. Each persisted block maps to exactly one model
+  message; do not save a single joined summary string.
 - Summary usage and whether it was manually or automatically triggered.
 
 For a boundary of 80, summaries represent message indices `[0, 80)`; the next
@@ -126,6 +155,27 @@ independent. Rename keeps memory; delete moves its sidecar to trash with history
 legacy conversations without memory load normally. Missing or invalid checkpoints
 must not cause gaps: rebuild from originals or report an actionable error.
 
+## Loading saved memory into agents
+
+For every continuation, `ConversationService` loads the checkpoint with the
+original transcript, verifies its prefix fingerprint, and constructs a typed
+context containing `memory_blocks` and the uncompacted message suffix. Runtime
+passes that context to the selected agent, which forwards it in `ModelRequest`.
+The model provider renders each memory block as a separate historical-context
+message before recent history. With the current chat adapter, these are explicitly
+labeled user-role context messages, not higher-priority system instructions or
+invented assistant answers. Runtime instructions identify their historical role.
+This mapping remains within the provider adapter so other providers can retain
+the same one-block/one-message semantics.
+
+Example: a three-block checkpoint covering messages 1–80 renders as three summary
+messages, followed by original messages 81 onward. A later continuation reloads
+that same checkpoint after app restart. Neither the UI nor the agent guesses the
+boundary or relies on an in-memory-only cache. Covered originals and covered
+activity are excluded from the outgoing request to avoid duplication. Compaction
+within a running tool turn updates this context while preserving current-turn
+input, tool results, approvals, and execution state without rerunning tools.
+
 ## Desktop and CLI behavior
 
 Intercept standalone `/compact` in the desktop before normal chat submission.
@@ -133,7 +183,8 @@ Do not send it to the conversational model, save it as a user message, or create
 an empty saved conversation. Expose the same service via
 `atlas conversation compact <id>` for CLI users.
 
-The active chat shows “Compacting context · block 1 of 3” while the job runs.
+The active chat shows “Compacting context · block 1 of N” while the job runs,
+where N is the actual selected block count.
 Its composer is busy to prevent competing operations; other chats remain usable.
 Automatic compaction resumes the pending request after a successful checkpoint.
 Manual compaction saves memory and displays its result without generating a chat
@@ -141,8 +192,8 @@ answer. Cancellation/failure retains the previous checkpoint and shows a retryab
 error without an automatic retry loop.
 
 Place a persistent divider after the covered transcript range:
-“Earlier context summarized · View memory.” Its details show the three blocks,
-message ranges, time, and model. Reopening restores this state. The context-ring
+“Earlier context summarized · View memory.” Its details show each saved block
+separately, message ranges, time, and model. Reopening restores this state. The context-ring
 tooltip distinguishes the last actual chat usage from a newly prepared/compacted
 context; it must not invent a fresh percentage after a summary-only operation.
 Show compaction-unavailable status when capacity/budgeting is missing.
@@ -169,8 +220,9 @@ no-tool task through the existing agent/provider abstractions.
 ## Verification requirements
 
 Use fake models and loopback responses only. Cover full history beyond 40,
-three-block ordering/coverage, a protected 10-message tail, repeated compactions,
-short histories, actual usage versus preflight estimates, output reserves,
+one-block/one-model-message rendering, automatic three-block selection, manual
+selection below/at/above 30%, 60%, and 90%, block ordering/coverage, a protected
+10-message tail, repeated compactions, short histories, actual usage versus preflight estimates, output reserves,
 unknown capacities, smaller model selection, oversized messages and tool results,
 summary output truncation, bounded recursive reduction, and no-tool summarization.
 
@@ -184,6 +236,6 @@ claiming the implementation complete.
 
 ## Scope and next gate
 
-This document specifies the approved three-summary direction. Implementation has
-not begun. Review this spec, then write and review the implementation plan before
+This document specifies the corrected variable-block summary direction.
+Implementation has not begun. Review this spec, then write and review the implementation plan before
 changing runtime behavior.
