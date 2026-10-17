@@ -24,6 +24,8 @@ use atlas_agentic::{
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 
+use crate::requests::ActiveRequests;
+
 type RuntimeFactory =
     Arc<dyn Fn(&Path, &EffectiveSettings) -> Result<Runtime, String> + Send + Sync>;
 type AutomaticWorkspaceResolver = Arc<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
@@ -36,6 +38,7 @@ pub struct DesktopState {
     runtime_factory: RuntimeFactory,
     automatic_workspace_resolver: AutomaticWorkspaceResolver,
     pending_approvals: Arc<PendingApprovals>,
+    active_requests: Arc<ActiveRequests>,
 }
 
 impl DesktopState {
@@ -117,6 +120,7 @@ impl DesktopState {
             runtime_factory,
             automatic_workspace_resolver,
             pending_approvals: Arc::new(PendingApprovals::default()),
+            active_requests: Arc::new(ActiveRequests::default()),
         }
     }
 
@@ -169,6 +173,7 @@ impl DesktopState {
         permission_mode: PermissionMode,
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResultDto, String> {
+        let _request = self.active_requests.acquire(conversation_id)?;
         let effective = self.settings_store.load()?.resolve_from_env()?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
@@ -766,49 +771,63 @@ fn delete_impl(id: &str, state: &DesktopState) -> Result<DeleteResult, String> {
     Ok(DeleteResult { id: id.to_string() })
 }
 
-#[tauri::command]
-pub fn list_conversations(
-    state: State<'_, DesktopState>,
-) -> Result<Vec<ConversationMetadataDto>, String> {
-    list_impl(&state)
+async fn run_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("Atlas desktop worker failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn load_conversation(
+pub async fn list_conversations(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<ConversationMetadataDto>, String> {
+    let state = state.inner().clone();
+    run_blocking(move || list_impl(&state)).await
+}
+
+#[tauri::command]
+pub async fn load_conversation(
     id: String,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationDto, String> {
-    load_impl(&id, &state)
+    let state = state.inner().clone();
+    run_blocking(move || load_impl(&id, &state)).await
 }
 
 #[tauri::command]
-pub fn rename_conversation(
+pub async fn rename_conversation(
     id: String,
     title: String,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
-    rename_impl(&id, &title, &state)
+    let state = state.inner().clone();
+    run_blocking(move || rename_impl(&id, &title, &state)).await
 }
 
 #[tauri::command]
-pub fn delete_conversation(
+pub async fn delete_conversation(
     id: String,
     state: State<'_, DesktopState>,
 ) -> Result<DeleteResult, String> {
-    delete_impl(&id, &state)
+    let state = state.inner().clone();
+    run_blocking(move || delete_impl(&id, &state)).await
 }
 
 #[tauri::command]
-pub fn load_settings(state: State<'_, DesktopState>) -> Result<SettingsViewDto, String> {
-    load_settings_impl(&state)
+pub async fn load_settings(state: State<'_, DesktopState>) -> Result<SettingsViewDto, String> {
+    let state = state.inner().clone();
+    run_blocking(move || load_settings_impl(&state)).await
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     input: SaveSettingsInput,
     state: State<'_, DesktopState>,
 ) -> Result<SettingsViewDto, String> {
-    save_settings_impl(input, &state)
+    let state = state.inner().clone();
+    run_blocking(move || save_settings_impl(input, &state)).await
 }
 
 #[tauri::command]
@@ -817,31 +836,37 @@ pub async fn list_models(state: State<'_, DesktopState>) -> Result<Vec<ModelInfo
 }
 
 #[tauri::command]
-pub fn set_model(model: String, state: State<'_, DesktopState>) -> Result<SettingsViewDto, String> {
-    set_model_impl(&model, &state)
+pub async fn set_model(
+    model: String,
+    state: State<'_, DesktopState>,
+) -> Result<SettingsViewDto, String> {
+    let state = state.inner().clone();
+    run_blocking(move || set_model_impl(&model, &state)).await
 }
 
 #[tauri::command]
-pub fn validate_workspace(path: String) -> Result<WorkspaceDto, String> {
-    validate_workspace_impl(&path)
+pub async fn validate_workspace(path: String) -> Result<WorkspaceDto, String> {
+    run_blocking(move || validate_workspace_impl(&path)).await
 }
 
 #[tauri::command]
-pub fn assign_conversation_workspace(
+pub async fn assign_conversation_workspace(
     id: String,
     path: String,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
-    assign_workspace_impl(&id, &path, &state)
+    let state = state.inner().clone();
+    run_blocking(move || assign_workspace_impl(&id, &path, &state)).await
 }
 
 #[tauri::command]
-pub fn set_conversation_permission_mode(
+pub async fn set_conversation_permission_mode(
     id: String,
     permission_mode: PermissionMode,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
-    set_permission_mode_impl(&id, permission_mode, &state)
+    let state = state.inner().clone();
+    run_blocking(move || set_permission_mode_impl(&id, permission_mode, &state)).await
 }
 
 #[tauri::command]
@@ -2332,5 +2357,80 @@ conversation_title_prompt = "Return a short title."
             Some(value) => std::env::set_var("DEEPSEEK_API_KEY", value),
             None => std::env::remove_var("DEEPSEEK_API_KEY"),
         }
+    }
+    #[test]
+    fn saved_requests_exclude_duplicates_but_allow_other_chats_and_release_after_failure() {
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().join("history"));
+        let first = store
+            .create_turn_with_workspace("one", "answer", Some(data.path()))
+            .unwrap();
+        let second = store
+            .create_turn_with_workspace("two", "answer", Some(data.path()))
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let factory_calls = calls.clone();
+        let state = DesktopState::with_runtime_factory(
+            store,
+            40,
+            Arc::new(move || {
+                if factory_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    entered_tx.send(()).unwrap();
+                    let _ = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(3));
+                }
+                Err("fake provider failure".to_string())
+            }),
+        );
+        let running_state = state.clone();
+        let running_id = first.id.clone();
+        let running = std::thread::spawn(move || {
+            running_state.ask_with_sink("continue", Some(&running_id), None, &mut |_| {})
+        });
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let duplicate = state.ask_with_sink("duplicate", Some(&first.id), None, &mut |_| {});
+        let other = state.ask_with_sink("other chat", Some(&second.id), None, &mut |_| {});
+        release_tx.send(()).unwrap();
+        assert!(running
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .contains("fake provider failure"));
+        assert!(duplicate.unwrap_err().contains("already running"));
+        assert!(other.unwrap_err().contains("fake provider failure"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let retry = state.ask_with_sink("retry", Some(&first.id), None, &mut |_| {});
+        assert!(retry.unwrap_err().contains("fake provider failure"));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn pending_approvals_resolve_independently() {
+        let approvals = PendingApprovals::default();
+        let first = approvals.register("first-chat").unwrap();
+        let second = approvals.register("second-chat").unwrap();
+        approvals
+            .resolve("second-chat", AuthorizationDecision::Deny)
+            .unwrap();
+        assert_eq!(
+            second.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AuthorizationDecision::Deny
+        );
+        assert!(matches!(
+            first.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        approvals
+            .resolve("first-chat", AuthorizationDecision::Allow)
+            .unwrap();
+        assert_eq!(
+            first.recv_timeout(Duration::from_secs(1)).unwrap(),
+            AuthorizationDecision::Allow
+        );
     }
 }

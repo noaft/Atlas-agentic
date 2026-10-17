@@ -321,7 +321,7 @@ test("approval and tool events are scoped to the active ask", async () => {
   expect(store.getState().pendingApproval).toBeNull();
 });
 
-test("leaving a pending approval cancels the ask and clears unsaved messages", async () => {
+test("leaving a pending approval preserves the background request", async () => {
   const api = new FakeApi();
   const pending = deferred<ConversationAskResult>();
   api.asks.push(() => pending.promise);
@@ -344,7 +344,7 @@ test("leaving a pending approval cancels the ask and clears unsaved messages", a
   });
 
   await store.newChat();
-  expect(api.approvalCancellations).toBe(1);
+  expect(api.approvalCancellations).toBe(0);
   expect(store.getState().messages).toEqual([]);
   expect(store.getState().activeConversationId).toBeNull();
 
@@ -1074,7 +1074,7 @@ test("sending waits until a selected model has been persisted", async () => {
   await selecting;
 });
 
-test("settings and workspace navigation are disabled while an ask streams", async () => {
+test("settings open while the running chat workspace remains fixed", async () => {
   const api = new FakeApi();
   const pending = deferred<ConversationAskResult>();
   api.asks.push(async () => pending.promise);
@@ -1087,8 +1087,248 @@ test("settings and workspace navigation are disabled while an ask streams", asyn
   store.openSettings();
   await store.changeActiveWorkspace();
 
-  expect(store.getState().screen).toBe("chat");
+  expect(store.getState().screen).toBe("settings");
   expect(api.chooseCalls).toBe(1);
   pending.resolve(result(first, "answer", true));
   await sending;
+});
+
+test("separate chats stream concurrently and complete without changing selection", async () => {
+  const api = new FakeApi();
+  const one = deferred<ConversationAskResult>();
+  const two = deferred<ConversationAskResult>();
+  api.asks.push(() => one.promise, () => two.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("first task");
+  const firstSession = store.getState().activeSessionId;
+  const sendingOne = store.send();
+  await store.newChat();
+  const secondSession = store.getState().activeSessionId;
+  store.setDraft("second task");
+  const sendingTwo = store.send();
+  expect(api.askCalls).toHaveLength(2);
+  api.eventSinks[0]({ event: "delta", data: { content: "one partial" } });
+  api.eventSinks[1]({ event: "delta", data: { content: "two partial" } });
+  expect(store.getState().messages.at(-1)?.content).toBe("two partial");
+  await store.selectSession(firstSession);
+  expect(store.getState().messages.at(-1)?.content).toBe("one partial");
+  two.resolve(result(second, "second complete", true));
+  await sendingTwo;
+  expect(store.getState().activeSessionId).toBe(firstSession);
+  expect(store.getState().status).toBe("streaming");
+  one.resolve(result(first, "first complete", true));
+  await sendingOne;
+  await store.selectConversation(second.id);
+  expect(store.getState().activeSessionId).toBe(secondSession);
+  expect(store.getState().messages.at(-1)?.content).toBe("second complete");
+  expect(store.getState().conversations).toHaveLength(2);
+  expect(api.loadCalls).toEqual([]);
+});
+
+test("background first-turn failure stays reachable and retries in its own session", async () => {
+  const api = new FakeApi();
+  const failed = deferred<ConversationAskResult>();
+  api.asks.push(() => failed.promise, async () => result(first, "retried", true));
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("retry me");
+  const owner = store.getState().activeSessionId;
+  const sending = store.send();
+  await store.newChat();
+  store.setDraft("unrelated draft");
+  failed.reject(new Error("provider unavailable"));
+  await sending;
+  expect(store.getState().draftText).toBe("unrelated draft");
+  expect(store.getState().errorMessage).toBeNull();
+  expect(store.getState().sessions.find((session) => session.id === owner)?.status).toBe("error");
+  await store.selectSession(owner);
+  expect(store.getState().draftText).toBe("retry me");
+  expect(store.getState().errorMessage).toBe("provider unavailable");
+  await store.send();
+  expect(store.getState().messages.map((message) => message.content)).toEqual(["retry me", "retried"]);
+});
+
+test("approvals survive navigation and remain independent between concurrent requests", async () => {
+  const api = new FakeApi();
+  const one = deferred<ConversationAskResult>();
+  const two = deferred<ConversationAskResult>();
+  api.asks.push(() => one.promise, () => two.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("first");
+  const owner = store.getState().activeSessionId;
+  const sendingOne = store.send();
+  await store.newChat();
+  store.setDraft("second");
+  const sendingTwo = store.send();
+  for (const [index, id] of [[0, "allow-one"], [1, "allow-two"]] as const) {
+    api.eventSinks[index]({ event: "approvalRequested", data: { sequence: 0,
+      request: { id, tool: "exec_command", arguments: "{}", reason: "command" } } });
+  }
+  expect(store.getState().pendingApproval?.id).toBe("allow-two");
+  await store.selectSession(owner);
+  expect(store.getState().pendingApproval?.id).toBe("allow-one");
+  await store.resolveToolApproval(false);
+  expect(api.approvalResolutions).toEqual([{ id: "allow-one", allow: false }]);
+  expect(api.approvalCancellations).toBe(0);
+  two.reject(new Error("tool approval timed out"));
+  await sendingTwo;
+  expect(store.getState().pendingApproval).toBeNull();
+  expect(store.getState().status).toBe("streaming");
+  one.resolve(result(first, "done", true));
+  await sendingOne;
+});
+
+test("switching saved chats retains drafts and prevents overlapping sends in one chat", async () => {
+  const api = new FakeApi();
+  api.conversations = [first, second];
+  api.loads.set(first.id, async () => savedConversation(first));
+  api.loads.set(second.id, async () => savedConversation(second));
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  store.setDraft("keep this draft");
+  await store.selectConversation(second.id);
+  store.setDraft("continue second");
+  const sending = store.send();
+  await store.selectConversation(first.id);
+  expect(store.getState().draftText).toBe("keep this draft");
+  await store.selectConversation(second.id);
+  store.setDraft("next message");
+  await store.send();
+  expect(api.askCalls).toHaveLength(1);
+  pending.resolve(result(second, "done", false));
+  await sending;
+  expect(store.getState().draftText).toBe("next message");
+});
+
+test("settings remain open when a background request completes", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("background task");
+  const sending = store.send();
+  store.openSettings();
+  expect(store.getState().screen).toBe("settings");
+  store.updateSettingsDraft({ historyLimit: 12 });
+  pending.resolve(result(first, "done", true));
+  await sending;
+  expect(store.getState().screen).toBe("settings");
+  expect(store.getState().settingsDraft?.historyLimit).toBe(12);
+  store.cancelSettings();
+  expect(store.getState().messages.at(-1)?.content).toBe("done");
+});
+
+test("settings save completing after navigation preserves the selected session", async () => {
+  const api = new FakeApi();
+  const saving = deferred<SettingsView>();
+  api.save = () => saving.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.openSettings();
+  const saved = store.saveSettings();
+  await store.newChat();
+  await store.chooseWorkspaceForDraft();
+  store.setDraft("new task");
+  saving.resolve({ ...settings, defaultWorkspace: { path: "/different", name: "different" } });
+  await saved;
+  expect(store.getState().draftText).toBe("new task");
+  expect(store.getState().activeWorkspace).toEqual(workspace);
+  expect(store.getState().settings?.defaultWorkspace?.path).toBe("/different");
+});
+
+test("background completion updates the grouped saved history", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("task");
+  const sending = store.send();
+  await store.newChat();
+  pending.resolve(result(first, "done", true));
+  await sending;
+  expect(store.getState().conversationGroups[0]?.conversations[0].id).toBe(first.id);
+});
+
+test("workspace dialog cancelled by navigation does not leave its owner busy", async () => {
+  const api = new FakeApi();
+  const choosing = deferred<string | null>();
+  api.chooseWorkspace = () => choosing.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("keep");
+  const owner = store.getState().activeSessionId;
+  const picking = store.chooseWorkspaceForDraft();
+  await store.newChat();
+  choosing.resolve(null);
+  await picking;
+  await store.selectSession(owner);
+  expect(store.getState().workspaceBusy).toBe(false);
+});
+
+test("rename completing after navigation releases its owner and updates history", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  const pending = deferred<ConversationMetadata>();
+  api.rename = () => pending.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  const renaming = store.renameActive("renamed");
+  await store.newChat();
+  pending.resolve({ ...first, title: "renamed" });
+  await renaming;
+  await store.selectConversation(first.id);
+  expect(store.getState().status).toBe("idle");
+  expect(store.getState().conversations[0].title).toBe("renamed");
+});
+
+test("a saved workspace assignment completing after navigation updates its owner", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  const assignment = deferred<ConversationMetadata>();
+  api.assign = () => assignment.promise;
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  const changing = store.changeActiveWorkspace();
+  for (let step = 0; step < 5 && api.assignments.length === 0; step++) await Promise.resolve();
+  expect(api.assignments).toHaveLength(1);
+  await store.newChat();
+  store.setDraft("unrelated");
+  assignment.resolve({ ...first, workspace: { path: "/new", name: "new" } });
+  await changing;
+  expect(store.getState().activeWorkspace).toEqual(automaticWorkspace);
+  expect(store.getState().draftText).toBe("unrelated");
+  await store.selectConversation(first.id);
+  expect(store.getState().activeWorkspace?.path).toBe("/new");
+  expect(store.getState().conversationGroups[0].workspace?.path).toBe("/new");
+});
+
+test("saved chats cannot send until history loads successfully", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => { throw new Error("temporary read error"); });
+  api.asks.push(async () => result(first, "next answer", false));
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  store.setDraft("new question");
+  await store.send();
+  expect(api.askCalls).toHaveLength(0);
+  expect(store.getState().errorMessage).toBe("temporary read error");
+  api.loads.set(first.id, async () => savedConversation(first));
+  await store.selectConversation(first.id);
+  await store.send();
+  expect(store.getState().messages.map((message) => message.content)).toEqual([
+    "First question", "First answer", "new question", "next answer",
+  ]);
 });

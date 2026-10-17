@@ -5,6 +5,7 @@ import { renderSettings } from "./settings-view";
 import type {
   ActivityRecord,
   ChatState,
+  ChatSessionSummary,
   ConversationMetadata,
   DisplayMessage,
   ToolActivity,
@@ -180,10 +181,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   });
 
   const composer = createChatComposer(store, async () => {
+    const owner = store.getState().activeSessionId;
     const sending = store.send();
     const clearedDraft = store.getState().draftText;
     composer.replaceDraft(clearedDraft);
     await sending;
+    if (store.getState().activeSessionId !== owner) return;
     if (composer.textarea.value === clearedDraft) {
       composer.replaceDraft(store.getState().draftText);
     } else {
@@ -203,15 +206,30 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   const toggleSidebar = () => {
     if (isCompactSidebar()) sidebarOpen = !sidebarOpen;
     else sidebarCollapsed = !sidebarCollapsed;
+    renderSidebar(store.getState());
     renderNow(store.getState());
   };
 
-  const renderNow = (state: Readonly<ChatState>) => {
-    const metadata = activeMetadata(state);
-    const isStreaming = state.status === "streaming";
-    const isBusy = chatIsBusy(state);
-    const navigationBusy = isBusy && !state.pendingApproval;
+  const focusComposer = () => composer.focus();
+  const chooseWorkspace = async () => {
+    if (store.getState().activeConversationId) await store.changeActiveWorkspace();
+    else await store.chooseWorkspaceForDraft();
+    focusComposer();
+  };
 
+  const appendSessionStatus = (item: HTMLButtonElement, session: ChatSessionSummary) => {
+    const label = session.needsApproval ? "Needs approval"
+      : session.status === "streaming" ? "Working"
+      : session.status === "error" ? "Failed" : null;
+    if (!label) return;
+    const badge = document.createElement("span");
+    badge.className = "conversation-status";
+    badge.textContent = label;
+    item.append(badge);
+  };
+
+  const renderSidebar = (state: Readonly<ChatState>) => {
+    const isBusy = chatIsBusy(state);
     shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
     sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
     sidebar.innerHTML = `
@@ -234,13 +252,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     sidebar.querySelector<HTMLElement>("[data-workspace-path]")!.textContent =
       state.activeWorkspace?.path ?? "Choose a folder to begin";
 
-    const focusComposer = () => composer.focus();
-    const chooseWorkspace = async () => {
-      if (store.getState().activeConversationId) await store.changeActiveWorkspace();
-      else await store.chooseWorkspaceForDraft();
-      focusComposer();
-    };
-
     const workspaceAction = sidebar.querySelector<HTMLButtonElement>(
       "[data-workspace-action]",
     )!;
@@ -248,7 +259,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     workspaceAction.addEventListener("click", chooseWorkspace);
 
     const newChat = sidebar.querySelector<HTMLButtonElement>("[data-new-chat]")!;
-    newChat.disabled = navigationBusy;
+    newChat.disabled = false;
     newChat.addEventListener("click", async () => {
       actionsOpen = false;
       renameOpen = false;
@@ -260,7 +271,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     });
 
     const openSettings = sidebar.querySelector<HTMLButtonElement>("[data-open-settings]")!;
-    openSettings.disabled = isBusy || !state.settings;
+    openSettings.disabled = state.modelListStatus === "saving" || !state.settings;
     openSettings.addEventListener("click", () => {
       sidebarOpen = false;
       store.openSettings();
@@ -306,7 +317,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         for (const conversation of group.conversations) {
           const item = button(conversation.title, "conversation-item");
           item.dataset.conversationId = conversation.id;
-          item.disabled = navigationBusy;
+          const session = state.sessions.find((chat) => chat.conversationId === conversation.id);
+          if (session) appendSessionStatus(item, session);
+          item.disabled = false;
           item.classList.toggle("active", conversation.id === state.activeConversationId);
           item.addEventListener("click", async () => {
             actionsOpen = false;
@@ -320,7 +333,70 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       }
     }
 
+    const localChats = state.sessions.filter((session) => !session.conversationId);
+    if (localChats.length) {
+      const heading = document.createElement("h2");
+      heading.className = "workspace-group-title";
+      heading.textContent = "Current chats";
+      list.prepend(heading);
+      let previous: HTMLElement = heading;
+      for (const session of localChats) {
+        const item = button(session.title, "conversation-item");
+        item.dataset.sessionId = session.id;
+        item.classList.toggle("active", session.id === state.activeSessionId);
+        appendSessionStatus(item, session);
+        item.addEventListener("click", () => {
+          actionsOpen = false;
+          renameOpen = false;
+          sidebarOpen = false;
+          void store.selectSession(session.id);
+          focusComposer();
+        });
+        previous.after(item);
+        previous = item;
+      }
+    }
+  };
+
+  const renderNow = (state: Readonly<ChatState>) => {
+    const metadata = activeMetadata(state);
+    const isStreaming = state.status === "streaming";
+    const isBusy = chatIsBusy(state);
+
+    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+    sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
+    const sameSession = renderedState?.activeSessionId === state.activeSessionId;
+    const previousScroll = messages.scrollTop;
+    const followBottom = !sameSession || messages.scrollHeight - messages.clientHeight - messages.scrollTop < 48;
+    if (!sameSession) composer.replaceDraft(state.draftText);
+    if (!renderedState || state.sessions !== renderedState.sessions ||
+        state.conversations !== renderedState.conversations || state.activeSessionId !== renderedState.activeSessionId ||
+        state.settings !== renderedState.settings || state.listStatus !== renderedState.listStatus ||
+        state.listErrorMessage !== renderedState.listErrorMessage || state.settingsErrorMessage !== renderedState.settingsErrorMessage ||
+        state.status !== renderedState.status || state.workspaceBusy !== renderedState.workspaceBusy ||
+        state.activeWorkspace !== renderedState.activeWorkspace || state.modelListStatus !== renderedState.modelListStatus) {
+      renderSidebar(state);
+    }
+
     if (state.screen === "settings") {
+      const previous = renderedState;
+      const editingInput = settingsScreen.contains(document.activeElement) && document.activeElement?.tagName === "INPUT";
+      const draft = state.settingsDraft;
+      const previousDraft = previous?.settingsDraft;
+      const textEdit = editingInput && previousDraft && draft &&
+        previousDraft.defaultWorkspace === draft.defaultWorkspace &&
+        previousDraft.defaultPermissionMode === draft.defaultPermissionMode;
+      if (previous?.screen === "settings" && previous.settings === state.settings &&
+          previous.settingsStatus === state.settingsStatus && previous.settingsErrorMessage === state.settingsErrorMessage &&
+          (previousDraft === draft || textEdit)) {
+        if (draft) {
+          const key = settingsScreen.querySelector<HTMLInputElement>("[data-settings-api-key]");
+          const clear = settingsScreen.querySelector<HTMLInputElement>(".settings-check input");
+          if (key && key.value !== draft.apiKey) key.value = draft.apiKey;
+          if (clear) clear.checked = draft.clearApiKey;
+        }
+        return;
+      }
       chatScreen.hidden = true;
       chatScreen.style.display = "none";
       settingsScreen.hidden = false;
@@ -500,7 +576,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         }
         messages.append(rendered);
       });
-      messages.scrollTop = messages.scrollHeight;
+      messages.scrollTop = followBottom ? messages.scrollHeight : previousScroll;
     }
 
     composer.modelHost.replaceChildren();
@@ -622,52 +698,93 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
   };
 
-  const patchStreamingDelta = (
-    previous: Readonly<ChatState>,
-    state: Readonly<ChatState>,
-  ): boolean => {
-    if (previous.status !== "streaming" || state.status !== "streaming") return false;
+  const patchStreaming = (previous: Readonly<ChatState>, state: Readonly<ChatState>): boolean => {
+    if (previous.screen !== "chat" || state.screen !== "chat" ||
+        previous.status !== "streaming" || state.status !== "streaming") return false;
     for (const key of Object.keys(previous) as Array<keyof ChatState>) {
-      if (key !== "messages" && previous[key] !== state[key]) return false;
+      if (key !== "messages" && key !== "toolActivity" && previous[key] !== state[key]) return false;
     }
-    if (previous.messages.length !== state.messages.length || state.messages.length === 0) {
-      return false;
-    }
+    if (previous.messages.length !== state.messages.length || !state.messages.length) return false;
     const lastIndex = state.messages.length - 1;
-    if (
-      previous.messages
-        .slice(0, lastIndex)
-        .some((message, index) => message !== state.messages[index])
-    ) {
-      return false;
-    }
-    const previousMessage = previous.messages[lastIndex];
+    if (previous.messages.slice(0, lastIndex).some((message, index) => message !== state.messages[index])) return false;
     const message = state.messages[lastIndex];
-    if (
-      previousMessage.role !== "assistant" ||
-      previousMessage.delivery !== "pending" ||
-      message.role !== "assistant" ||
-      message.delivery !== "pending" ||
-      !message.content.startsWith(previousMessage.content)
-    ) {
-      return false;
-    }
-    const articles = messages.querySelectorAll<HTMLElement>("[data-message-role]");
-    const content = articles.item(lastIndex).querySelector<HTMLElement>(".message-content");
+    if (message.role !== "assistant" || message.delivery !== "pending") return false;
+    const article = messages.querySelectorAll<HTMLElement>("[data-message-role]").item(lastIndex);
+    const content = article?.querySelector<HTMLElement>(".message-content");
     if (!content) return false;
-    if (message.content) renderMarkdown(content, message.content);
-    else content.textContent = "Thinking…";
-    messages.scrollTop = messages.scrollHeight;
+    const followBottom = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 48;
+    if (previous.messages !== state.messages) {
+      if (message.content) renderMarkdown(content, message.content);
+      else content.textContent = "Thinking…";
+    }
+    if (previous.toolActivity !== state.toolActivity) {
+      const oldDisclosure = article.querySelector<HTMLDetailsElement>("[data-live-turn-activity]");
+      if (state.toolActivity.length) {
+        const disclosure = renderLiveActivity(state.toolActivity);
+        disclosure.open = oldDisclosure?.open ?? false;
+        if (oldDisclosure) oldDisclosure.replaceWith(disclosure);
+        else content.before(disclosure);
+      } else oldDisclosure?.remove();
+      notices.querySelector("[data-live-activity]")?.remove();
+      if (state.toolActivity.length) {
+        const activity = document.createElement("div");
+        activity.className = "tool-activity";
+        activity.dataset.liveActivity = "";
+        activity.setAttribute("role", "status");
+        for (const record of state.toolActivity) {
+          const row = document.createElement("span");
+          row.dataset.toolStatus = record.status;
+          row.textContent = record.summary;
+          activity.append(row);
+        }
+        notices.append(activity);
+      }
+    }
+    if (followBottom) messages.scrollTop = messages.scrollHeight;
     return true;
   };
 
-  const render = (state: Readonly<ChatState>) => {
-    if (renderedState && patchStreamingDelta(renderedState, state)) {
+  let pendingFrame: number | null = null;
+  let pendingState: Readonly<ChatState> | null = null;
+  const scheduleFrame = (callback: FrameRequestCallback): number =>
+    typeof requestAnimationFrame === "function" ? requestAnimationFrame(callback) : window.setTimeout(() => callback(0), 0);
+  const cancelFrame = (id: number) => {
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(id);
+    else window.clearTimeout(id);
+  };
+  const renderImmediate = (state: Readonly<ChatState>) => {
+    const previous = renderedState;
+    const sidebarOnly = previous && activeMetadata(previous) === activeMetadata(state) &&
+      (Object.keys(previous) as Array<keyof ChatState>).every((key) =>
+        key === "sessions" || key === "conversations" || key === "conversationGroups" || previous[key] === state[key]);
+    if (sidebarOnly) {
+      renderSidebar(state);
       renderedState = state;
       return;
     }
-    renderNow(state);
+    if (!renderedState || !patchStreaming(renderedState, state)) renderNow(state);
     renderedState = state;
+  };
+  const render = (state: Readonly<ChatState>) => {
+    const previous = renderedState;
+    const streamingPatch = previous?.screen === "chat" && state.screen === "chat" &&
+      previous.status === "streaming" && state.status === "streaming" &&
+      (Object.keys(previous) as Array<keyof ChatState>).every((key) =>
+        key === "messages" || key === "toolActivity" || previous[key] === state[key]);
+    if (streamingPatch) {
+      pendingState = state;
+      if (pendingFrame === null) pendingFrame = scheduleFrame(() => {
+        const next = pendingState;
+        pendingFrame = null;
+        pendingState = null;
+        if (next) renderImmediate(next);
+      });
+      return;
+    }
+    if (pendingFrame !== null) cancelFrame(pendingFrame);
+    pendingFrame = null;
+    pendingState = null;
+    renderImmediate(state);
   };
   const onWindowKeydown = (event: KeyboardEvent) => {
     if (event.key !== "F11" || event.repeat) return;
@@ -677,6 +794,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   window.addEventListener("keydown", onWindowKeydown);
   const unsubscribe = store.subscribe(render);
   return () => {
+    if (pendingFrame !== null) cancelFrame(pendingFrame);
     composer.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();

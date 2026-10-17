@@ -57,7 +57,7 @@ export function createChatComposer(
 
   const updateSendAvailability = (state: Readonly<ChatState>) => {
     sendButton.disabled =
-      chatIsBusy(state) || !state.activeWorkspace || !textarea.value.trim();
+      chatIsBusy(state) || !state.historyLoaded || !state.activeWorkspace || !textarea.value.trim();
   };
   const refreshLayout = () => {
     if (!element.isConnected || element.closest("[hidden]")) return;
@@ -85,6 +85,7 @@ export function createChatComposer(
     const state = store.getState();
     if (
       chatIsBusy(state) ||
+      !state.historyLoaded ||
       !state.activeWorkspace ||
       !textarea.value.trim()
     )

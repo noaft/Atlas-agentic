@@ -1,6 +1,8 @@
 import type { AtlasApi } from "./atlas-api";
 import type {
   ChatState,
+  ChatEvent,
+  ChatSessionSummary,
   ConversationGroup,
   ConversationMessage,
   ConversationMetadata,
@@ -40,6 +42,8 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
+  activeSessionId: "local-1",
+  sessions: [],
   conversations: [],
   conversationGroups: [],
   activeConversationId: null,
@@ -50,6 +54,7 @@ const initialState = (): ChatState => ({
   pendingApproval: null,
   toolActivity: [],
   messages: [],
+  historyLoaded: true,
   draftText: "",
   status: "idle",
   errorMessage: null,
@@ -117,17 +122,34 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     ? models
     : [{ id: configured, name: configured }, ...models];
 
+const sessionKeys = [
+  "activeConversationId", "messages", "historyLoaded", "draftText", "status", "errorMessage",
+  "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
+  "pendingApproval", "toolActivity",
+] as const;
+type SessionState = Pick<ChatState, typeof sessionKeys[number]>;
+interface ChatSession {
+  state: SessionState;
+  generation: number;
+}
+const sessionState = (state: ChatState): SessionState =>
+  Object.fromEntries(sessionKeys.map((key) => [key, state[key]])) as SessionState;
+
 export class ChatStore {
   private state: ChatState = initialState();
   private readonly listeners = new Set<Listener>();
   private selectionToken = 0;
-  private askToken = 0;
-  private mutationToken = 0;
+  private nextSession = 1;
+  private readonly chats = new Map<string, ChatSession>();
   private workspaceToken = 0;
   private settingsToken = 0;
   private modelListToken = 0;
 
-  constructor(private readonly api: AtlasApi) {}
+  constructor(private readonly api: AtlasApi) {
+    this.chats.set(this.state.activeSessionId, {
+      state: sessionState(this.state), generation: 0,
+    });
+  }
 
   getState(): Readonly<ChatState> {
     return this.state;
@@ -208,64 +230,61 @@ export class ChatStore {
   }
 
   async newChat(): Promise<void> {
-    if (this.state.status === "streaming" && !this.state.pendingApproval) return;
-    if (this.state.workspaceBusy) return;
-    if (this.state.pendingApproval) await this.api.cancelToolApprovals();
     this.selectionToken += 1;
-    this.askToken += 1;
-    this.mutationToken += 1;
     this.workspaceToken += 1;
-    this.replace({
-      ...this.state,
-      screen: "chat",
-      activeConversationId: null,
-      activeWorkspace: null,
+    const id = `local-${++this.nextSession}`;
+    const fresh = {
+      ...sessionState(initialState()),
+      activeWorkspace: usableDefaultWorkspace(this.state.settings),
       activePermissionMode: this.state.settings?.defaultPermissionMode ?? "ask",
-      permissionBusy: false,
-      pendingApproval: null,
-      toolActivity: [],
-      messages: [],
-      draftText: "",
-      status: "idle",
-      errorMessage: null,
-    });
-    const defaultWorkspace = usableDefaultWorkspace(this.state.settings);
-    this.update({ activeWorkspace: defaultWorkspace });
+    };
+    this.chats.set(id, { state: fresh, generation: 0 });
+    this.replace({ ...this.state, ...fresh, activeSessionId: id, screen: "chat" });
+  }
+
+  async selectSession(id: string): Promise<void> {
+    const chat = this.chats.get(id);
+    if (!chat) return;
+    this.selectionToken += 1;
+    this.workspaceToken += 1;
+    this.replace({ ...this.state, ...chat.state, activeSessionId: id, screen: "chat" });
   }
 
   async selectConversation(id: string): Promise<void> {
-    if (this.state.status === "streaming" && !this.state.pendingApproval) return;
-    if (this.state.workspaceBusy) return;
-    if (this.state.pendingApproval) await this.api.cancelToolApprovals();
-    const token = ++this.selectionToken;
-    this.workspaceToken += 1;
-    this.mutationToken += 1;
-    this.update({ screen: "chat", status: "loading", errorMessage: null });
+    const existing = [...this.chats].find(([, chat]) => chat.state.activeConversationId === id);
+    if (existing?.[1].state.historyLoaded) return this.selectSession(existing[0]);
+    const sessionId = existing?.[0] ?? `local-${++this.nextSession}`;
+    const metadata = this.state.conversations.find((item) => item.id === id);
+    if (!existing) {
+      this.chats.set(sessionId, {
+        generation: 0,
+        state: {
+          ...sessionState(initialState()), activeConversationId: id, status: "loading", historyLoaded: false,
+          activeWorkspace: metadata?.workspace ?? usableDefaultWorkspace(this.state.settings),
+          activePermissionMode: metadata?.permissionMode ?? "ask",
+        },
+      });
+    }
+    await this.selectSession(sessionId);
+    const token = this.selectionToken;
     try {
       const conversation = await this.api.loadConversation(id);
       if (token !== this.selectionToken) return;
-      this.replace({
-        ...this.state,
+      this.updateSession(sessionId, {
         activeConversationId: conversation.metadata.id,
-        activeWorkspace:
-          conversation.metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
-        activePermissionMode:
-          conversation.metadata.permissionMode ?? "ask",
-        permissionBusy: false,
-        pendingApproval: null,
-        toolActivity: [],
-        messages: displaySavedMessages(conversation),
-        status: "idle",
-        errorMessage: null,
+        activeWorkspace: conversation.metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
+        activePermissionMode: conversation.metadata.permissionMode ?? "ask",
+        messages: displaySavedMessages(conversation), historyLoaded: true, status: "idle", errorMessage: null,
       });
     } catch (error) {
       if (token !== this.selectionToken) return;
-      this.update({ status: "error", errorMessage: errorMessage(error) });
+      this.updateSession(sessionId, { status: "error", errorMessage: errorMessage(error) });
     }
   }
 
   setDraft(text: string): void {
     this.state = { ...this.state, draftText: text };
+    this.chats.get(this.state.activeSessionId)!.state = sessionState(this.state);
   }
 
   async chooseWorkspaceForDraft(): Promise<void> {
@@ -275,6 +294,7 @@ export class ChatStore {
       this.state.workspaceBusy
     )
       return;
+    const owner = this.state.activeSessionId;
     const token = ++this.workspaceToken;
     this.update({ workspaceBusy: true, errorMessage: null });
     try {
@@ -287,12 +307,13 @@ export class ChatStore {
       if (token !== this.workspaceToken) return;
       this.update({ errorMessage: errorMessage(error) });
     } finally {
-      if (token === this.workspaceToken) this.update({ workspaceBusy: false });
+      this.updateSession(owner, { workspaceBusy: false });
     }
   }
 
   async changeActiveWorkspace(): Promise<void> {
     if (this.state.status === "streaming" || this.state.workspaceBusy) return;
+    const owner = this.state.activeSessionId;
     const token = ++this.workspaceToken;
     this.update({ workspaceBusy: true, errorMessage: null });
     try {
@@ -306,22 +327,19 @@ export class ChatStore {
         return;
       }
       const metadata = await this.api.assignConversationWorkspace(id, workspace.path);
-      if (token !== this.workspaceToken || id !== this.state.activeConversationId) return;
-      this.update({
-        activeWorkspace: metadata.workspace,
-        conversations: moveToTop(this.state.conversations, metadata),
-        errorMessage: null,
-      });
+      this.update({ conversations: moveToTop(this.state.conversations, metadata) });
+      this.updateSession(owner, { activeWorkspace: metadata.workspace, errorMessage: null });
     } catch (error) {
       if (token !== this.workspaceToken) return;
       this.update({ errorMessage: errorMessage(error) });
     } finally {
-      if (token === this.workspaceToken) this.update({ workspaceBusy: false });
+      this.updateSession(owner, { workspaceBusy: false });
     }
   }
 
   async send(): Promise<void> {
     if (
+      !this.state.historyLoaded ||
       this.state.status === "streaming" ||
       this.state.status === "loading" ||
       this.state.workspaceBusy ||
@@ -336,7 +354,10 @@ export class ChatStore {
       this.update({ errorMessage: "Choose a workspace folder before sending." });
       return;
     }
-    const token = ++this.askToken;
+    this.selectionToken += 1;
+    const owner = this.state.activeSessionId;
+    const chat = this.chats.get(owner)!;
+    const generation = ++chat.generation;
     const conversationId = this.state.activeConversationId;
     const permissionMode = this.state.activePermissionMode;
     const stableMessages = this.state.messages.filter(
@@ -369,10 +390,10 @@ export class ChatStore {
         conversationId,
         conversationId ? null : workspace.path,
         permissionMode,
-        (event) => this.handleChatEvent(token, event),
+        (event) => this.handleChatEvent(owner, generation, event),
       );
-      if (token !== this.askToken) return;
-      const messages = this.state.messages.map((message, index, all) => {
+      if (generation !== chat.generation) return;
+      const messages = chat.state.messages.map((message, index, all) => {
         const completedAssistant =
           index === all.length - 1 && message.role === "assistant";
         return {
@@ -388,9 +409,9 @@ export class ChatStore {
             : message.activityDurationMs,
         };
       });
-      this.replace({
-        ...this.state,
-        conversations: moveToTop(this.state.conversations, completed.metadata),
+      const conversations = moveToTop(this.state.conversations, completed.metadata);
+      this.state = { ...this.state, conversations, conversationGroups: groupConversations(conversations) };
+      this.updateSession(owner, {
         activeConversationId: completed.metadata.id,
         activeWorkspace: completed.metadata.workspace ?? workspace,
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
@@ -401,14 +422,13 @@ export class ChatStore {
         toolActivity: [],
       });
     } catch (error) {
-      if (token !== this.askToken) return;
-      this.replace({
-        ...this.state,
-        messages: this.state.messages.map((message) => ({
+      if (generation !== chat.generation) return;
+      this.updateSession(owner, {
+        messages: chat.state.messages.map((message) => ({
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
         })),
-        draftText: this.state.draftText || prompt,
+        draftText: chat.state.draftText || prompt,
         status: "error",
         errorMessage: errorMessage(error),
         pendingApproval: null,
@@ -429,40 +449,39 @@ export class ChatStore {
       this.update({ activePermissionMode: permissionMode });
       return;
     }
-    const token = ++this.mutationToken;
+    const owner = this.state.activeSessionId;
     this.update({ permissionBusy: true, errorMessage: null });
     try {
       const metadata = await this.api.setConversationPermissionMode(id, permissionMode);
-      if (token !== this.mutationToken || id !== this.state.activeConversationId) return;
-      this.update({
+      this.update({ conversations: moveToTop(this.state.conversations, metadata) });
+      this.updateSession(owner, {
         activePermissionMode: metadata.permissionMode ?? permissionMode,
-        conversations: moveToTop(this.state.conversations, metadata),
         permissionBusy: false,
       });
     } catch (error) {
-      if (token !== this.mutationToken) return;
-      this.update({ permissionBusy: false, errorMessage: errorMessage(error) });
+      this.updateSession(owner, { permissionBusy: false, errorMessage: errorMessage(error) });
     }
   }
 
   async resolveToolApproval(allow: boolean): Promise<void> {
-    const approval = this.state.pendingApproval;
+    const owner = this.state.activeSessionId;
+    const chat = this.chats.get(owner)!;
+    const approval = chat.state.pendingApproval;
     if (!approval) return;
     try {
       await this.api.resolveToolApproval(approval.id, allow);
-      if (this.state.pendingApproval?.id === approval.id) {
-        this.update({ pendingApproval: null });
+      if (chat.state.pendingApproval?.id === approval.id) {
+        this.updateSession(owner, { pendingApproval: null });
       }
     } catch (error) {
-      if (this.state.pendingApproval?.id === approval.id) {
-        this.update({ errorMessage: errorMessage(error) });
+      if (chat.state.pendingApproval?.id === approval.id) {
+        this.updateSession(owner, { errorMessage: errorMessage(error) });
       }
     }
   }
 
   openSettings(): void {
     if (
-      this.state.status === "streaming" ||
       this.state.workspaceBusy ||
       this.state.modelListStatus === "saving" ||
       !this.state.settings
@@ -479,7 +498,6 @@ export class ChatStore {
 
   async retrySettings(): Promise<void> {
     if (
-      this.state.status === "streaming" ||
       this.state.workspaceBusy ||
       this.state.settingsStatus === "loading" ||
       this.state.settingsStatus === "saving"
@@ -490,7 +508,7 @@ export class ChatStore {
   }
 
   cancelSettings(): void {
-    if (this.state.status === "streaming" || this.state.settingsStatus === "saving") return;
+    if (this.state.settingsStatus === "saving") return;
     this.settingsToken += 1;
     this.update({
       screen: "chat",
@@ -522,10 +540,11 @@ export class ChatStore {
 
   async saveSettings(): Promise<void> {
     const draft = this.state.settingsDraft;
-    if (!draft || this.state.status === "streaming" || this.state.settingsStatus === "saving") {
+    if (!draft || this.state.settingsStatus === "saving") {
       return;
     }
     const token = ++this.settingsToken;
+    const settingsOwner = this.state.activeSessionId;
     const previousDefault = usableDefaultWorkspace(this.state.settings);
     const activeWorkspaceBeforeSave = this.state.activeWorkspace;
     this.update({ settingsStatus: "saving", settingsErrorMessage: null });
@@ -546,11 +565,13 @@ export class ChatStore {
             (conversation) => conversation.id === this.state.activeConversationId,
           )
         : null;
-      const activeWorkspace = activeConversation
-        ? activeConversation.workspace ?? nextDefault
-        : !activeWorkspaceBeforeSave || sameWorkspace(activeWorkspaceBeforeSave, previousDefault)
-          ? nextDefault
-          : activeWorkspaceBeforeSave;
+      const activeWorkspace = this.state.activeSessionId !== settingsOwner || this.state.status === "streaming"
+        ? this.state.activeWorkspace
+        : activeConversation
+          ? activeConversation.workspace ?? nextDefault
+          : !activeWorkspaceBeforeSave || sameWorkspace(activeWorkspaceBeforeSave, previousDefault)
+            ? nextDefault
+            : activeWorkspaceBeforeSave;
       this.update({
         screen: "chat",
         settings,
@@ -652,62 +673,30 @@ export class ChatStore {
   async renameActive(title: string): Promise<void> {
     const id = this.state.activeConversationId;
     const normalized = title.trim();
-    if (!id || !normalized || this.state.status === "streaming") return;
-    const token = ++this.mutationToken;
+    if (!id || !normalized || this.state.status === "streaming" || this.state.status === "loading") return;
+    const owner = this.state.activeSessionId;
     this.update({ status: "loading", errorMessage: null });
     try {
       const metadata = await this.api.renameConversation(id, normalized);
-      if (token !== this.mutationToken) return;
-      this.update({
-        conversations: this.state.conversations.map((conversation) =>
-          conversation.id === metadata.id ? metadata : conversation,
-        ),
-        activeWorkspace: metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
-        status: "idle",
-        errorMessage: null,
-      });
+      this.update({ conversations: this.state.conversations.map((item) => item.id === id ? metadata : item) });
+      this.updateSession(owner, { status: "idle", errorMessage: null });
     } catch (error) {
-      if (token !== this.mutationToken) return;
-      this.update({ status: "error", errorMessage: errorMessage(error) });
+      this.updateSession(owner, { status: "error", errorMessage: errorMessage(error) });
     }
   }
 
   async deleteActive(): Promise<void> {
     const id = this.state.activeConversationId;
-    if (!id || this.state.status === "streaming") return;
-    const token = ++this.mutationToken;
+    if (!id || this.state.status === "streaming" || this.state.status === "loading") return;
+    const owner = this.state.activeSessionId;
     this.update({ status: "loading", errorMessage: null });
     try {
       await this.api.deleteConversation(id);
-      if (token !== this.mutationToken) {
-        this.update({
-          conversations: this.state.conversations.filter(
-            (conversation) => conversation.id !== id,
-          ),
-        });
-        return;
-      }
-      this.selectionToken += 1;
-      this.askToken += 1;
-      this.replace({
-        ...this.state,
-        conversations: this.state.conversations.filter(
-          (conversation) => conversation.id !== id,
-        ),
-        activeConversationId: null,
-        activeWorkspace: usableDefaultWorkspace(this.state.settings),
-        activePermissionMode: this.state.settings?.defaultPermissionMode ?? "ask",
-        permissionBusy: false,
-        pendingApproval: null,
-        toolActivity: [],
-        messages: [],
-        draftText: "",
-        status: "idle",
-        errorMessage: null,
-      });
+      if (this.state.activeSessionId === owner) await this.newChat();
+      this.chats.delete(owner);
+      this.update({ conversations: this.state.conversations.filter((item) => item.id !== id) });
     } catch (error) {
-      if (token !== this.mutationToken) return;
-      this.update({ status: "error", errorMessage: errorMessage(error) });
+      this.updateSession(owner, { status: "error", errorMessage: errorMessage(error) });
     }
   }
 
@@ -719,27 +708,29 @@ export class ChatStore {
     }
   }
 
-  private appendDelta(token: number, delta: string): void {
-    if (token !== this.askToken || this.state.status !== "streaming") return;
-    const messages = [...this.state.messages];
+  private appendDelta(owner: string, delta: string): void {
+    const state = this.chats.get(owner)!.state;
+    const messages = [...state.messages];
     const last = messages.at(-1);
     if (!last || last.role !== "assistant" || last.delivery !== "pending") return;
     messages[messages.length - 1] = { ...last, content: last.content + delta };
-    this.update({ messages });
+    this.updateSession(owner, { messages });
   }
 
-  private handleChatEvent(token: number, event: import("./types").ChatEvent): void {
-    if (token !== this.askToken || this.state.status !== "streaming") return;
+  private handleChatEvent(owner: string, generation: number, event: ChatEvent): void {
+    const chat = this.chats.get(owner);
+    if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
+    const state = chat.state;
     if (event.event === "delta") {
-      this.appendDelta(token, event.data.content);
+      this.appendDelta(owner, event.data.content);
       return;
     }
     if (event.event === "runtimeStatus") {
-      this.update({
+      this.updateSession(owner, {
         toolActivity: [
-          ...this.state.toolActivity,
+          ...state.toolActivity,
           {
-            id: `status-${this.state.toolActivity.length}`,
+            id: `status-${state.toolActivity.length}`,
             sequence: null,
             kind: "status",
             tool: null,
@@ -753,9 +744,9 @@ export class ChatStore {
       return;
     }
     if (event.event === "toolRequested") {
-      this.update({
+      this.updateSession(owner, {
         toolActivity: [
-          ...this.state.toolActivity,
+          ...state.toolActivity,
           {
             id: `tool-${event.data.sequence}`,
             sequence: event.data.sequence,
@@ -771,9 +762,9 @@ export class ChatStore {
       return;
     }
     if (event.event === "approvalRequested") {
-      this.update({
+      this.updateSession(owner, {
         pendingApproval: event.data.request,
-        toolActivity: this.updateToolActivity(event.data.sequence, {
+        toolActivity: this.updateToolActivity(state, event.data.sequence, {
           status: "waiting",
           summary: `Waiting for approval: ${event.data.request.tool}`,
         }),
@@ -782,9 +773,9 @@ export class ChatStore {
     }
     if (event.event === "approvalWaiting") return;
     if (event.event === "toolDenied") {
-      this.update({
+      this.updateSession(owner, {
         pendingApproval: null,
-        toolActivity: this.updateToolActivity(event.data.sequence, {
+        toolActivity: this.updateToolActivity(state, event.data.sequence, {
           status: "denied",
           summary: event.data.summary,
         }),
@@ -792,17 +783,17 @@ export class ChatStore {
       return;
     }
     if (event.event === "toolStarted") {
-      this.update({
+      this.updateSession(owner, {
         pendingApproval: null,
-        toolActivity: this.updateToolActivity(event.data.sequence, {
+        toolActivity: this.updateToolActivity(state, event.data.sequence, {
           status: "running",
           summary: `Running ${event.data.tool}`,
         }),
       });
       return;
     }
-    this.update({
-      toolActivity: this.updateToolActivity(event.data.sequence, {
+    this.updateSession(owner, {
+      toolActivity: this.updateToolActivity(state, event.data.sequence, {
         status: event.data.success ? "succeeded" : "failed",
         summary: event.data.summary,
         details: event.data.details,
@@ -811,10 +802,11 @@ export class ChatStore {
   }
 
   private updateToolActivity(
+    state: SessionState,
     sequence: number,
     patch: Partial<import("./types").ToolActivity>,
   ): import("./types").ToolActivity[] {
-    return this.state.toolActivity.map((activity) =>
+    return state.toolActivity.map((activity) =>
       activity.sequence === sequence ? { ...activity, ...patch } : activity,
     );
   }
@@ -823,7 +815,37 @@ export class ChatStore {
     this.replace({ ...this.state, ...patch });
   }
 
+  private updateSession(id: string, patch: Partial<SessionState>): void {
+    const chat = this.chats.get(id);
+    if (!chat) return;
+    chat.state = { ...chat.state, ...patch };
+    if (id === this.state.activeSessionId) this.replace({ ...this.state, ...chat.state });
+    else {
+      const sessions = this.sessionSummaries();
+      if (sessions !== this.state.sessions) {
+        this.state = { ...this.state, sessions };
+        this.emit();
+      }
+    }
+  }
+
+  private sessionSummaries(): ChatSessionSummary[] {
+    const summaries: ChatSessionSummary[] = [];
+    for (const [id, { state }] of this.chats) {
+      if (!state.activeConversationId && !state.messages.length && !state.draftText.trim()) continue;
+      const metadata = this.state.conversations.find((item) => item.id === state.activeConversationId);
+      summaries.push({ id, conversationId: state.activeConversationId,
+        title: metadata?.title ?? [...(state.messages[0]?.content || state.draftText || "New chat")].slice(0, 60).join(""),
+        status: state.status, needsApproval: state.pendingApproval !== null,
+      });
+    }
+    const previous = this.state.sessions;
+    return JSON.stringify(previous) === JSON.stringify(summaries) ? previous : summaries;
+  }
+
   private replace(next: ChatState): void {
+    const chat = this.chats.get(next.activeSessionId);
+    if (chat) chat.state = sessionState(next);
     this.state = {
       ...next,
       conversationGroups:
@@ -831,6 +853,7 @@ export class ChatStore {
           ? this.state.conversationGroups
           : groupConversations(next.conversations),
     };
+    this.state = { ...this.state, sessions: this.sessionSummaries() };
     this.emit();
   }
 

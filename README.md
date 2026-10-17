@@ -39,6 +39,21 @@ without setup. Atlas creates the conversation ID, workspace assignment, and
 local history only after the first model response completes successfully; a
 failed first request remains an unsaved, retryable draft.
 
+Chats can work concurrently. You can start a new chat, switch conversations,
+open Settings, type, and scroll while Atlas continues in another chat. Each
+chat keeps its own draft, streamed answer, activity, error, and tool approval.
+The sidebar shows **Working**, **Needs approval**, or **Failed**; first requests
+appear under **Current chats** until they succeed and receive a saved ID.
+Switching away never cancels an approval. Return to its chat to allow or deny it
+before the existing two-minute expiry.
+
+Only one request may run in a given chat at a time. Sending again, renaming,
+deleting, changing its folder, and changing its tool-access mode wait until that
+chat finishes; other chats remain usable. Settings changes affect subsequent
+requests, while running requests retain their starting configuration. Unsent
+drafts and running requests are held for the current app lifetime; restarting
+or reloading the app does not restore unfinished requests or unsaved drafts.
+
 The desktop window adapts from compact phone-width layouts through fullscreen.
 Use the header fullscreen control or press **F11** to toggle fullscreen.
 

@@ -124,10 +124,21 @@ export interface DisplayMessage {
   activityDurationMs?: number | null;
 }
 
+export interface ChatSessionSummary {
+  id: string;
+  conversationId: string | null;
+  title: string;
+  status: ChatStatus;
+  needsApproval: boolean;
+}
+
 export interface ChatState {
+  activeSessionId: string;
+  sessions: ChatSessionSummary[];
   conversations: ConversationMetadata[];
   activeConversationId: string | null;
   messages: DisplayMessage[];
+  historyLoaded: boolean;
   draftText: string;
   status: ChatStatus;
   errorMessage: string | null;

@@ -228,6 +228,20 @@ frontend path. Legacy unassigned conversations use the current default and gain
 that assignment only with their next successful saved turn. The CLI continues to
 use its process's current directory.
 
+Desktop chat sessions have stable frontend identities separate from saved
+conversation IDs. Keep request callbacks, live messages, drafts, tool activity,
+errors, and approvals owned by their session, even when another chat or Settings
+is visible. Independent chats may run concurrently, but only one request may
+run per saved conversation in the desktop backend. Navigation must not cancel
+all pending approvals. First requests remain in-memory sidebar sessions until
+successful persistence supplies an ID; failures stay retryable without writing
+conversation data. Session state and unfinished requests do not survive an app
+reload or restart. Running requests retain their starting settings and folder.
+Keep Settings inputs and user scroll position stable during background updates,
+and coalesce visible streaming renders to animation frames. Blocking native
+storage/settings operations run on background workers rather than the Tauri
+event thread. Do not broaden frontend permissions to achieve concurrency.
+
 Keep native platform access narrow. Folder selection uses
 `@tauri-apps/plugin-dialog` with `dialog:allow-open`, and the fullscreen
 control uses only `core:window:allow-set-fullscreen`; do not add shell,

@@ -403,6 +403,7 @@ test("live activity has a status region while approvals stay prominent", async (
       details: "Found 3 matches",
     },
   });
+  await flushStreaming();
   const finishedDisclosure = root.querySelector<HTMLElement>(
     "[data-live-turn-activity]",
   );
@@ -547,6 +548,7 @@ function inputComposer(root: HTMLElement, value: string) {
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flushStreaming = () => new Promise((resolve) => requestAnimationFrame(resolve));
 
 let restoreMoveBefore: (() => void) | null = null;
 
@@ -631,7 +633,7 @@ test("new chat and conversation selection replace the draft without replacing th
 
   expect(composer(root)).toBe(input);
   expect(input.parentElement).toBe(parent);
-  expect(input.value).toBe("draft kept while selecting");
+  expect(input.value).toBe("");
 });
 
 test("Settings round trip preserves the live draft", async () => {
@@ -981,16 +983,16 @@ test("streaming renders ordered assistant text and disables mutation controls", 
   inputComposer(root, "hello");
 
   click(root, "[data-send]");
-  await flush();
+  await flushStreaming();
 
   expect(root.querySelector("[data-message-role='assistant']")?.textContent).toContain(
     "Hello desktop",
   );
   expect(composer(root).disabled).toBe(false);
   expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(true);
-  expect(root.querySelector<HTMLButtonElement>("[data-new-chat]")?.disabled).toBe(true);
+  expect(root.querySelector<HTMLButtonElement>("[data-new-chat]")?.disabled).toBe(false);
   pending.resolve({ answer: "Hello desktop", metadata, created: true });
-  await flush();
+  await flushStreaming();
   expect(composer(root).disabled).toBe(false);
 });
 
@@ -1006,12 +1008,13 @@ test("streaming_deltas_update_the_answer_without_rebuilding_the_ui", async () =>
   await store.chooseWorkspaceForDraft();
   inputComposer(root, "hello");
   click(root, "[data-send]");
-  await flush();
+  await flushStreaming();
   const shell = root.querySelector(".atlas-shell");
   const streamingComposer = composer(root);
 
   emit("**Hello");
   emit("** responsive desktop");
+  await flushStreaming();
 
   expect(root.querySelector(".atlas-shell")).toBe(shell);
   expect(composer(root)).toBe(streamingComposer);
@@ -1022,7 +1025,7 @@ test("streaming_deltas_update_the_answer_without_rebuilding_the_ui", async () =>
     "Hello",
   );
   pending.resolve({ answer: "Hello responsive desktop", metadata, created: true });
-  await flush();
+  await flushStreaming();
 });
 
 test("assistant_messages_render_markdown_while_user_messages_stay_literal", async () => {
@@ -1376,4 +1379,183 @@ test("Enter and key code 229 never send during composition", async () => {
   );
   await flush();
   expect(api.askCount).toBe(0);
+});
+
+test("navigation remains available and a local running chat can be reopened", async () => {
+  const { api, root, store } = setup();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  await store.initialize();
+  inputComposer(root, "work in background");
+  click(root, "[data-send]");
+  await flush();
+  const owner = store.getState().activeSessionId;
+  expect(root.querySelector<HTMLButtonElement>("[data-new-chat]")!.disabled).toBe(false);
+  expect(root.querySelector<HTMLButtonElement>("[data-open-settings]")!.disabled).toBe(false);
+  click(root, "[data-new-chat]");
+  await flush();
+  inputComposer(root, "unrelated draft");
+  const local = root.querySelector<HTMLButtonElement>(`[data-session-id='${owner}']`)!;
+  expect(local.textContent).toContain("Working");
+  local.click();
+  await flush();
+  expect(store.getState().activeSessionId).toBe(owner);
+  expect(composer(root).value).toBe("");
+  pending.resolve({ answer: "done", metadata, created: true });
+  await flush();
+  expect(root.querySelectorAll(`[data-conversation-id='${metadata.id}']`)).toHaveLength(1);
+});
+
+test("background request events preserve settings inputs and focus", async () => {
+  const { api, root, store } = setup();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  await store.initialize();
+  inputComposer(root, "task");
+  click(root, "[data-send]");
+  click(root, "[data-open-settings]");
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  expect(key).not.toBeNull();
+  key.focus();
+  key.value = "draft credential";
+  key.dispatchEvent(new Event("input", { bubbles: true }));
+  api.eventSink!({ event: "runtimeStatus", data: { status: "thinking" } });
+  api.eventSink!({ event: "approvalRequested", data: { sequence: 0,
+    request: { id: "wait", tool: "exec_command", arguments: "{}", reason: "command" } } });
+  api.eventSink!({ event: "delta", data: { content: "background text" } });
+  pending.resolve({ answer: "done", metadata, created: true });
+  await flush();
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("draft credential");
+  expect(document.activeElement).toBe(key);
+  expect(store.getState().screen).toBe("settings");
+});
+
+test("streaming batches text updates and preserves a reader's scroll position", async () => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  const { api, root, store } = setup();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  await store.initialize();
+  inputComposer(root, "long task");
+  click(root, "[data-send]");
+  const sidebarButton = root.querySelector("[data-new-chat]");
+  const messages = root.querySelector<HTMLElement>("[data-messages]")!;
+  Object.defineProperty(messages, "scrollHeight", { configurable: true, value: 2000 });
+  Object.defineProperty(messages, "clientHeight", { configurable: true, value: 500 });
+  messages.scrollTop = 300;
+  for (const content of ["one", " two", " three"]) {
+    api.eventSink!({ event: "delta", data: { content } });
+  }
+  expect(root.querySelector("[data-message-role='assistant']")!.textContent).not.toContain("one two three");
+  expect(frames.size).toBe(1);
+  const callbacks = [...frames.values()];
+  frames.clear();
+  callbacks.forEach((callback) => callback(0));
+  expect(root.querySelector("[data-message-role='assistant']")!.textContent).toContain("one two three");
+  expect(messages.scrollTop).toBe(300);
+  expect(root.querySelector("[data-new-chat]")).toBe(sidebarButton);
+  api.eventSink!({ event: "toolRequested", data: { sequence: 0, tool: "pwd", arguments: "{}" } });
+  const activityFrames = [...frames.values()];
+  frames.clear();
+  activityFrames.forEach((callback) => callback(1));
+  expect(root.querySelector("[data-new-chat]")).toBe(sidebarButton);
+  expect(messages.scrollTop).toBe(300);
+  pending.resolve({ answer: "one two three", metadata, created: true });
+  await flush();
+  expect(messages.scrollTop).toBe(300);
+  vi.unstubAllGlobals();
+});
+
+test("a late send completion cannot replace another chat's composer", async () => {
+  const { api, root, store } = setup();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  await store.initialize();
+  inputComposer(root, "first request");
+  click(root, "[data-send]");
+  await store.newChat();
+  inputComposer(root, "keep this text");
+  const input = composer(root);
+  input.focus();
+  input.setSelectionRange(3, 3);
+  pending.reject(new Error("background failure"));
+  await flush();
+  expect(composer(root)).toBe(input);
+  expect(input.value).toBe("keep this text");
+  expect(document.activeElement).toBe(input);
+  expect(input.selectionStart).toBe(3);
+  const failed = root.querySelector<HTMLButtonElement>("[data-session-id]")!;
+  expect(failed.textContent).toContain("Failed");
+});
+
+test("background approvals do not replace another chat's rename input", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const { root, store } = setup(api);
+  await store.initialize();
+  inputComposer(root, "background task");
+  click(root, "[data-send]");
+  const backgroundEvents = api.eventSink!;
+  await store.selectConversation(metadata.id);
+  click(root, "[data-conversation-menu]");
+  click(root, "[data-rename]");
+  const input = root.querySelector<HTMLInputElement>("[data-rename-input]")!;
+  input.value = "an edited title";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+  input.setSelectionRange(3, 3);
+  backgroundEvents({ event: "approvalRequested", data: { sequence: 0,
+    request: { id: "background-approval", tool: "exec_command", arguments: "{}", reason: "command" } } });
+  expect(root.querySelector("[data-rename-input]")).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect(input.selectionStart).toBe(3);
+  expect(root.querySelector("[data-session-id]")?.textContent).toContain("Needs approval");
+  pending.reject(new Error("approval expired"));
+  await flush();
+});
+
+test("Settings credential removal and replacement stay consistent while inputs keep focus", async () => {
+  const { api, root, store } = setup();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  await store.initialize();
+  click(root, "[data-open-settings]");
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  const clear = root.querySelector<HTMLInputElement>(".settings-check input")!;
+  key.focus();
+  key.value = "replacement";
+  key.dispatchEvent(new Event("input", { bubbles: true }));
+  clear.focus();
+  clear.click();
+  expect(store.getState().settingsDraft?.apiKey).toBe("");
+  expect(key.value).toBe("");
+  expect(document.activeElement).toBe(clear);
+  key.focus();
+  key.value = "another key";
+  key.dispatchEvent(new Event("input", { bubbles: true }));
+  expect(store.getState().settingsDraft?.clearApiKey).toBe(false);
+  expect(clear.checked).toBe(false);
+  expect(document.activeElement).toBe(key);
+});
+
+test("a failed history load disables sending until the conversation can be reloaded", async () => {
+  const { api, root, store } = setup();
+  api.list = Promise.resolve([metadata]);
+  api.load = async () => { throw new Error("read failed"); };
+  await store.initialize();
+  await store.selectConversation(metadata.id);
+  inputComposer(root, "continue");
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(true);
+  expect(root.textContent).toContain("read failed");
+  api.load = async () => conversation();
+  await store.selectConversation(metadata.id);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(false);
 });
