@@ -76,6 +76,8 @@ const thinkingActivity: ActivityRecord = {
 };
 
 class FakeApi implements AtlasApi {
+  async cancelCompaction(): Promise<void> {}
+  async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   listCalls = 0;
   loadCalls: string[] = [];
   askCalls: Array<{
@@ -1398,4 +1400,53 @@ test("a failed continuation clears intermediate model usage", async () => {
   pending.reject(new Error("provider failed after a tool"));
   await sending;
   expect(store.getState().contextUsage).toBeNull();
+});
+
+test("manual compact does not add messages or call the chat model", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  let compacted = 0;
+  api.compactConversation = async () => { compacted++; return { memory: null, message: "Nothing older to compact" }; };
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  const before = store.getState().messages;
+  store.setDraft("/compact");
+  await store.send();
+  expect(compacted).toBe(1);
+  expect(store.getState().messages).toEqual(before);
+  expect(store.getState().status).toBe("idle");
+});
+
+test("manual compaction stays with its owner while another chat sends", async () => {
+  const api = new FakeApi();
+  api.conversations = [first];
+  api.loads.set(first.id, async () => savedConversation(first));
+  const pending = deferred<import("./types").CompactionResult>();
+  let progress!: (event: ChatEvent) => void;
+  api.compactConversation = async (_id: string, onEvent: (event: ChatEvent) => void) => { progress = onEvent; return pending.promise; };
+  const store = new ChatStore(api);
+  await store.initialize(); await store.selectConversation(first.id);
+  const owner = store.getState().activeSessionId;
+  store.setDraft("/compact"); const compacting = store.send();
+  await store.newChat(); store.setDraft("hello");
+  progress({ event: "compaction", data: { progress: { completedBlocks: 1, totalBlocks: 3 } } });
+  expect(store.getState().compactionProgress).toBeNull();
+  expect(store.getState().draftText).toBe("hello");
+  pending.resolve({ memory: null, message: "Compacted" }); await compacting;
+  expect(store.getState().draftText).toBe("hello");
+  await store.selectSession(owner);
+  expect(store.getState().compactionMessage).toBe("Compacted");
+});
+
+test("a new request clears a previous compact notice so budget warnings remain visible", async () => {
+ const api=new FakeApi();api.conversations=[first];api.loads.set(first.id,async()=>savedConversation(first));
+ const store=new ChatStore(api);await store.initialize();await store.selectConversation(first.id);
+ store.setDraft("/compact");await store.send();expect(store.getState().compactionMessage).not.toBeNull();
+ const pending=deferred<ConversationAskResult>();api.asks.push(()=>pending.promise);
+ store.setDraft("next");const sending=store.send();
+ api.eventSinks[0]({event:"contextStatus",data:{status:{available:false,message:"Unknown model limits",estimated:false,inputTokens:null,maxTokens:null}}});
+ expect(store.getState().compactionMessage).toBeNull();
+ pending.resolve(result(first,"done",false));await sending;
 });

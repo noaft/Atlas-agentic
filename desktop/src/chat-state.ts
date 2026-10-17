@@ -42,6 +42,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
+  memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
   sessions: [],
   conversations: [],
@@ -108,6 +109,7 @@ const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
   baseUrl: settings.baseUrl,
   model: settings.model,
   historyLimit: settings.historyLimit,
+  ...(settings.modelLimits ? { modelLimits: structuredClone(settings.modelLimits) } : {}),
   defaultWorkspace: settings.defaultWorkspaceAutomatic ? null : settings.defaultWorkspace,
   defaultPermissionMode: settings.defaultPermissionMode,
 });
@@ -124,6 +126,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : [{ id: configured, name: configured }, ...models];
 
 const sessionKeys = [
+  "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
   "pendingApproval", "toolActivity",
@@ -273,6 +276,7 @@ export class ChatStore {
       if (token !== this.selectionToken) return;
       const latestActivity = conversation.activities?.at(-1);
       this.updateSession(sessionId, {
+        memory: conversation.memory ?? null, contextStatus: null, compactionMessage: null,
         contextUsage: latestActivity?.assistantMessageIndex === conversation.messages.length - 1
           ? latestActivity.usage ?? null : null,
         activeConversationId: conversation.metadata.id,
@@ -353,6 +357,7 @@ export class ChatStore {
       return;
     const prompt = this.state.draftText.trim();
     if (!prompt) return;
+    if (prompt === "/compact") { await this.compact(); return; }
     const workspace = this.state.activeWorkspace;
     if (!workspace) {
       this.update({ errorMessage: "Choose a workspace folder before sending." });
@@ -383,6 +388,7 @@ export class ChatStore {
       ...this.state,
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: "",
+      compactionMessage: null, contextStatus: null,
       status: "streaming",
       errorMessage: null,
       pendingApproval: null,
@@ -416,6 +422,7 @@ export class ChatStore {
       const conversations = moveToTop(this.state.conversations, completed.metadata);
       this.state = { ...this.state, conversations, conversationGroups: groupConversations(conversations) };
       this.updateSession(owner, {
+        memory: completed.memory ?? chat.state.memory, compactionProgress: null,
         contextUsage: completed.usage ?? null,
         activeConversationId: completed.metadata.id,
         activeWorkspace: completed.metadata.workspace ?? workspace,
@@ -429,7 +436,7 @@ export class ChatStore {
     } catch (error) {
       if (generation !== chat.generation) return;
       this.updateSession(owner, {
-        contextUsage: null,
+        contextUsage: null, compactionProgress: null,
         messages: chat.state.messages.map((message) => ({
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
@@ -439,6 +446,35 @@ export class ChatStore {
         errorMessage: errorMessage(error),
         pendingApproval: null,
       });
+      if (conversationId) {
+        try { const saved = await this.api.loadConversation(conversationId);
+          if (generation === chat.generation) this.updateSession(owner, { memory: saved.memory ?? chat.state.memory });
+        } catch { /* Preserve prior local memory if the reload also fails. */ }
+      }
+    }
+  }
+
+  async cancelCompaction(): Promise<void> {
+    const id = this.state.activeConversationId;
+    if (!id || !this.state.compactionProgress) return;
+    try { await this.api.cancelCompaction(id); } catch (error) { this.update({ errorMessage: errorMessage(error) }); }
+  }
+  async compact(): Promise<void> {
+    if (this.state.status === "streaming" || this.state.status === "loading") return;
+    const owner = this.state.activeSessionId;
+    const chat = this.chats.get(owner)!;
+    const id = chat.state.activeConversationId;
+    if (!id) { this.updateSession(owner, { draftText: "", compactionMessage: "Start a conversation before compacting." }); return; }
+    const generation = ++chat.generation;
+    this.updateSession(owner, { status: "streaming", draftText: "", errorMessage: null, compactionMessage: null,
+      compactionProgress: { completedBlocks: 0, totalBlocks: 0 } });
+    try {
+      const result = await this.api.compactConversation(id, (event) => this.handleChatEvent(owner, generation, event));
+      if (generation !== chat.generation) return;
+      this.updateSession(owner, { memory: result.memory, status: "idle", compactionProgress: null, compactionMessage: result.message });
+    } catch (error) {
+      if (generation !== chat.generation) return;
+      this.updateSession(owner, { status: "error", compactionProgress: null, errorMessage: errorMessage(error) });
     }
   }
 
@@ -561,6 +597,7 @@ export class ChatStore {
         baseUrl: draft.baseUrl,
         model: draft.model,
         historyLimit: draft.historyLimit,
+        ...(draft.modelLimits ? { modelLimits: draft.modelLimits } : {}),
         defaultWorkspacePath: draft.defaultWorkspace?.path ?? null,
         defaultPermissionMode: draft.defaultPermissionMode,
       });
@@ -727,6 +764,8 @@ export class ChatStore {
     const chat = this.chats.get(owner);
     if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
     const state = chat.state;
+    if (event.event === "compaction") { this.updateSession(owner, { compactionProgress: event.data.progress }); return; }
+    if (event.event === "contextStatus") { this.updateSession(owner, { contextStatus: event.data.status, compactionProgress: null, compactionMessage: null }); return; }
     if (event.event === "usage") {
       this.updateSession(owner, { contextUsage: event.data.usage });
       return;

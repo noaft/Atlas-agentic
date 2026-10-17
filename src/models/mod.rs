@@ -1,3 +1,5 @@
+pub mod budget;
+pub use budget::{ModelLimits, TokenEstimate};
 pub mod deepseek;
 
 use crate::agents::LocalAgentDefinition;
@@ -31,7 +33,30 @@ pub struct ModelResponse {
     pub usage: Option<ModelUsage>,
 }
 
+pub struct SummaryRequest<'a> {
+    pub system_prompt: &'a str,
+    pub content: &'a str,
+    pub max_output_tokens: u64,
+}
+pub struct SummaryResponse {
+    pub content: String,
+    pub usage: Option<ModelUsage>,
+    pub finish_reason: String,
+}
 pub trait ModelProvider {
+    fn model_name(&self) -> Option<&str> {
+        None
+    }
+    fn model_limits(&self) -> Result<Option<ModelLimits>, String> {
+        Ok(None)
+    }
+    fn estimate_request(&self, _request: &ModelRequest) -> Result<Option<TokenEstimate>, String> {
+        Ok(None)
+    }
+    fn summarize(&self, _request: &SummaryRequest) -> Result<SummaryResponse, String> {
+        Err("Model provider does not support compaction".into())
+    }
+
     fn complete(&self, request: &ModelRequest) -> Result<String, String>;
 
     fn stream_with_usage(
@@ -69,6 +94,8 @@ pub trait ModelProvider {
 }
 
 pub struct ModelRequest<'a> {
+    pub memory_blocks: &'a [crate::conversations::MemoryBlock],
+    pub max_output_tokens: Option<u64>,
     pub system_prompt: &'a str,
     pub user_prompt: &'a str,
     pub history: &'a [ConversationMessage],
@@ -108,11 +135,14 @@ pub fn provider_from_definition_with_settings(
             } else {
                 settings.model.clone()
             };
-            Ok(Box::new(DeepSeekProvider::new(DeepSeekConfig {
-                api_key,
-                base_url: settings.base_url.clone(),
-                model,
-            })))
+            Ok(Box::new(
+                DeepSeekProvider::new(DeepSeekConfig {
+                    api_key,
+                    base_url: settings.base_url.clone(),
+                    model: model.clone(),
+                })
+                .with_limits(settings.model_limits.get(&model).copied()),
+            ))
         }
         provider => Err(format!("unknown model provider: {provider}")),
     }

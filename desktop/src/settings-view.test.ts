@@ -24,6 +24,8 @@ const settings: SettingsView = {
 function fixture(currentSettings = settings) {
   const saves: SaveSettingsInput[] = [];
   const api = {
+    cancelCompaction: async () => {},
+    compactConversation: async () => ({ memory: null, message: "Nothing older to compact" }),
     listConversations: async () => [],
     loadConversation: async () => {
       throw new Error("unused");
@@ -195,4 +197,12 @@ test("settings hydrates and saves the default permission mode with a full access
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(saves[0]?.defaultPermissionMode).toBe("fullAccess");
+});
+
+test("editing both model limits preserves the first value before saving", async () => {
+ const { root, store } = fixture(); await store.initialize(); store.openSettings(); renderSettings(root,store.getState(),store);
+ const fields=root.querySelectorAll<HTMLInputElement>('input[type="number"]');
+ fields[0].value="100000";fields[0].dispatchEvent(new Event("input"));
+ fields[1].value="4096";fields[1].dispatchEvent(new Event("input"));
+ expect(store.getState().settingsDraft?.modelLimits?.[settings.activeModel]).toEqual({contextWindow:100000,maxOutputTokens:4096});
 });

@@ -73,6 +73,9 @@ impl AtlasSettings {
         if self.deepseek.model.trim().is_empty() {
             return Err("DeepSeek model cannot be blank".to_string());
         }
+        for limits in self.conversation.model_limits.values() {
+            limits.validate()?;
+        }
         if self.conversation.history_limit == 0 {
             return Err("conversation history limit must be a positive integer".to_string());
         }
@@ -89,6 +92,7 @@ impl AtlasSettings {
             base_url: self.deepseek.base_url.clone(),
             model: self.deepseek.model.clone(),
             history_limit: self.conversation.history_limit,
+            model_limits: self.conversation.model_limits.clone(),
             default_workspace: self.workspace.default_path.clone(),
             default_permission_mode: self.permissions.default_mode,
             environment_overrides: BTreeSet::new(),
@@ -143,6 +147,7 @@ pub struct EffectiveSettings {
     pub base_url: String,
     pub model: String,
     pub history_limit: usize,
+    pub model_limits: std::collections::BTreeMap<String, crate::models::ModelLimits>,
     pub default_workspace: Option<PathBuf>,
     pub default_permission_mode: PermissionMode,
     pub environment_overrides: BTreeSet<SettingField>,
@@ -236,12 +241,15 @@ impl Default for DeepSeekSettings {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSettings {
     pub history_limit: usize,
+    #[serde(default)]
+    pub model_limits: std::collections::BTreeMap<String, crate::models::ModelLimits>,
 }
 
 impl Default for ConversationSettings {
     fn default() -> Self {
         Self {
             history_limit: DEFAULT_HISTORY_LIMIT,
+            model_limits: Default::default(),
         }
     }
 }

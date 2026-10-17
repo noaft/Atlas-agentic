@@ -235,3 +235,22 @@ describe("Tauri Atlas API", () => {
     expect(calls[3]?.payload).toMatchObject({ value: false });
   });
 });
+
+test("compact sends the saved chat ID and forwards progress without an ask", async () => {
+ const events: ChatEvent[] = [];
+ const calls: string[] = [];
+ mockIPC((command, payload) => {
+  calls.push(command);
+  const args = payload as { id: string; channel?: Channel<ChatEvent> };
+  expect(args.id).toBe(metadata.id);
+  if (command === "compact_conversation") {
+   args.channel!.onmessage({ event: "compaction", data: { progress: { completedBlocks: 1, totalBlocks: 2 } } });
+   return { memory: null, message: "done" };
+  }
+ });
+ const api = createTauriAtlasApi();
+ expect((await api.compactConversation(metadata.id, (event) => events.push(event))).message).toBe("done");
+ await api.cancelCompaction(metadata.id);
+ expect(calls).toEqual(["compact_conversation", "cancel_compaction"]);
+ expect(events).toHaveLength(1);
+});

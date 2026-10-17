@@ -78,6 +78,8 @@ function deferred<T>() {
 }
 
 class ViewApi implements AtlasApi {
+  async cancelCompaction(): Promise<void> {}
+  async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   list = Promise.resolve<ConversationMetadata[]>([]);
   load = async (_id: string) => conversation();
   askImpl = async (
@@ -1691,4 +1693,27 @@ test("rerendering an open picker restores focus to its trigger", async () => {
   expect(document.activeElement?.getAttribute("role")).toBe("listbox");
   await store.selectPermissionMode("workspace");
   expect(document.activeElement).toBe(root.querySelector('[data-picker-label="Model"]'));
+});
+
+test("the same memory disclosure stays open while the composer changes", async () => {
+ const api=new ViewApi();const saved=conversation();
+ saved.memory={version:1,conversationId:metadata.id,checkpointId:"saved",createdAt:metadata.createdAt,model:"fake",compactedMessageCount:1,blocks:[{startIndex:0,endIndexExclusive:1,content:"Remember the goal"}]};
+ api.load=async()=>saved;
+ const {root,store}=setup(api);await store.initialize();await store.selectConversation(metadata.id);
+ const details=root.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]")!;
+ details.open=true;
+ store.setDraft("typing");
+ await store.selectPermissionMode("workspace");
+ expect(root.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]")?.open).toBe(true);
+});
+
+test("automatic compaction exposes cancellation while the answer is pending", async () => {
+ const api=new ViewApi();const pending=deferred<ConversationAskResult>();api.askImpl=()=>pending.promise;
+ let cancelled=0;api.cancelCompaction=async()=>{cancelled++;};
+ const {root,store}=setup(api);await store.initialize();await store.selectConversation(metadata.id);
+ store.setDraft("next");const sending=store.send();
+ api.eventSink!({event:"compaction",data:{progress:{completedBlocks:0,totalBlocks:3}}});
+ const cancel=[...root.querySelectorAll<HTMLButtonElement>("button")].filter((button)=>button.textContent==="Cancel compaction");
+ expect(cancel).toHaveLength(1);cancel[0].click();await Promise.resolve();expect(cancelled).toBe(1);
+ pending.resolve({answer:"done",metadata,created:false});await sending;
 });

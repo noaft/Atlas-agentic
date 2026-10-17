@@ -178,6 +178,7 @@ impl DesktopState {
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
         ConversationService::new(&runtime, &self.store, effective.history_limit)
+            .with_cancellation(&_request.cancelled)
             .ask_with_workspace_permission_authorizer_and_fallible_sink(
                 prompt,
                 conversation_id,
@@ -310,9 +311,10 @@ impl From<ConversationMessage> for ConversationMessageDto {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationDto {
+    pub memory: Option<atlas_agentic::conversations::MemoryCheckpoint>,
     pub metadata: ConversationMetadataDto,
     pub messages: Vec<ConversationMessageDto>,
     pub activities: Vec<ActivityTurnDto>,
@@ -321,6 +323,7 @@ pub struct ConversationDto {
 impl From<Conversation> for ConversationDto {
     fn from(conversation: Conversation) -> Self {
         Self {
+            memory: conversation.memory,
             metadata: conversation.metadata.into(),
             messages: conversation.messages.into_iter().map(Into::into).collect(),
             activities: conversation
@@ -387,9 +390,10 @@ pub struct DeleteResult {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAskResultDto {
+    pub memory: Option<atlas_agentic::conversations::MemoryCheckpoint>,
     pub answer: String,
     pub metadata: ConversationMetadataDto,
     pub activities: Vec<ActivityRecordDto>,
@@ -402,6 +406,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
     fn from(result: ConversationAskResult) -> Self {
         Self {
             answer: result.answer,
+            memory: result.memory,
             metadata: result.metadata.into(),
             activities: result.activities.into_iter().map(Into::into).collect(),
             activity_duration_ms: result.activity_duration_ms,
@@ -414,6 +419,12 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
+    Compaction {
+        progress: atlas_agentic::conversations::CompactionProgress,
+    },
+    ContextStatus {
+        status: atlas_agentic::runtime::context::ContextStatus,
+    },
     Usage {
         usage: Option<atlas_agentic::models::ModelUsage>,
     },
@@ -567,6 +578,7 @@ impl ToolAuthorizer for DesktopAuthorizer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsViewDto {
+    pub model_limits: std::collections::BTreeMap<String, atlas_agentic::models::ModelLimits>,
     pub api_key_source: &'static str,
     pub base_url: String,
     pub model: String,
@@ -582,6 +594,9 @@ pub struct SettingsViewDto {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSettingsInput {
+    #[serde(default)]
+    pub model_limits:
+        Option<std::collections::BTreeMap<String, atlas_agentic::models::ModelLimits>>,
     pub api_key: Option<String>,
     pub clear_api_key: bool,
     pub base_url: String,
@@ -650,6 +665,7 @@ fn settings_view(
         model: saved.deepseek.model.clone(),
         active_model: effective.model.clone(),
         history_limit: saved.conversation.history_limit,
+        model_limits: saved.conversation.model_limits.clone(),
         default_workspace,
         default_workspace_automatic,
         default_workspace_error,
@@ -677,6 +693,9 @@ fn save_settings_impl(
         saved.deepseek.base_url = input.base_url;
         saved.deepseek.model = input.model;
         saved.conversation.history_limit = input.history_limit;
+        if let Some(limits) = &input.model_limits {
+            saved.conversation.model_limits = limits.clone();
+        }
         saved.workspace.default_path = input
             .default_workspace_path
             .as_deref()
@@ -940,6 +959,37 @@ where
 }
 
 #[tauri::command]
+pub fn cancel_compaction(id: String, state: State<'_, DesktopState>) -> Result<(), String> {
+    state.active_requests.cancel(&parse_id(&id)?)
+}
+
+#[tauri::command]
+pub async fn compact_conversation(
+    id: String,
+    channel: Channel<ChatEvent>,
+    state: State<'_, DesktopState>,
+) -> Result<atlas_agentic::conversations::CompactionResult, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = parse_id(&id)?;
+        let request = state.active_requests.acquire(Some(&id))?;
+        let effective = state.settings_store.load()?.resolve_from_env()?;
+        let workspace = state.resolve_workspace(Some(&id), None, &effective)?;
+        let runtime = (state.runtime_factory)(&workspace, &effective)?;
+        ConversationService::new(&runtime, &state.store, effective.history_limit)
+            .compact_cancellable(
+                &id,
+                &mut |progress| {
+                    let _ = channel.send(ChatEvent::Compaction { progress });
+                },
+                Some(&request.cancelled),
+            )
+    })
+    .await
+    .map_err(|e| format!("Compaction worker failed: {e}"))?
+}
+
+#[tauri::command]
 pub async fn ask(
     prompt: String,
     conversation_id: Option<String>,
@@ -970,6 +1020,12 @@ pub async fn ask(
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
+                    ToolEvent::Compaction { progress } => ChatEvent::Compaction {
+                        progress: progress.clone(),
+                    },
+                    ToolEvent::ContextStatus { status } => ChatEvent::ContextStatus {
+                        status: status.clone(),
+                    },
                     ToolEvent::Usage { usage } => ChatEvent::Usage {
                         usage: usage.clone(),
                     },
@@ -1067,6 +1123,32 @@ mod tests {
     fn environment_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn compaction_progress_and_context_status_use_the_frontend_contract() {
+        let event = serde_json::to_value(ChatEvent::Compaction {
+            progress: atlas_agentic::conversations::CompactionProgress {
+                completed_blocks: 1,
+                total_blocks: 3,
+            },
+        })
+        .unwrap();
+        assert_eq!(event["event"], "compaction");
+        assert_eq!(event["data"]["progress"]["completedBlocks"], 1);
+        assert_eq!(event["data"]["progress"]["totalBlocks"], 3);
+        let status = serde_json::to_value(ChatEvent::ContextStatus {
+            status: atlas_agentic::runtime::context::ContextStatus {
+                available: false,
+                message: "Unknown capacity".into(),
+                estimated: false,
+                input_tokens: None,
+                max_tokens: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(status["event"], "contextStatus");
+        assert_eq!(status["data"]["status"]["available"], false);
     }
 
     #[test]
@@ -1175,6 +1257,7 @@ mod tests {
         assert_eq!(loaded.activities[0].records[0].summary, "Thinking");
 
         let completed: ConversationAskResultDto = ConversationAskResult {
+            memory: None,
             answer: "answer".to_string(),
             metadata,
             activities: Vec::new(),
@@ -2066,6 +2149,7 @@ conversation_title_prompt = "Return a short title."
         settings_store.save(&saved).unwrap();
         let state = DesktopState::new_with_settings(store, settings_store.clone());
         let input = SaveSettingsInput {
+            model_limits: None,
             api_key: None,
             clear_api_key: false,
             base_url: saved.deepseek.base_url.clone(),
@@ -2082,6 +2166,7 @@ conversation_title_prompt = "Return a short title."
         );
         save_settings_impl(
             SaveSettingsInput {
+                model_limits: None,
                 clear_api_key: true,
                 ..input
             },
@@ -2109,6 +2194,7 @@ conversation_title_prompt = "Return a short title."
 
         let result = save_settings_impl(
             SaveSettingsInput {
+                model_limits: None,
                 api_key: None,
                 clear_api_key: false,
                 base_url: defaults.deepseek.base_url,
@@ -2161,6 +2247,7 @@ conversation_title_prompt = "Return a short title."
 
         let error = save_settings_impl(
             SaveSettingsInput {
+                model_limits: None,
                 api_key: None,
                 clear_api_key: false,
                 base_url: saved.deepseek.base_url.clone(),
@@ -2328,6 +2415,7 @@ conversation_title_prompt = "Return a short title."
 
         save_settings_impl(
             SaveSettingsInput {
+                model_limits: None,
                 api_key: Some(secret.to_string()),
                 clear_api_key: false,
                 base_url: "https://api.deepseek.com".to_string(),

@@ -66,8 +66,9 @@ pub struct ConversationMetadata {
     pub permission_mode: Option<PermissionMode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Conversation {
+    pub memory: Option<super::MemoryCheckpoint>,
     pub metadata: ConversationMetadata,
     pub messages: Vec<ConversationMessage>,
     pub activities: Vec<ActivityTurn>,

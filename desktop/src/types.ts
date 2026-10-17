@@ -1,3 +1,9 @@
+export interface MemoryBlock { startIndex: number; endIndexExclusive: number; content: string }
+export interface MemoryCheckpoint { version: number; conversationId: string; checkpointId: string; createdAt: string; model: string; compactedMessageCount: number; blocks: MemoryBlock[] }
+export interface CompactionProgress { completedBlocks: number; totalBlocks: number }
+export interface CompactionResult { memory: MemoryCheckpoint | null; message: string }
+export interface ContextStatus { available: boolean; message: string; estimated: boolean; inputTokens: number | null; maxTokens: number | null }
+export interface ModelLimits { contextWindow: number; maxOutputTokens: number }
 export type MessageRole = "user" | "assistant";
 export type PermissionMode = "ask" | "workspace" | "fullAccess";
 
@@ -24,12 +30,14 @@ export interface ConversationMessage {
 }
 
 export interface Conversation {
+  memory?: MemoryCheckpoint | null;
   metadata: ConversationMetadata;
   messages: ConversationMessage[];
   activities?: ActivityTurn[];
 }
 
 export interface ConversationAskResult {
+  memory?: MemoryCheckpoint | null;
   answer: string;
   metadata: ConversationMetadata;
   activities?: ActivityRecord[];
@@ -82,6 +90,8 @@ export interface AuthorizationRequest {
 }
 
 export type ChatEvent =
+  | { event: "compaction"; data: { progress: CompactionProgress } }
+  | { event: "contextStatus"; data: { status: ContextStatus } }
   | { event: "usage"; data: { usage: ModelUsage | null } }
   | { event: "delta"; data: { content: string } }
   | { event: "runtimeStatus"; data: { status: "thinking" | "preparingAnswer" } }
@@ -145,6 +155,10 @@ export interface ChatSessionSummary {
 }
 
 export interface ChatState {
+  memory: MemoryCheckpoint | null;
+  compactionProgress: CompactionProgress | null;
+  contextStatus: ContextStatus | null;
+  compactionMessage: string | null;
   activeSessionId: string;
   sessions: ChatSessionSummary[];
   conversations: ConversationMetadata[];
@@ -185,6 +199,7 @@ export interface ConversationGroup {
 export type ApiKeySource = "missing" | "settings" | "environment";
 
 export interface SettingsView {
+  modelLimits?: Record<string, ModelLimits>;
   apiKeySource: ApiKeySource;
   baseUrl: string;
   model: string;
@@ -198,6 +213,7 @@ export interface SettingsView {
 }
 
 export interface SettingsDraft {
+  modelLimits?: Record<string, ModelLimits>;
   apiKey: string;
   clearApiKey: boolean;
   baseUrl: string;
@@ -208,6 +224,7 @@ export interface SettingsDraft {
 }
 
 export interface SaveSettingsInput {
+  modelLimits?: Record<string, ModelLimits>;
   apiKey: string | null;
   clearApiKey: boolean;
   baseUrl: string;

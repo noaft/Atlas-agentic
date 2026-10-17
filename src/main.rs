@@ -29,6 +29,26 @@ fn run_command(command: AppResult) -> Result<(), String> {
             prompt,
             conversation_id,
         } => run_ask(&prompt, conversation_id.as_ref())?,
+        AppResult::ConversationCompact { id } => {
+            let effective = SettingsStore::from_user_config()?
+                .load()?
+                .resolve_from_env()?;
+            let store = ConversationStore::from_user_data()?;
+            let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
+            let runtime = build_runtime_with_settings(
+                &workspace,
+                Path::new("agents/atlas.toml"),
+                &effective,
+            )?;
+            let result = ConversationService::new(&runtime, &store, effective.history_limit)
+                .compact(&id, &mut |progress| {
+                    eprintln!(
+                        "Compacting context: {}/{}",
+                        progress.completed_blocks, progress.total_blocks
+                    )
+                })?;
+            println!("{}", result.message);
+        }
         AppResult::ConversationList => {
             let conversations = ConversationStore::from_user_data()?.list()?;
             if conversations.is_empty() {
@@ -86,7 +106,18 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
             print!("{delta}");
             let _ = stdout.flush();
         },
-        &mut |_| {},
+        &mut |event| match event {
+            atlas_agentic::permissions::ToolEvent::ContextStatus { status }
+                if !status.available =>
+            {
+                eprintln!("Context: {}", status.message)
+            }
+            atlas_agentic::permissions::ToolEvent::Compaction { progress } => eprintln!(
+                "Compacting context: {}/{}",
+                progress.completed_blocks, progress.total_blocks
+            ),
+            _ => {}
+        },
     )?;
     println!("\n{}", render_conversation_metadata(&result.metadata));
     Ok(())

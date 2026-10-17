@@ -15,6 +15,8 @@ import type {
 } from "./types";
 
 export interface AtlasApi {
+  cancelCompaction(id: string): Promise<void>;
+  compactConversation(id: string, onEvent: (event: ChatEvent) => void): Promise<import("./types").CompactionResult>;
   listConversations(): Promise<ConversationMetadata[]>;
   loadConversation(id: string): Promise<Conversation>;
   ask(
@@ -44,6 +46,11 @@ export interface AtlasApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    cancelCompaction: (id) => invoke<void>("cancel_compaction", { id }),
+    compactConversation: (id, onEvent) => {
+      const channel = new Channel<ChatEvent>(onEvent);
+      return invoke<import("./types").CompactionResult>("compact_conversation", { id, channel });
+    },
     listConversations: () => invoke<ConversationMetadata[]>("list_conversations"),
     loadConversation: (id) => invoke<Conversation>("load_conversation", { id }),
     ask: (prompt, conversationId, workspacePath, permissionMode, onEvent) => {

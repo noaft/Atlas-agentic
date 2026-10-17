@@ -57,6 +57,8 @@ fn provider(
 }
 fn request() -> ModelRequest<'static> {
     ModelRequest {
+        memory_blocks: &[],
+        max_output_tokens: None,
         system_prompt: "system instructions",
         user_prompt: "hello",
         history: &[],

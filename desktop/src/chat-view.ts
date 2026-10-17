@@ -1,3 +1,4 @@
+import { renderMemory } from "./memory-view";
 import { createComposerPicker } from "./composer-picker";
 import { createChatComposer } from "./chat-composer";
 import type { ChatStore } from "./chat-state";
@@ -364,6 +365,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   const renderNow = (state: Readonly<ChatState>) => {
     const focusedPickerLabel = document.activeElement?.closest(".composer-picker")
       ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
+    const oldMemoryDisclosure = messages.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]");
+    const focusedMemoryElement = oldMemoryDisclosure?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = chatIsBusy(state);
@@ -491,6 +494,22 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     notices.replaceChildren();
+    if (state.compactionProgress || state.compactionMessage || state.contextStatus) {
+      const status = document.createElement("p");
+      status.className = "memory-status";
+      status.setAttribute("role", "status");
+      status.textContent = state.compactionProgress
+        ? `Compacting context${state.compactionProgress.totalBlocks ? ` · ${state.compactionProgress.completedBlocks} of ${state.compactionProgress.totalBlocks} blocks` : "…"}`
+        : state.compactionMessage ?? (state.contextStatus?.available
+          ? `Context estimate: ${state.contextStatus.inputTokens?.toLocaleString()} input tokens · Auto-compact at 90%`
+          : state.contextStatus?.message ?? "");
+      notices.append(status);
+      if (state.compactionProgress) {
+        const cancel = button("Cancel compaction", "model-picker-retry");
+        cancel.addEventListener("click", () => void store.cancelCompaction());
+        notices.append(cancel);
+      }
+    }
     if (state.pendingApproval) {
       const approval = document.createElement("section");
       approval.className = "approval-card";
@@ -521,12 +540,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       error.setAttribute("role", "alert");
       error.textContent = state.errorMessage;
       notices.append(error);
-    } else if (state.status === "loading" || isStreaming) {
+    } else if (state.status === "loading" || (isStreaming && !state.compactionProgress)) {
       const status = document.createElement("div");
       status.className = "status-notice";
       status.setAttribute("role", "status");
       status.textContent = isStreaming ? "Atlas is responding…" : "Loading conversation…";
       notices.append(status);
+
     }
     if (state.toolActivity.length) {
       const tools = document.createElement("div");
@@ -568,6 +588,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       messages.append(welcome);
     } else {
       state.messages.forEach((message, index) => {
+        if (state.memory && index === state.memory.compactedMessageCount) messages.append(oldMemoryDisclosure?.dataset.memoryCheckpoint === state.memory.checkpointId ? oldMemoryDisclosure : renderMemory(state.memory));
         const rendered = renderMessage(message);
         if (
           isStreaming &&
@@ -614,9 +635,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       label.append(modelPicker.element);
       composer.modelHost.append(label);
       const selectedModel = models.find((model) => model.id === state.settings?.activeModel);
+      const configuredLimit = state.settings.modelLimits?.[state.settings.activeModel]?.contextWindow;
       const reading = state.contextUsage?.model === state.settings.activeModel ? state.contextUsage : null;
       composer.contextMeter.update({
-        maxTokens: selectedModel?.contextWindow ?? null,
+        maxTokens: configuredLimit ?? selectedModel?.contextWindow ?? null,
         usedTokens: reading?.totalTokens ?? null,
         inputTokens: reading?.inputTokens ?? null,
         outputTokens: reading?.outputTokens ?? null,
@@ -684,6 +706,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       composer.permissionHost.append(warning);
     }
     composer.updateState(state);
+    if (focusedMemoryElement?.isConnected) focusedMemoryElement.focus();
     if (focusedPickerLabel) {
       const trigger = [...composer.element.querySelectorAll<HTMLButtonElement>(".composer-picker-trigger")]
         .find((candidate) => candidate.dataset.pickerLabel === focusedPickerLabel);

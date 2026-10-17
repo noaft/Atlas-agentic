@@ -1,3 +1,4 @@
+pub mod context;
 use serde::Serialize;
 
 use crate::{
@@ -61,6 +62,14 @@ impl Runtime {
         self
     }
 
+    pub fn default_agent(&self) -> Result<&dyn crate::agents::Agent, String> {
+        self.agents
+            .default_agent()
+            .ok_or_else(|| "no agent is registered".into())
+    }
+    pub fn tool_definitions(&self) -> Vec<crate::tools::ToolDefinition> {
+        self.tools.definitions()
+    }
     pub fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
         self.agents
             .default_agent()
@@ -122,6 +131,20 @@ impl Runtime {
         permission_mode: PermissionMode,
         callbacks: RuntimeAskCallbacks<'_>,
     ) -> Result<String, String> {
+        let mut context = context::StaticContext {
+            history,
+            activity_context,
+        };
+        self.ask_stream_with_managed_context(prompt, &mut context, permission_mode, callbacks)
+    }
+
+    pub fn ask_stream_with_managed_context(
+        &self,
+        prompt: &str,
+        context: &mut dyn context::RuntimeContext,
+        permission_mode: PermissionMode,
+        callbacks: RuntimeAskCallbacks<'_>,
+    ) -> Result<String, String> {
         let RuntimeAskCallbacks {
             authorizer,
             on_delta,
@@ -140,6 +163,7 @@ impl Runtime {
         let mut retried_invalid_response = false;
         let allow_plain_final = tool_definitions.is_empty();
         let mut first_model_request = true;
+        let mut latest_usage = None;
 
         loop {
             on_tool_event(&ToolEvent::Status {
@@ -151,16 +175,32 @@ impl Runtime {
             });
             first_model_request = false;
             let mut final_stream = FinalContentStream::new(allow_plain_final);
-            let response = agent.process_stream_with_usage(
-                &input,
-                history,
-                &tool_definitions,
-                activity_context,
-                &latest_images,
+            let prepared = context.prepare(
+                agent,
+                context::ContextPreparationRequest {
+                    input: &input,
+                    tools: &tool_definitions,
+                    images: &latest_images,
+                    latest_usage: latest_usage.as_ref(),
+                },
+                on_tool_event,
+            )?;
+            let response = agent.process_request_with_usage(
+                &crate::agents::AgentRequest {
+                    input: &input,
+                    history: &prepared.history,
+                    memory_blocks: &prepared.memory_blocks,
+                    tools: &tool_definitions,
+                    activity_context: (!prepared.activity_context.is_empty())
+                        .then_some(prepared.activity_context.as_str()),
+                    images: &latest_images,
+                    max_output_tokens: prepared.max_output_tokens,
+                },
                 &mut |delta| {
                     final_stream.push(delta, on_delta);
                 },
             )?;
+            latest_usage = response.usage.clone();
             on_tool_event(&ToolEvent::Usage {
                 usage: response.usage,
             });

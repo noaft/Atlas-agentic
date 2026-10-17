@@ -5,7 +5,64 @@ pub use local::{LocalAgent, LocalAgentDefinition};
 use crate::conversations::ConversationMessage;
 use crate::media::ImageData;
 
+pub struct AgentRequest<'a> {
+    pub input: &'a str,
+    pub history: &'a [ConversationMessage],
+    pub memory_blocks: &'a [crate::conversations::MemoryBlock],
+    pub tools: &'a [crate::tools::ToolDefinition],
+    pub activity_context: Option<&'a str>,
+    pub images: &'a [ImageData],
+    pub max_output_tokens: Option<u64>,
+}
 pub trait Agent {
+    fn memory_policy(&self) -> Option<&crate::conversations::ContextPolicy> {
+        None
+    }
+    fn summary_prompt(&self) -> Option<&str> {
+        None
+    }
+    fn model_name(&self) -> &str {
+        self.name()
+    }
+    fn model_limits(&self) -> Result<Option<crate::models::ModelLimits>, String> {
+        Ok(None)
+    }
+    fn estimate_request(
+        &self,
+        _request: &AgentRequest,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        Ok(None)
+    }
+    fn estimate_summary(
+        &self,
+        _request: &crate::models::SummaryRequest,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        Ok(None)
+    }
+    fn summarize(
+        &self,
+        _request: &crate::models::SummaryRequest,
+    ) -> Result<crate::models::SummaryResponse, String> {
+        Err("Agent does not support compaction".into())
+    }
+    fn process_request_with_usage(
+        &self,
+        request: &AgentRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<crate::models::ModelResponse, String> {
+        if !request.memory_blocks.is_empty() {
+            return Err("Agent does not support saved memory".into());
+        }
+        self.process_stream_with_usage(
+            request.input,
+            request.history,
+            request.tools,
+            request.activity_context,
+            request.images,
+            on_delta,
+        )
+    }
+
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;
     fn max_tool_calls(&self) -> Option<usize> {

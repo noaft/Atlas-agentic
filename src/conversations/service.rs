@@ -17,6 +17,7 @@ pub struct ConversationAskResult {
     pub activities: Vec<ActivityRecord>,
     pub activity_duration_ms: u64,
     pub usage: Option<crate::models::ModelUsage>,
+    pub memory: Option<super::MemoryCheckpoint>,
     pub created: bool,
 }
 
@@ -30,6 +31,7 @@ pub struct ConversationService<'a> {
     runtime: &'a Runtime,
     store: &'a ConversationStore,
     history_limit: usize,
+    cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> ConversationService<'a> {
@@ -38,7 +40,54 @@ impl<'a> ConversationService<'a> {
             runtime,
             store,
             history_limit,
+            cancelled: None,
         }
+    }
+
+    pub fn with_cancellation(mut self, cancelled: &'a std::sync::atomic::AtomicBool) -> Self {
+        self.cancelled = Some(cancelled);
+        self
+    }
+    pub fn compact(
+        &self,
+        id: &ConversationId,
+        progress: &mut dyn FnMut(super::CompactionProgress),
+    ) -> Result<super::CompactionResult, String> {
+        self.compact_cancellable(id, progress, None)
+    }
+    pub fn compact_cancellable(
+        &self,
+        id: &ConversationId,
+        progress: &mut dyn FnMut(super::CompactionProgress),
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<super::CompactionResult, String> {
+        let _lease = self.store.acquire_execution(id)?;
+        let agent = self.runtime.default_agent()?;
+        let policy = agent
+            .memory_policy()
+            .ok_or("Conversation compaction is not enabled for this agent")?
+            .clone();
+        let mut context = crate::runtime::context::ConversationContext {
+            store: self.store,
+            conversation: Some(self.store.load(id)?),
+            policy,
+            cancelled,
+        };
+        context.compact(
+            agent,
+            crate::runtime::context::ContextPreparationRequest {
+                input: "",
+                tools: &self.runtime.tool_definitions(),
+                images: &[],
+                latest_usage: None,
+            },
+            super::CompactionTrigger::Manual,
+            &mut |event| {
+                if let ToolEvent::Compaction { progress: p } = event {
+                    progress(p.clone())
+                }
+            },
+        )
     }
 
     pub fn ask(
@@ -173,6 +222,31 @@ impl<'a> ConversationService<'a> {
         requested_permission_mode: PermissionMode,
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResult, String> {
+        let _lease = id.map(|id| self.store.acquire_execution(id)).transpose()?;
+        let agent = self.runtime.default_agent()?;
+        let policy = agent
+            .memory_policy()
+            .cloned()
+            .filter(|_| std::env::var_os("ATLAS_HISTORY_MESSAGES").is_none());
+        if policy.is_none() && agent.memory_policy().is_some() {
+            (callbacks.on_tool_event)(&ToolEvent::ContextStatus {
+                status: crate::runtime::context::ContextStatus {
+                    available: false,
+                    message:
+                        "Legacy history mode: ATLAS_HISTORY_MESSAGES overrides full-history memory"
+                            .into(),
+                    estimated: false,
+                    input_tokens: None,
+                    max_tokens: None,
+                },
+            });
+        }
+        let mut managed = crate::runtime::context::ConversationContext {
+            store: self.store,
+            conversation: id.map(|id| self.store.load(id)).transpose()?,
+            policy: policy.clone().unwrap_or_default(),
+            cancelled: self.cancelled,
+        };
         let (history, activity_context, permission_mode) = match id {
             Some(id) => {
                 let conversation = self.store.load(id)?;
@@ -218,15 +292,26 @@ impl<'a> ConversationService<'a> {
                     summary,
                     details.as_deref().unwrap_or_default(),
                 ),
-                ToolEvent::ApprovalRequested { .. } | ToolEvent::Started { .. } => {}
+                ToolEvent::ApprovalRequested { .. }
+                | ToolEvent::Started { .. }
+                | ToolEvent::Compaction { .. }
+                | ToolEvent::ContextStatus { .. } => {}
             }
             (callbacks.on_tool_event)(event);
         };
         let activity_started_at = Instant::now();
-        let answer = self.runtime.ask_stream_with_context_and_authorization(
+        let mut static_context = crate::runtime::context::StaticContext {
+            history: &history,
+            activity_context: (!activity_context.is_empty()).then_some(activity_context.as_str()),
+        };
+        let context: &mut dyn crate::runtime::context::RuntimeContext = if policy.is_some() {
+            &mut managed
+        } else {
+            &mut static_context
+        };
+        let answer = self.runtime.ask_stream_with_managed_context(
             prompt,
-            &history,
-            (!activity_context.is_empty()).then_some(activity_context.as_str()),
+            context,
             permission_mode,
             RuntimeAskCallbacks {
                 authorizer: callbacks.authorizer,
@@ -277,6 +362,7 @@ impl<'a> ConversationService<'a> {
         };
 
         Ok(ConversationAskResult {
+            memory: self.store.load_memory(&metadata.id)?,
             answer,
             metadata,
             activities,

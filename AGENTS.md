@@ -171,7 +171,7 @@ uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses
 `ATLAS_DATA_DIR` overrides the root for tests and development. The root contains
 `conversations.json`, `conversations.lock`, `conversations/<uuid>.jsonl`, optional
 `activities/<uuid>.jsonl` sidecars, and `trash/`. Delete moves history and any
-activity sidecar to `trash/` and reports the history recovery location; recovery
+activity and memory sidecars to `trash/` and reports the history recovery location; recovery
 is manual, with no CLI restore command.
 
 `ConversationService` coordinates the store and runtime. Save only successful
@@ -181,11 +181,40 @@ failed overall turns save neither. Never persist screenshot pixels, image data,
 or tool attachments. New activity batches also store elapsed runtime/model work
 duration; legacy batches without it remain valid. Raw activity details remain
 local, while later model turns receive only a separately capped summary from the
-same recent turns selected for message history. Keep full message history on
-disk, passing at most the latest 40
-messages to the model by default. `ATLAS_HISTORY_MESSAGES` must be a positive
-integer; selected history stays chronological and drops a leading assistant
-message when needed. The current input is additional to that limit.
+same uncompacted turns selected for message history. Keep all original history
+on disk. The bundled agent enables `[memory]`: full history before compaction,
+then one model message per persisted summary block followed by original messages
+from the checkpoint's exclusive boundary onward. Never silently apply the old
+40-message cap in this mode. Explicit `ATLAS_HISTORY_MESSAGES` opts into legacy
+bounded history; third-party agents without memory configuration retain legacy
+behavior. The environment limit must be positive.
+
+Compaction is token-based: automatic at 90%; manual `/compact` chooses one block
+below 30%, two below 60%, and three from 60% upward. Preserve at least the latest
+10 original messages as whole exchanges. Recompact prior summaries with eligible
+newer messages and replace them, never accumulate endless summary blocks. Each
+block is a separate no-tool request using `conversation_summary_prompt`, with an
+explicit output limit. Split oversized inputs under bounded request/pass limits;
+reject empty or truncated results. Keep summary usage separate from chat usage.
+
+Save `memory/<uuid>.json` atomically with version, policy version, checkpoint ID,
+original-prefix SHA-256 fingerprint, covered ranges, model, trigger, occupancy
+estimate and summary usage. Validate against originals before loading/publishing;
+advance the boundary only with a fully successful fitting checkpoint. A checkpoint
+can survive a subsequent failed ordinary answer. Keep private filesystem modes,
+trash memory with history, and hold per-conversation execution leases for
+ask/compact/delete. Do not hold the global index lock during model calls.
+
+Prepare and budget-check context before every runtime model call, including tool
+continuations and repair calls; never replay tools during compaction. DeepSeek
+currently uses a conservative byte estimate, not an exact tokenizer; distinguish
+that from actual usage. Unknown model capacity or unsupported image accounting
+makes auto-compaction explicitly unavailable. Optional per-model context/output
+limits live in `conversation.modelLimits`; never infer capacities from model
+names. Known oversized requests fail without discarding the protected tail.
+The desktop `/compact` must not create a chat message or persist an unsaved draft;
+progress, checkpoint restoration, cancellation and memory details belong to the
+owning session while other chats continue independently.
 
 After the first successful answer, the agent makes one non-streaming, no-tool title
 request using only the first input and `conversation_title_prompt` from

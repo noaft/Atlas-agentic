@@ -22,6 +22,9 @@ pub enum AppResult {
         conversation_id: Option<ConversationId>,
     },
     ConversationList,
+    ConversationCompact {
+        id: ConversationId,
+    },
     ConversationShow {
         id: ConversationId,
     },
@@ -91,12 +94,13 @@ fn parse_conversation(mut args: impl Iterator<Item = String>) -> Result<AppResul
         .ok_or_else(|| "conversation needs a command: list, show, rename, or delete".to_string())?;
     let result = match command.as_str() {
         "list" => AppResult::ConversationList,
-        "show" | "rename" | "delete" => {
+        "show" | "rename" | "delete" | "compact" => {
             let value = args
                 .next()
                 .ok_or_else(|| format!("conversation {command} needs an ID"))?;
             let id = ConversationId::parse(&value)?;
             match command.as_str() {
+                "compact" => AppResult::ConversationCompact { id },
                 "show" => AppResult::ConversationShow { id },
                 "delete" => AppResult::ConversationDelete { id },
                 _ => {
@@ -125,6 +129,7 @@ pub fn render_help() -> String {
         "Usage:",
         "  atlas ask [--stream] [--conversation <id>] <prompt>",
         "  atlas conversation list",
+        "  atlas conversation compact <id>",
         "  atlas conversation show <id>",
         "  atlas conversation rename <id> <title>",
         "  atlas conversation delete <id>",
@@ -133,7 +138,7 @@ pub fn render_help() -> String {
         "Responses stream by default. --stream remains available as an alias.",
         "Options go before the prompt. Quote prompts and titles containing spaces.",
         "Each ask starts a new conversation unless --conversation selects an existing ID.",
-        "Conversation commands use local data and do not need a model API key.",
+        "List/show/rename/delete use local data without a model key; compact requires model configuration.",
     ]
     .join("\n")
 }

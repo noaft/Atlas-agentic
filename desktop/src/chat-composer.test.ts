@@ -28,6 +28,8 @@ const settings: SettingsView = {
 };
 
 class ComposerApi implements AtlasApi {
+  async cancelCompaction(): Promise<void> {}
+  async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   async listConversations() {
     return [];
   }

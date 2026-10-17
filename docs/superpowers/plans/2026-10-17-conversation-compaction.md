@@ -1,6 +1,6 @@
 # Conversation Compaction Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Ship persisted conversation memory with token-based automatic compaction, manual `/compact`, one message per summary block, and a protected recent-message tail.
 
@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-17-conversation-compaction-design.md`, including the subsequently approved summarizer prompt reproduced in Task 3.
 
-**Execution:** Native execution in this session, preserving the user's request to create a plan and execute it. One independent whole-change review after implementation. One focused implementation commit, then the previously selected local merge workflow. This written plan still needs the skill-required review before execution.
+**Execution:** Native execution in this session, preserving the user's request to create a plan and execute it. One independent whole-change review after implementation. One focused implementation commit, then the previously selected local merge workflow. The user reviewed and approved this plan before execution.
 
 ## Global Constraints
 
@@ -54,13 +54,13 @@
 
 **Interfaces:** Produce the memory/range/budget types above; `choose_block_count(trigger, occupancy_percent) -> usize`; `plan_sources(messages, previous_memory, block_count, keep_recent) -> Result<SourcePlan, String>`. SourcePlan includes the retained start index and ordered source items with original coverage.
 
-- [ ] Write tests: 29.99/30/59.99/60/89.99/90% manual boundaries; auto always targets 3; 100+ messages retained before compaction; latest 10 protected; contiguous complete-exchange ranges; legacy/empty/short histories; existing summary blocks remain atomic during repartitioning.
-- [ ] Run `cargo test --test context_planning_behavior`; observe expected failures before implementing.
-- [ ] Add configurable local agent `[memory]` policy: `enabled=true`, `auto_trigger_percent=90`, `keep_recent_messages=10`, `summary_max_tokens=2048`, `output_reserve_tokens=4096`, `max_reduction_passes=4`, `max_summary_requests=24`. Validate positive limits and percentages. Missing memory policy in third-party definitions defaults to disabled for compatibility; bundled Atlas enables it.
-- [ ] Add optional saved per-model capacity overrides keyed by model ID. Missing overrides use cached provider-discovered metadata. Do not infer capacity from model name; cache discovery per runtime. Add frontend fields for explicit limits in Task 5. Legacy settings deserialize unchanged.
-- [ ] Add the `ModelRequest.memory_blocks` and `max_output_tokens` fields and update existing request fixtures with empty/None defaults. Add provider `model_limits()` and `estimate_request(&ModelRequest)` capability methods. DeepSeek budget accounting uses the same rendered messages as HTTP serialization; test Unicode, system/protocol, tool schemas, memory messages, and activity context. Document conservative estimation and its limits; unsupported image accounting yields unknown, not zero. Exact/estimated status propagates through every result.
-- [ ] Enforce output reserve against known output/context limits. Unknown-capacity/counting status disables automatic compaction visibly; never claim an exact preflight count. A known oversized prepared request cannot be sent. Manual compaction without a usable budget returns an actionable configuration error.
-- [ ] Run focused tests, `cargo test`, and `cargo fmt --check`; expected all pass. Ledger results; final commit follows Task 6.
+- [x] Write tests: 29.99/30/59.99/60/89.99/90% manual boundaries; auto always targets 3; 100+ messages retained before compaction; latest 10 protected; contiguous complete-exchange ranges; legacy/empty/short histories; existing summary blocks remain atomic during repartitioning.
+- [x] Run `cargo test --test context_planning_behavior`; observe expected failures before implementing.
+- [x] Add configurable local agent `[memory]` policy: `enabled=true`, `auto_trigger_percent=90`, `keep_recent_messages=10`, `summary_max_tokens=2048`, `output_reserve_tokens=4096`, `max_reduction_passes=4`, `max_summary_requests=24`. Validate positive limits and percentages. Missing memory policy in third-party definitions defaults to disabled for compatibility; bundled Atlas enables it.
+- [x] Add optional saved per-model capacity overrides keyed by model ID. Missing overrides use cached provider-discovered metadata. Do not infer capacity from model name; cache discovery per runtime. Add frontend fields for explicit limits in Task 5. Legacy settings deserialize unchanged.
+- [x] Add the `ModelRequest.memory_blocks` and `max_output_tokens` fields and update existing request fixtures with empty/None defaults. Add provider `model_limits()` and `estimate_request(&ModelRequest)` capability methods. DeepSeek budget accounting uses the same rendered messages as HTTP serialization; test Unicode, system/protocol, tool schemas, memory messages, and activity context. Document conservative estimation and its limits; unsupported image accounting yields unknown, not zero. Exact/estimated status propagates through every result.
+- [x] Enforce output reserve against known output/context limits. Unknown-capacity/counting status disables automatic compaction visibly; never claim an exact preflight count. A known oversized prepared request cannot be sent. Manual compaction without a usable budget returns an actionable configuration error.
+- [x] Run focused tests, `cargo test`, and `cargo fmt --check`; expected all pass. Ledger results; final commit follows Task 6.
 
 ### Task 2: Transactional local memory and conversation leases
 
@@ -68,11 +68,11 @@
 
 **Interfaces:** Produce `ConversationLease` RAII guard and the store methods above. `MemoryCheckpoint` contains version, conversation ID, checkpoint ID, creation time/model, policy version, trigger, occupancy+estimate flag, requested/actual block count, prefix fingerprint, exclusive boundary, ordered blocks and separate summary usage.
 
-- [ ] Write failing tests: memory absent on legacy load; exact block/range round trip; corrupt JSON/version/fingerprint; gaps/overlaps/out-of-range/end beyond transcript; publisher failure preserves old checkpoint; stale expected checkpoint rejected; append preserves a valid covered prefix; rename retains memory; delete/trash moves memory and rolls back coherently on failure.
-- [ ] Add process/lease tests: same conversation cannot execute concurrent ask/compact/delete; different IDs proceed; releasing or crashing the lease owner unblocks future operations. Keep the global storage lock outside model calls.
-- [ ] Run `cargo test --test memory_store_behavior`; verify failure, then implement private `memory/<uuid>.json`, per-ID lease files, unique private temporary files, flush/sync and atomic publication using existing store portability conventions. Only publish after source-prefix and expected-checkpoint validation under the store lock.
-- [ ] Add optional memory to loaded `Conversation`; use serde defaults at wire boundaries. Store delete must follow lease-before-global-lock ordering consistently to avoid deadlocks. A draft never creates memory storage.
-- [ ] Run focused/core tests and format checks. Ledger results; final commit follows Task 6.
+- [x] Write failing tests: memory absent on legacy load; exact block/range round trip; corrupt JSON/version/fingerprint; gaps/overlaps/out-of-range/end beyond transcript; publisher failure preserves old checkpoint; stale expected checkpoint rejected; append preserves a valid covered prefix; rename retains memory; delete/trash moves memory and rolls back coherently on failure.
+- [x] Add process/lease tests: same conversation cannot execute concurrent ask/compact/delete; different IDs proceed; releasing or crashing the lease owner unblocks future operations. Keep the global storage lock outside model calls.
+- [x] Run `cargo test --test memory_store_behavior`; verify failure, then implement private `memory/<uuid>.json`, per-ID lease files, unique private temporary files, flush/sync and atomic publication using existing store portability conventions. Only publish after source-prefix and expected-checkpoint validation under the store lock.
+- [x] Add optional memory to loaded `Conversation`; use serde defaults at wire boundaries. Store delete must follow lease-before-global-lock ordering consistently to avoid deadlocks. A draft never creates memory storage.
+- [x] Run focused/core tests and format checks. Ledger results; final commit follows Task 6.
 
 ### Task 3: Bounded summary task and preservation prompt
 
@@ -80,10 +80,10 @@
 
 **Interfaces:** Agent exposes `summarize(&SummaryRequest) -> Result<SummaryResponse, String>` and context budgeting through provider-neutral types. `CompactionService::compact(input: CompactionInput, on_progress) -> Result<CompactionResult, String>` consumes a validated source snapshot, policy, agent, store and lease-held conversation ID. The summary HTTP payload has no tools, tool protocol, history outside its block, or screenshot data.
 
-- [ ] Write failing fake-provider/loopback tests: one request per normal block, selected block count, strict max_tokens payload, stop versus length/filtered/missing finish reason, empty summary, block-3 failure, previous-summary replacement, no chat usage/title contamination, and no checkpoint publication before every block succeeds.
-- [ ] Add tests for a huge block/single Unicode message: split on UTF-8 boundaries with source provenance, summarize bounded pieces, and reduce within 4 passes/24 total requests. Each pass must reduce size or fail; every intermediate and final request is budget-checked. Final output is one summary per original target block, not one per intermediate request. Budget-limit failure keeps the previous checkpoint.
-- [ ] Implement the provider's nonstreaming summary request with explicit output limit and finish reason. Keep the existing complete/stream APIs compatible. Reject unknown/incomplete/truncated generation status for checkpoint publication. Confirm API fields against the official DeepSeek reference linked below.
-- [ ] Put this exact system prompt in the bundled agent's `conversation_summary_prompt`, validating nonblank when memory is enabled:
+- [x] Write failing fake-provider/loopback tests: one request per normal block, selected block count, strict max_tokens payload, stop versus length/filtered/missing finish reason, empty summary, block-3 failure, previous-summary replacement, no chat usage/title contamination, and no checkpoint publication before every block succeeds.
+- [x] Add tests for a huge block/single Unicode message: split on UTF-8 boundaries with source provenance, summarize bounded pieces, and reduce within 4 passes/24 total requests. Each pass must reduce size or fail; every intermediate and final request is budget-checked. Final output is one summary per original target block, not one per intermediate request. Budget-limit failure keeps the previous checkpoint.
+- [x] Implement the provider's nonstreaming summary request with explicit output limit and finish reason. Keep the existing complete/stream APIs compatible. Reject unknown/incomplete/truncated generation status for checkpoint publication. Confirm API fields against the official DeepSeek reference linked below.
+- [x] Put this exact system prompt in the bundled agent's `conversation_summary_prompt`, validating nonblank when memory is enabled:
 
 ```text
 You are Atlas's conversation-memory summarizer.
@@ -99,8 +99,8 @@ Output only one concise Markdown memory block, using these sections when relevan
 Stay within the supplied output-token budget. Prioritize information whose loss could cause an incorrect action, repeated work, or a violation of user instructions. Use the available budget for useful detail rather than aiming for the shortest possible summary.
 ```
 
-- [ ] Pass block number, source coverage, budget, and serialized role-labeled source data as one user content. Delimiters label data, never confer trust. Validate successful nonempty bounded output, compute final fit, publish all blocks and new boundary together. Fewer eligible messages yields a no-op without model calls.
-- [ ] Run summary/provider/core tests and formatting. Ledger results; final commit follows Task 6.
+- [x] Pass block number, source coverage, budget, and serialized role-labeled source data as one user content. Delimiters label data, never confer trust. Validate successful nonempty bounded output, compute final fit, publish all blocks and new boundary together. Fewer eligible messages yields a no-op without model calls.
+- [x] Run summary/provider/core tests and formatting. Ledger results; final commit follows Task 6.
 
 ### Task 4: Wire memory into every runtime call and CLI
 
@@ -108,14 +108,14 @@ Stay within the supplied output-token budget. Prioritize information whose loss 
 
 **Interfaces:** Add managed-context runtime entry point using `&mut dyn RuntimeContext`, retaining old wrappers through static context. `ConversationService::compact(id, on_progress)` exposes manual operation; normal service builds its coordinator when the agent enables memory. Add `AppResult::ConversationCompact { id }` and `ToolEvent::Compaction { progress }` / context-status event.
 
-- [ ] Write failing end-to-end tests: all messages beyond 40 included; a saved block becomes exactly one user-role historical message before original suffix; marker excludes covered history/activity exactly once; automatic 90% triggers three blocks; manual bucket count uses fresh occupancy; originals/latest 10 untouched; repeat compact replaces old summaries; persisted memory survives restart and a later failed chat answer.
-- [ ] Add mid-turn tests: large tool output triggers preparation again, tools execute once, images remain ephemeral, approvals survive, repair calls also budget-check, smaller model rechecks limits, protected tail/new input too large errors without silent dropping, and unknown capacity reports unavailable rather than inventing percentage. Stop a request if known budget cannot fit; do not auto-loop on summary failure.
-- [ ] Implement coordinator: load checkpoint and transcript under conversation lease, validate prefix, construct memory+suffix and sanitized activity, estimate full next request, run compaction when needed, then return prepared context. Track the last usage's context generation so a stale pre-compaction reading cannot trigger compaction again immediately.
-- [ ] Add the grouped AgentRequest interface, forward the ModelRequest memory/output fields introduced in Task 1, and update agent fixtures. DeepSeek renders each block as a separate explicitly labeled historical-context user message. Existing runtime tool protocol/system instructions identify memory as historical data. Summary-only usage never emits ordinary chat Usage events.
-- [ ] Retain current input/tool results during in-turn compaction. If those cannot fit even after saved-history compaction, return a specific error without rerunning tools or deleting the protected tail. Only retry a provider capacity error once when no action can be repeated and a smaller preparation is possible; otherwise surface it.
-- [ ] Migrate default Atlas to full-history memory mode; configured saved history-limit values remain readable but are not active in that mode. Explicit `ATLAS_HISTORY_MESSAGES` selects visible legacy mode, preserving checkpoint storage but not injecting it into an inconsistent truncated range. Do not erase existing checkpoints when toggling modes.
-- [ ] Add and test `atlas conversation compact <id>`; it requires model configuration while list/show/rename/delete/help remain configuration-free. CLI reports no-op/progress/result and real model errors without inserting a chat turn.
-- [ ] Run parser/binary/conversation/runtime tests, full `cargo test`, format and Clippy. Ledger results; final commit follows Task 6.
+- [x] Write failing end-to-end tests: all messages beyond 40 included; a saved block becomes exactly one user-role historical message before original suffix; marker excludes covered history/activity exactly once; automatic 90% triggers three blocks; manual bucket count uses fresh occupancy; originals/latest 10 untouched; repeat compact replaces old summaries; persisted memory survives restart and a later failed chat answer.
+- [x] Add mid-turn tests: large tool output triggers preparation again, tools execute once, images remain ephemeral, approvals survive, repair calls also budget-check, smaller model rechecks limits, protected tail/new input too large errors without silent dropping, and unknown capacity reports unavailable rather than inventing percentage. Stop a request if known budget cannot fit; do not auto-loop on summary failure.
+- [x] Implement coordinator: load checkpoint and transcript under conversation lease, validate prefix, construct memory+suffix and sanitized activity, estimate full next request, run compaction when needed, then return prepared context. Track the last usage's context generation so a stale pre-compaction reading cannot trigger compaction again immediately.
+- [x] Add the grouped AgentRequest interface, forward the ModelRequest memory/output fields introduced in Task 1, and update agent fixtures. DeepSeek renders each block as a separate explicitly labeled historical-context user message. Existing runtime tool protocol/system instructions identify memory as historical data. Summary-only usage never emits ordinary chat Usage events.
+- [x] Retain current input/tool results during in-turn compaction. If those cannot fit even after saved-history compaction, return a specific error without rerunning tools or deleting the protected tail. Only retry a provider capacity error once when no action can be repeated and a smaller preparation is possible; otherwise surface it.
+- [x] Migrate default Atlas to full-history memory mode; configured saved history-limit values remain readable but are not active in that mode. Explicit `ATLAS_HISTORY_MESSAGES` selects visible legacy mode, preserving checkpoint storage but not injecting it into an inconsistent truncated range. Do not erase existing checkpoints when toggling modes.
+- [x] Add and test `atlas conversation compact <id>`; it requires model configuration while list/show/rename/delete/help remain configuration-free. CLI reports no-op/progress/result and real model errors without inserting a chat turn.
+- [x] Run parser/binary/conversation/runtime tests, full `cargo test`, format and Clippy. Ledger results; final commit follows Task 6.
 
 ### Task 5: Desktop `/compact`, progress and memory viewer
 
@@ -123,22 +123,22 @@ Stay within the supplied output-token budget. Prioritize information whose loss 
 
 **Interfaces:** `AtlasApi.compactConversation(id, onEvent): Promise<CompactionResult>`; Tauri `compact_conversation` runs blocking work off the event thread, owns the same per-conversation active-request guard, derives workspace from saved metadata, and forwards progress/status. Loaded conversation/ask results carry optional checkpoint metadata; memory text is available locally for the viewer. Add session-owned `memory`, `compactionProgress` and context-budget availability/estimate status; include them in session isolation keys.
 
-- [ ] Write failing native/frontend tests: standalone trimmed `/compact` intercepted before user/pending messages; unsaved drafts and insufficient history return local no-op; no history writes or title generation; progress 1/N; successful manual compact does not change actual usage; failure retains checkpoint; old sessions/events cannot update another chat; other chats can send while one compacts.
-- [ ] Test automatic compaction resumes the original pending ask, checkpoint survives reload, the divider appears at the actual boundary, and View memory lists separate contents with source ranges/model/time. Preserve transcript scrolling and keyboard access. Restored stale usage is labeled last call, not a fresh post-compaction percentage.
-- [ ] Implement compact DTOs/events, command registration and atlas-api adapter; update fake APIs explicitly. No frontend filesystem/shell permissions. Do not route `/compact` through ordinary ask or create a draft conversation for it. Keep composer busy only for its owning operation and cancel/retry behavior consistent with current request ownership.
-- [ ] Implement checkpoint/progress session state and accessible memory details component. On completion refresh memory for the owning saved chat without changing selection. If an automatic compaction checkpoint succeeds but the answer fails, reload/preserve memory rather than losing the saved boundary.
-- [ ] Add Settings inputs for selected model capacity/output-limit overrides with positive validation; show auto-compaction availability and legacy-mode status. Remove the misleading active 40-message control in memory mode while preserving backward-compatible settings loading. Prompt/config details remain outside the normal chat flow.
-- [ ] Run `npm --prefix desktop test`, `npm --prefix desktop run build`, native tests/format/Clippy. Expected all pass. Ledger results; final commit follows Task 6.
+- [x] Write failing native/frontend tests: standalone trimmed `/compact` intercepted before user/pending messages; unsaved drafts and insufficient history return local no-op; no history writes or title generation; progress 1/N; successful manual compact does not change actual usage; failure retains checkpoint; old sessions/events cannot update another chat; other chats can send while one compacts.
+- [x] Test automatic compaction resumes the original pending ask, checkpoint survives reload, the divider appears at the actual boundary, and View memory lists separate contents with source ranges/model/time. Preserve transcript scrolling and keyboard access. Restored stale usage is labeled last call, not a fresh post-compaction percentage.
+- [x] Implement compact DTOs/events, command registration and atlas-api adapter; update fake APIs explicitly. No frontend filesystem/shell permissions. Do not route `/compact` through ordinary ask or create a draft conversation for it. Keep composer busy only for its owning operation and cancel/retry behavior consistent with current request ownership.
+- [x] Implement checkpoint/progress session state and accessible memory details component. On completion refresh memory for the owning saved chat without changing selection. If an automatic compaction checkpoint succeeds but the answer fails, reload/preserve memory rather than losing the saved boundary.
+- [x] Add Settings inputs for selected model capacity/output-limit overrides with positive validation; show auto-compaction availability and legacy-mode status. Remove the misleading active 40-message control in memory mode while preserving backward-compatible settings loading. Prompt/config details remain outside the normal chat flow.
+- [x] Run `npm --prefix desktop test`, `npm --prefix desktop run build`, native tests/format/Clippy. Expected all pass. Ledger results; final commit follows Task 6.
 
 ### Task 6: Documentation, independent review, final verification and integration
 
 **Files:** Update `README.md`, `AGENTS.md`, and this plan's task checkboxes; amend the spec only to record justified implementation rulings.
 
-- [ ] Document full history, percentage-based triggers/buckets, retained tail, one-block/one-message storage, repeated compaction replacement, `/compact`/CLI, model capacity overrides, unknown/estimated budgets, summary costs, history-limit migration, and memory trash/recovery. Clearly distinguish saved originals from working context and estimated versus provider-reported usage.
-- [ ] Run `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, native formatting/tests/Clippy, frontend tests/build, and `npm --prefix desktop run tauri -- build --debug --no-bundle`. Inspect every exit status. Use the repository's shared build targets for the isolated worktree; do not stage build outputs or node_modules.
-- [ ] Request one independent whole-change review against the spec and this plan. Resolve important findings with regressions and rerun affected checks. Record any minor deferred items explicitly; do not silently drop required behavior.
-- [ ] Review `git status --short` and the staged diff. Commit only current-task files as `feat: add persisted conversation compaction`. The plan/spec count as task files; secrets and unrelated changes never do.
-- [ ] Follow the established local merge-to-main choice, verify merged results, then clean up only the worktree/branch created for this task. Report implementation, limitations, verification and commit ID.
+- [x] Document full history, percentage-based triggers/buckets, retained tail, one-block/one-message storage, repeated compaction replacement, `/compact`/CLI, model capacity overrides, unknown/estimated budgets, summary costs, history-limit migration, and memory trash/recovery. Clearly distinguish saved originals from working context and estimated versus provider-reported usage.
+- [x] Run `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, native formatting/tests/Clippy, frontend tests/build, and `npm --prefix desktop run tauri -- build --debug --no-bundle`. Inspect every exit status. Use the repository's shared build targets for the isolated worktree; do not stage build outputs or node_modules.
+- [x] Request one independent whole-change review against the spec and this plan. Resolve important findings with regressions and rerun affected checks. Record any minor deferred items explicitly; do not silently drop required behavior.
+- [x] Review `git status --short` and the staged diff. Commit only current-task files as `feat: add persisted conversation compaction`. The plan/spec count as task files; secrets and unrelated changes never do.
+- [x] Follow the established local merge-to-main choice, verify merged results, then clean up only the worktree/branch created for this task. Report implementation, limitations, verification and commit ID.
 
 ## Planning checks and execution handoff
 
@@ -150,7 +150,19 @@ interfaces above are the authority if a task shorthand differs.
 
 Use an isolated `.worktrees/conversation-compaction` branch at execution time.
 Record task completion evidence and any rulings in an ignored progress ledger;
-proceed continuously after written-plan review. This plan does not claim any
-implementation is already present.
+execution completed after written-plan approval.
 
 Provider reference: [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) for explicit output limits and completion finish reasons. Do not rely on prose truncation detection.
+
+
+## Verification record
+
+Implemented and checked with 285 core tests, 44 native tests, and 159 frontend
+tests; both Clippy commands, both formatting checks, frontend build, and debug
+Tauri build passed. Independent review identified six important issues; each was
+addressed with regression coverage: aggregate summary budgets, speaker/range
+provenance during reduction, automatic cancellation, CLI status visibility,
+obsolete notices, and memory-disclosure state. An additional model-switch test
+prevents another model's prior usage from triggering compaction. Recompaction can
+replace existing memory even without newly eligible original messages. No deferred
+review findings. Final local integration follows the focused implementation commit.

@@ -1,3 +1,4 @@
+pub mod memory;
 use std::{
     collections::BTreeMap,
     env, fmt,
@@ -372,6 +373,7 @@ impl ConversationStore {
             let mut metadata = index.conversations[position].clone();
             reconcile_metadata(&mut metadata, &messages);
             Ok(Conversation {
+                memory: self.read_memory(id, &messages)?,
                 metadata,
                 messages,
                 activities,
@@ -415,6 +417,7 @@ impl ConversationStore {
     }
 
     pub fn delete(&self, id: &ConversationId) -> Result<PathBuf, String> {
+        let _lease = self.acquire_execution(id)?;
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
@@ -453,21 +456,32 @@ impl ConversationStore {
                 false
             };
 
+            let memory_path = self.memory_path(id);
+            let memory_trash_path = trash_dir.join(format!("{id}.memory.json"));
+            let moved_memory = memory_path.exists();
+            if moved_memory {
+                if let Err(error) = fs::rename(&memory_path, &memory_trash_path) {
+                    let activity_rollback = if moved_activity { fs::rename(&activity_trash_path, &activity_path) } else { Ok(()) };
+                    let history_rollback = fs::rename(&trash_path, &history_path);
+                    return Err(format!("Could not trash memory: {error}; rollback history={history_rollback:?}, activity={activity_rollback:?}"));
+                }
+            }
             index.conversations.remove(position);
             if let Err(publication_error) = self.write_index(&index) {
+                let memory_rollback = if moved_memory { fs::rename(&memory_trash_path, &memory_path) } else { Ok(()) };
                 let activity_rollback = if moved_activity {
                     fs::rename(&activity_trash_path, &activity_path)
                 } else {
                     Ok(())
                 };
                 let history_rollback = fs::rename(&trash_path, &history_path);
-                return match (history_rollback, activity_rollback) {
-                    (Ok(()), Ok(())) => Err(format!(
+                return match (history_rollback, activity_rollback, memory_rollback) {
+                    (Ok(()), Ok(()), Ok(())) => Err(format!(
                         "{publication_error}; deletion rolled back to {}",
                         history_path.display()
                     )),
-                    (history_result, activity_result) => Err(format!(
-                        "{publication_error}; deletion rollback incomplete: history={history_result:?}, activity={activity_result:?}; history remains recoverable at {}",
+                    (history_result, activity_result, memory_result) => Err(format!(
+                        "{publication_error}; deletion rollback incomplete: history={history_result:?}, activity={activity_result:?}, memory={memory_result:?}; history remains recoverable at {}",
                         trash_path.display()
                     )),
                 };

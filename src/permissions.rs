@@ -116,6 +116,12 @@ pub enum RuntimeStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ToolEvent {
+    Compaction {
+        progress: crate::conversations::CompactionProgress,
+    },
+    ContextStatus {
+        status: crate::runtime::context::ContextStatus,
+    },
     Usage {
         usage: Option<crate::models::ModelUsage>,
     },

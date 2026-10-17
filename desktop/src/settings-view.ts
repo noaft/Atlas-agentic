@@ -154,23 +154,28 @@ export function renderSettings(
   permissionField.append(permissionTitle, permission, permissionHint);
   form.append(permissionField);
 
-  const history = inputFor(
-    String(draft.historyLimit),
-    (value) => store.updateSettingsDraft({ historyLimit: Number(value) }),
-    saving || overridden.has("historyLimit"),
-  );
-  history.type = "number";
-  history.min = "1";
-  history.step = "1";
-  form.append(
-    field(
-      "Conversation history messages",
-      history,
-      overridden.has("historyLimit")
-        ? "Controlled by ATLAS_HISTORY_MESSAGES."
-        : "Newest messages included with each request.",
-    ),
-  );
+  if (overridden.has("historyLimit")) {
+    const history = inputFor(String(draft.historyLimit), () => {}, true);
+    form.append(field("Conversation history messages", history, "Legacy history mode: controlled by ATLAS_HISTORY_MESSAGES. Automatic memory is disabled."));
+  } else {
+    const memoryHint = document.createElement("p");
+    memoryHint.className = "settings-hint";
+    memoryHint.textContent = "Conversation memory sends all history until compaction. Auto-compact at 90%, preserve the latest 10 messages. Type /compact to compact manually.";
+    form.append(memoryHint);
+  }
+  const limits = draft.modelLimits?.[settings.activeModel];
+  const setLimit = (key: "contextWindow" | "maxOutputTokens", value: string) => {
+    const next = { ...(store.getState().settingsDraft?.modelLimits ?? {}) };
+    const current = next[settings.activeModel] ?? { contextWindow: 0, maxOutputTokens: 0 };
+    next[settings.activeModel] = { ...current, [key]: value.trim() ? Number(value) : 0 };
+    if (!next[settings.activeModel].contextWindow && !next[settings.activeModel].maxOutputTokens) delete next[settings.activeModel];
+    store.updateSettingsDraft({ modelLimits: next });
+  };
+  for (const [key, label] of [["contextWindow", "Model context limit (tokens)"], ["maxOutputTokens", "Model output limit (tokens)"]] as const) {
+    const input = inputFor(limits?.[key] ? String(limits[key]) : "", (value) => setLimit(key, value), saving);
+    input.type = "number"; input.min = "1"; input.step = "1";
+    form.append(field(label, input, "Optional override for the active model. Set both limits, or leave both blank to use provider metadata."));
+  }
 
   const workspaceBlock = document.createElement("div");
   workspaceBlock.className = "settings-workspace";

@@ -16,3 +16,13 @@ pub use types::{
     history_limit_from_env, select_recent_history, Conversation, ConversationId,
     ConversationMessage, ConversationMetadata, MessageRole, DEFAULT_HISTORY_MESSAGES,
 };
+
+mod context;
+mod memory;
+pub use context::{choose_block_count, retained_start, ContextPolicy};
+pub use memory::{
+    CompactionProgress, CompactionResult, CompactionTrigger, MemoryBlock, MemoryCheckpoint,
+};
+pub use store::memory::{memory_fingerprint, ConversationLease};
+
+pub(crate) mod compaction;

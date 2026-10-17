@@ -79,7 +79,13 @@ fn successful_stdout(output: Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .lines()
+            .all(|line| line.starts_with("Context: ") || line.starts_with("Compacting context: ")),
+        "{stderr}"
+    );
     String::from_utf8(output.stdout).unwrap()
 }
 
@@ -295,12 +301,15 @@ fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer()
     );
     let all = fixture.store().list().unwrap();
     assert_eq!(all.len(), 2);
-    assert_ne!(all[0].id, saved.id);
+    let newly_saved = all
+        .iter()
+        .find(|entry| entry.id != saved.id)
+        .expect("second ask must create a distinct conversation");
     assert_eq!(
         second,
         format!(
             "Hello from Atlas\nConversation: {} | Atlas greeting\n",
-            all[0].id
+            newly_saved.id
         )
     );
     assert_eq!(server.request()["messages"].as_array().unwrap().len(), 2);
@@ -350,7 +359,7 @@ fn continuation_uses_supplied_id_and_configured_recent_history_without_retitle()
 }
 
 #[test]
-fn ask_uses_saved_provider_history_settings_and_current_directory_workspace() {
+fn ask_uses_saved_provider_full_history_and_current_directory_workspace() {
     let fixture = CliFixture::new();
     fixture.install_agent();
     let server = FakeDeepSeek::new();
@@ -393,6 +402,8 @@ fn ask_uses_saved_provider_history_settings_and_current_directory_workspace() {
     assert_eq!(
         &first_request["messages"].as_array().unwrap()[1..],
         &[
+            json!({"role":"user","content":"Old question"}),
+            json!({"role":"assistant","content":"Old answer"}),
             json!({"role":"user","content":"Recent question"}),
             json!({"role":"assistant","content":"Recent answer"}),
             json!({"role":"user","content":"report workspace"}),
@@ -490,7 +501,13 @@ fn cli_prompts_for_risky_tools_and_full_access_bypasses_the_prompt() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .lines()
+            .all(|line| line.starts_with("Context: ") || line.starts_with("Compacting context: ")),
+        "{stderr}"
+    );
     assert!(full.workspace.path().join("approved.txt").is_file());
 }
 
@@ -546,6 +563,11 @@ impl FakeDeepSeek {
                     .set_write_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
                 let request = read_request(&mut socket);
+                if request["models"] == true {
+                    let body = r#"{"data":[]}"#;
+                    write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    continue;
+                }
                 let last_user_content = request["messages"]
                     .as_array()
                     .and_then(|messages| messages.last())
@@ -607,7 +629,10 @@ fn read_request(socket: &mut TcpStream) -> Value {
     let mut reader = BufReader::new(socket);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
-    assert_eq!(line, "POST /chat/completions HTTP/1.1\r\n");
+    let models = line == "GET /models HTTP/1.1\r\n";
+    if !models {
+        assert_eq!(line, "POST /chat/completions HTTP/1.1\r\n");
+    }
     let mut length = None;
     let mut authorization = None;
     loop {
@@ -625,7 +650,24 @@ fn read_request(socket: &mut TcpStream) -> Value {
         }
     }
     assert_eq!(authorization.as_deref(), Some("Bearer fake_key_for_test"));
+    if models {
+        return json!({"models":true});
+    }
     let mut body = vec![0; length.unwrap()];
     reader.read_exact(&mut body).unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+#[test]
+fn cli_reports_when_automatic_compaction_capacity_is_unknown() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let output = fixture
+        .ask_command(&server)
+        .args(["ask", "hello"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Automatic compaction unavailable"));
 }

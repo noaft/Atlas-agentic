@@ -176,8 +176,9 @@ Atlas resolves these locations with a platform directory library.
 `ATLAS_DATA_DIR` can override the data root for development or tests. The root
 contains `conversations.json` (metadata), `conversations.lock`, one
 `conversations/<uuid>.jsonl` history file per conversation, optional
-`activities/<uuid>.jsonl` activity sidecars, and `trash/`. Delete removes the
-conversation from the index and moves its history and any activity sidecar to
+`activities/<uuid>.jsonl` activity sidecars, optional `memory/<uuid>.json`
+checkpoints, per-conversation execution leases, and `trash/`. Delete removes the
+conversation from the index and moves its history, memory checkpoint, and any activity sidecar to
 `trash/`. The command prints the history location so the messages can be
 recovered manually; there is no CLI restore command.
 
@@ -190,14 +191,51 @@ attachments are never persisted. The desktop shows this record in an expandable
 Activity section above each Atlas answer and includes the elapsed runtime/model
 work duration for new turns.
 
-Atlas keeps complete message history on disk and sends the most recent 40
-messages by default
-(up to 20 complete turns) to the model. Set `ATLAS_HISTORY_MESSAGES` to a positive
-integer to change that limit. A cut window drops a leading assistant message so
-the selected history begins with a user message; the new input is always added
-after the window and does not count toward the limit. Later turns also receive a
-separately capped summary of activity belonging to that same recent history
-window. Raw activity details are not automatically sent to the provider.
+Atlas keeps complete original history on disk. The bundled Atlas agent sends all
+history until context compaction is needed. Automatic compaction targets **90% of
+the selected model's token capacity**, checking the next request before every
+model call, including tool follow-ups, and reserving space for output. The current
+DeepSeek preflight counter is a conservative UTF-8 byte estimate, not an exact
+tokenizer, so compaction can happen earlier than the actual usage ring suggests.
+The ring continues to show the last actual chat-model usage; summary usage is
+separate. Image token accounting is currently unavailable and explicitly disables
+automatic compaction for that request rather than pretending images use zero tokens.
+
+Use `/compact` in a saved desktop chat, or `atlas conversation compact <id>` from
+the CLI. Manual compaction produces one summary below 30% occupancy, two from 30%
+to below 60%, and three at 60% or higher. Automatic compaction targets three.
+Short sources use fewer nonempty blocks. Each block produces one summary message;
+the latest **10 original messages** remain unchanged (extended to whole exchanges).
+Later turns load the saved summaries plus originals from the saved boundary onward.
+Repeated compaction replaces the previous summaries together with that boundary.
+All original messages remain visible, and View memory shows each summary and its
+covered range. Summary requests use the selected provider and consume tokens.
+
+Memory checkpoints publish atomically only after every bounded, no-tool summary
+request succeeds and the prepared context fits. Empty, truncated, failed or
+cancelled summaries retain the old checkpoint. Cancel compaction takes effect
+between model requests, after an in-flight summary returns. Successful checkpoints
+remain saved even if the subsequent ordinary answer fails. Deleting a conversation
+moves memory to `trash/<uuid>.memory.json`; restoration is manual with its original
+history/index. Per-conversation locks prevent competing asks/compactions across
+processes while allowing other chats to continue.
+
+Automatic compaction needs known context/output limits. When provider discovery
+does not supply both, set **Model context limit** and **Model output limit** in
+Settings for the active model, or configure `conversation.modelLimits` in the local
+settings file. Both must be positive and output must be smaller than context.
+Without usable limits/budgeting, Atlas shows compaction as unavailable and sends
+full history; manual compaction returns a configuration error. Oversized requests
+with known budgets fail without silently deleting protected recent messages.
+
+The local `[memory]` policy and `conversation_summary_prompt` in `agents/atlas.toml`
+configure thresholds, tail size, summary/output budgets, and bounded reduction.
+Third-party agents without a memory policy keep their existing history behavior.
+The saved legacy history-limit field remains compatible but is inactive for the
+bundled memory mode. Explicit `ATLAS_HISTORY_MESSAGES` selects legacy bounded
+history instead (positive integer, dropping a leading assistant when needed).
+Only sanitized, separately capped activity belonging to the selected original
+history is sent; covered activity is represented by memory rather than duplicated.
 
 After the first successful answer, a separate, non-streaming LLM request generates
 a title using only the first user input and the agent's configured title prompt.
@@ -215,6 +253,7 @@ Optional configuration:
 ```bash
 export DEEPSEEK_BASE_URL="https://api.deepseek.com"
 export DEEPSEEK_MODEL="deepseek-flash"
+# Optional: opt into legacy bounded history instead of automatic memory
 export ATLAS_HISTORY_MESSAGES="40"
 ```
 
