@@ -302,8 +302,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .composer-pickers { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 .model-picker, .permission-picker { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
 .model-picker label, .permission-picker label { display: flex; position: relative; min-width: 0; align-items: center; gap: 7px; font-weight: 650; }
-.model-picker label::after, .permission-picker label::after { position: absolute; right: 7px; color: var(--muted); content: "⌄"; pointer-events: none; }
-.model-picker select, .permission-picker select { min-width: 0; max-width: 260px; padding: 5px 28px 5px 4px; appearance: none; border: 0; border-radius: 7px; background: transparent; color: var(--ink); }
+.model-picker select, .permission-picker select { min-width: 0; max-width: 260px; padding: 5px 4px; appearance: none; border: 0; border-radius: 7px; background: transparent; color: var(--ink); }
 .model-picker select:hover:not(:disabled), .model-picker select:focus-visible, .permission-picker select:hover:not(:disabled), .permission-picker select:focus-visible { background: var(--lavender); }
 .permission-warning { color: #9c4a60; font-weight: 650; white-space: nowrap; }
 .model-picker-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
