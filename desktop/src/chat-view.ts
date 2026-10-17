@@ -513,11 +513,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       retryAvailable: !!retryTask,
       retryDisabled: !retryTask || !!taskUnavailableReason(retryTask, state),
     });
-    if (state.contextStatus && !state.compactionProgress && !state.compactionMessage && !state.compactionFailure) {
+    if (state.contextStatus && !state.contextStatus.available && !state.compactionProgress && !state.compactionMessage && !state.compactionFailure) {
       const status = document.createElement("p"); status.className = "memory-status"; status.setAttribute("role", "status");
-      status.textContent = state.contextStatus.available
-        ? `Context estimate: ${state.contextStatus.inputTokens?.toLocaleString()} input tokens · Auto-compact at 90%`
-        : state.contextStatus.message;
+      status.textContent = state.contextStatus.message;
       notices.append(status);
     }
     if (state.pendingApproval) {
