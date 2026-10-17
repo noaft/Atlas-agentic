@@ -35,6 +35,7 @@ export interface ConversationAskResult {
   activities?: ActivityRecord[];
   activityDurationMs?: number;
   created: boolean;
+  usage?: ModelUsage | null;
 }
 
 export type ActivityKind = "status" | "toolCall" | "toolResult";
@@ -55,7 +56,15 @@ export interface ActivityTurn {
   turnId: string;
   assistantMessageIndex: number;
   durationMs?: number | null;
+  usage?: ModelUsage | null;
   records: ActivityRecord[];
+}
+
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 export interface ModelInfo {
@@ -73,6 +82,7 @@ export interface AuthorizationRequest {
 }
 
 export type ChatEvent =
+  | { event: "usage"; data: { usage: ModelUsage | null } }
   | { event: "delta"; data: { content: string } }
   | { event: "runtimeStatus"; data: { status: "thinking" | "preparingAnswer" } }
   | {
@@ -141,6 +151,7 @@ export interface ChatState {
   activeConversationId: string | null;
   messages: DisplayMessage[];
   historyLoaded: boolean;
+  contextUsage: ModelUsage | null;
   draftText: string;
   status: ChatStatus;
   errorMessage: string | null;

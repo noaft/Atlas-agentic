@@ -53,6 +53,8 @@ pub struct ActivityTurn {
     pub assistant_message_index: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::models::ModelUsage>,
     pub records: Vec<ActivityRecord>,
 }
 
@@ -152,6 +154,7 @@ impl ActivityCollector {
             turn_id: turn_id.into(),
             assistant_message_index,
             duration_ms: None,
+            usage: None,
             records: self.records,
         }
     }

@@ -25,6 +25,7 @@ fn activity_turn_round_trips_as_one_versioned_json_line() {
         turn_id: "turn-1".to_string(),
         assistant_message_index: 3,
         duration_ms: Some(72_000),
+        usage: None,
         records: vec![record(0, "Thinking")],
     };
 
@@ -123,6 +124,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
         turn_id: "oldest".to_string(),
         assistant_message_index: 1,
         duration_ms: None,
+        usage: None,
         records: vec![record(0, "oldest should stay behind the oversized gap")],
     };
     let old = ActivityTurn {
@@ -130,6 +132,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
         turn_id: "old".to_string(),
         assistant_message_index: 3,
         duration_ms: None,
+        usage: None,
         records: vec![record(0, format!("old {}", "x".repeat(8_000)))],
     };
     let newest_summary = format!("new {}", "y".repeat(4_000));
@@ -138,6 +141,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
         turn_id: "new".to_string(),
         assistant_message_index: 5,
         duration_ms: None,
+        usage: None,
         records: vec![record(0, newest_summary.clone())],
     };
 

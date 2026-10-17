@@ -17,8 +17,33 @@ pub struct ModelInfo {
     pub max_output_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+pub struct ModelResponse {
+    pub content: String,
+    pub usage: Option<ModelUsage>,
+}
+
 pub trait ModelProvider {
     fn complete(&self, request: &ModelRequest) -> Result<String, String>;
+
+    fn stream_with_usage(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
+        self.stream(request, on_delta).map(|content| ModelResponse {
+            content,
+            usage: None,
+        })
+    }
 
     fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
         if images.is_empty() {

@@ -26,7 +26,7 @@ test("known usage shows the percentage with exact token details", () => {
   meter.update({ maxTokens: 128000, usedTokens: 16000 });
   expect(meter.element.querySelector("[data-context-percent]")?.textContent).toBe("13%");
   expect(meter.element.querySelector("[data-context-ratio]")?.textContent).toBe("16,000 / 128,000 tokens");
-  expect(meter.element.querySelector("[role='progressbar']")?.getAttribute("aria-valuenow")).toBe("13");
+  expect(meter.element.querySelector("[role='progressbar']")?.getAttribute("aria-valuenow")).toBe("12.5");
   meter.update({ maxTokens: 128000, usedTokens: 0 });
   expect(meter.element.querySelector("[data-context-percent]")?.textContent).toBe("0%");
 });
@@ -80,4 +80,11 @@ test("hover details stay reachable and Escape dismisses them while the composer 
   composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   expect(tooltip.hidden).toBe(true);
   expect(document.activeElement).toBe(composer);
+});
+
+test("small positive usage stays distinguishable from an unused context", () => {
+  const meter = setup();
+  meter.update({ maxTokens: 1048576, usedTokens: 512 });
+  expect(meter.element.querySelector("[data-context-percent]")?.textContent).toBe("<1%");
+  expect(meter.element.querySelector("[data-context-ratio]")?.textContent).toBe("512 / 1,048,576 tokens");
 });

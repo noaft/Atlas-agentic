@@ -55,6 +55,7 @@ const initialState = (): ChatState => ({
   toolActivity: [],
   messages: [],
   historyLoaded: true,
+  contextUsage: null,
   draftText: "",
   status: "idle",
   errorMessage: null,
@@ -123,7 +124,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : [{ id: configured, name: configured }, ...models];
 
 const sessionKeys = [
-  "activeConversationId", "messages", "historyLoaded", "draftText", "status", "errorMessage",
+  "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
   "pendingApproval", "toolActivity",
 ] as const;
@@ -270,7 +271,10 @@ export class ChatStore {
     try {
       const conversation = await this.api.loadConversation(id);
       if (token !== this.selectionToken) return;
+      const latestActivity = conversation.activities?.at(-1);
       this.updateSession(sessionId, {
+        contextUsage: latestActivity?.assistantMessageIndex === conversation.messages.length - 1
+          ? latestActivity.usage ?? null : null,
         activeConversationId: conversation.metadata.id,
         activeWorkspace: conversation.metadata.workspace ?? usableDefaultWorkspace(this.state.settings),
         activePermissionMode: conversation.metadata.permissionMode ?? "ask",
@@ -412,6 +416,7 @@ export class ChatStore {
       const conversations = moveToTop(this.state.conversations, completed.metadata);
       this.state = { ...this.state, conversations, conversationGroups: groupConversations(conversations) };
       this.updateSession(owner, {
+        contextUsage: completed.usage ?? null,
         activeConversationId: completed.metadata.id,
         activeWorkspace: completed.metadata.workspace ?? workspace,
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
@@ -424,6 +429,7 @@ export class ChatStore {
     } catch (error) {
       if (generation !== chat.generation) return;
       this.updateSession(owner, {
+        contextUsage: null,
         messages: chat.state.messages.map((message) => ({
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
@@ -721,6 +727,10 @@ export class ChatStore {
     const chat = this.chats.get(owner);
     if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
     const state = chat.state;
+    if (event.event === "usage") {
+      this.updateSession(owner, { contextUsage: event.data.usage });
+      return;
+    }
     if (event.event === "delta") {
       this.appendDelta(owner, event.data.content);
       return;

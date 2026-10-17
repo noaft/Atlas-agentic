@@ -1633,3 +1633,30 @@ test("the context ring opens details without sending and survives streamed updat
   pending.resolve({ answer: "done", metadata, created: true });
   await flush();
 });
+
+test("the ring shows last request input plus output and ignores another model's usage", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  api.availableModels = [
+    { id: "deepseek-flash", name: "Flash", contextWindow: 128000 },
+    { id: "deepseek-v4-pro", name: "Pro", contextWindow: 128000 },
+  ];
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const { root, store } = setup(api);
+  await store.initialize();
+  inputComposer(root, "hello");
+  click(root, "[data-send]");
+  const usage = { model: "deepseek-flash", inputTokens: 15000, outputTokens: 1000, totalTokens: 16000 };
+  api.eventSink!({ event: "usage", data: { usage } });
+  expect(root.querySelector("[data-context-percent]")?.textContent).toBe("13%");
+  expect(root.querySelector("[data-context-ratio]")?.textContent).toBe("16,000 / 128,000 tokens");
+  expect(root.querySelector("[data-context-tooltip]")?.textContent).toContain("Input: 15,000");
+  expect(root.querySelector("[data-context-tooltip]")?.textContent).toContain("Output: 1,000");
+  pending.resolve({ answer: "done", metadata, created: true, usage });
+  await flush();
+  await store.selectModel("deepseek-v4-pro");
+  expect(root.querySelector("[data-context-percent]")?.textContent).toBe("—");
+  await store.selectModel("deepseek-flash");
+  expect(root.querySelector("[data-context-percent]")?.textContent).toBe("13%");
+});

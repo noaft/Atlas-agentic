@@ -128,6 +128,30 @@ impl Agent for LocalAgent {
         )
     }
 
+    fn process_stream_with_usage(
+        &self,
+        input: &str,
+        history: &[ConversationMessage],
+        tools: &[ToolDefinition],
+        activity_context: Option<&str>,
+        images: &[ImageData],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<crate::models::ModelResponse, String> {
+        self.model.stream_with_usage(
+            &ModelRequest {
+                system_prompt: self.system_prompt(),
+                user_prompt: input,
+                history,
+                activity_context,
+                tools,
+                images,
+                temperature: self.definition.temperature,
+                top_p: self.definition.top_p,
+            },
+            on_delta,
+        )
+    }
+
     fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
         self.model.complete(&ModelRequest {
             system_prompt: &self.definition.conversation_title_prompt,

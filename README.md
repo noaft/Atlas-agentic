@@ -70,8 +70,14 @@ are saved, Atlas loads the available models from DeepSeek and shows a model
 picker above the chat composer. The dropdown shows model names only. A compact
 context ring beside Send opens token details on hover, keyboard focus, or tap,
 including the selected model's provider-reported maximum context (input plus
-output). Usage displays an em dash until real token tracking is connected;
-missing model limits remain unknown. Choosing a model saves it globally and affects
+output). After a model call, the ring shows its reported input plus output
+usage, including system instructions, selected history, and tool context in the
+input count. The tooltip separates input and output. Each completed call replaces
+the previous reading; tool rounds are not summed into context occupancy, and
+conversation title generation does not replace it. Successful turns save the
+reading with their activity sidecar so reopening a chat restores it. A reading
+from a different selected model, or a provider response without usage, shows an
+em dash; missing model limits remain unknown. Choosing a model saves it globally and affects
 the next request without restarting Atlas. If model discovery fails, the saved
 model remains usable and the picker offers a retry. Resetting the default folder
 returns new chats to Atlas home. Conversation management and Settings remain

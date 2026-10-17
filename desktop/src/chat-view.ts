@@ -607,9 +607,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       label.append(select);
       composer.modelHost.append(label);
       const selectedModel = models.find((model) => model.id === state.settings?.activeModel);
+      const reading = state.contextUsage?.model === state.settings.activeModel ? state.contextUsage : null;
       composer.contextMeter.update({
         maxTokens: selectedModel?.contextWindow ?? null,
-        usedTokens: null,
+        usedTokens: reading?.totalTokens ?? null,
+        inputTokens: reading?.inputTokens ?? null,
+        outputTokens: reading?.outputTokens ?? null,
         loading: state.modelListStatus === "loading",
       });
       const modelControlledByEnvironment =

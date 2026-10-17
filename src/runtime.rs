@@ -151,7 +151,7 @@ impl Runtime {
             });
             first_model_request = false;
             let mut final_stream = FinalContentStream::new(allow_plain_final);
-            let response = agent.process_stream_with_context_and_images(
+            let response = agent.process_stream_with_usage(
                 &input,
                 history,
                 &tool_definitions,
@@ -161,6 +161,10 @@ impl Runtime {
                     final_stream.push(delta, on_delta);
                 },
             )?;
+            on_tool_event(&ToolEvent::Usage {
+                usage: response.usage,
+            });
+            let response = response.content;
             let parsed = if allow_plain_final {
                 AgentOutput::parse(&response)
             } else {

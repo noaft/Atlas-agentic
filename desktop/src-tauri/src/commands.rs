@@ -367,6 +367,7 @@ pub struct ActivityTurnDto {
     pub assistant_message_index: usize,
     pub duration_ms: Option<u64>,
     pub records: Vec<ActivityRecordDto>,
+    pub usage: Option<atlas_agentic::models::ModelUsage>,
 }
 
 impl From<ActivityTurn> for ActivityTurnDto {
@@ -375,6 +376,7 @@ impl From<ActivityTurn> for ActivityTurnDto {
             turn_id: turn.turn_id,
             assistant_message_index: turn.assistant_message_index,
             duration_ms: turn.duration_ms,
+            usage: turn.usage,
             records: turn.records.into_iter().map(Into::into).collect(),
         }
     }
@@ -392,6 +394,7 @@ pub struct ConversationAskResultDto {
     pub metadata: ConversationMetadataDto,
     pub activities: Vec<ActivityRecordDto>,
     pub activity_duration_ms: u64,
+    pub usage: Option<atlas_agentic::models::ModelUsage>,
     pub created: bool,
 }
 
@@ -402,6 +405,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
             metadata: result.metadata.into(),
             activities: result.activities.into_iter().map(Into::into).collect(),
             activity_duration_ms: result.activity_duration_ms,
+            usage: result.usage,
             created: result.created,
         }
     }
@@ -410,6 +414,9 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
+    Usage {
+        usage: Option<atlas_agentic::models::ModelUsage>,
+    },
     Delta {
         content: String,
     },
@@ -963,6 +970,9 @@ pub async fn ask(
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
+                    ToolEvent::Usage { usage } => ChatEvent::Usage {
+                        usage: usage.clone(),
+                    },
                     ToolEvent::Status { status } => ChatEvent::RuntimeStatus {
                         status: status.clone(),
                     },
@@ -1060,6 +1070,29 @@ mod tests {
     }
 
     #[test]
+    fn usage_events_and_saved_activity_expose_the_same_camel_case_reading() {
+        let usage = atlas_agentic::models::ModelUsage {
+            model: "test-model".into(),
+            input_tokens: 1200,
+            output_tokens: 300,
+            total_tokens: 1500,
+        };
+        let event = serde_json::to_value(ChatEvent::Usage {
+            usage: Some(usage.clone()),
+        })
+        .unwrap();
+        assert_eq!(event["event"], "usage");
+        assert_eq!(event["data"]["usage"]["inputTokens"], 1200);
+        assert_eq!(event["data"]["usage"]["outputTokens"], 300);
+        assert_eq!(event["data"]["usage"]["totalTokens"], 1500);
+        let mut turn = ActivityCollector::new().into_unassociated_turn();
+        turn.usage = Some(usage);
+        let dto = super::ActivityTurnDto::from(turn);
+        let saved = serde_json::to_value(dto).unwrap();
+        assert_eq!(saved["usage"], event["data"]["usage"]);
+    }
+
+    #[test]
     fn approval_events_serialize_with_the_desktop_contract() {
         let request = AuthorizationRequest::new(
             "delete_file",
@@ -1146,6 +1179,7 @@ mod tests {
             metadata,
             activities: Vec::new(),
             activity_duration_ms: 72_000,
+            usage: None,
             created: true,
         }
         .into();

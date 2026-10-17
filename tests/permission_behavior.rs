@@ -195,11 +195,12 @@ fn runtime_asks_once_and_executes_after_allow() {
     assert_eq!(authorizer.calls.get(), 1);
     assert_eq!(executions.get(), 1);
     assert!(matches!(events[0], ToolEvent::Status { .. }));
-    assert!(matches!(events[1], ToolEvent::Requested { .. }));
-    assert!(matches!(events[2], ToolEvent::ApprovalRequested { .. }));
-    assert!(matches!(events[3], ToolEvent::Started { .. }));
+    assert!(matches!(events[1], ToolEvent::Usage { usage: None }));
+    assert!(matches!(events[2], ToolEvent::Requested { .. }));
+    assert!(matches!(events[3], ToolEvent::ApprovalRequested { .. }));
+    assert!(matches!(events[4], ToolEvent::Started { .. }));
     assert!(matches!(
-        events[4],
+        events[5],
         ToolEvent::Finished { success: true, .. }
     ));
 }

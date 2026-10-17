@@ -1332,3 +1332,70 @@ test("saved chats cannot send until history loads successfully", async () => {
     "First question", "First answer", "new question", "next answer",
   ]);
 });
+
+test("latest usage stays with its chat across concurrent requests and settlement", async () => {
+  const api = new FakeApi();
+  const one = deferred<ConversationAskResult>();
+  const two = deferred<ConversationAskResult>();
+  api.asks.push(() => one.promise, () => two.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("one");
+  const owner = store.getState().activeSessionId;
+  const sendingOne = store.send();
+  await store.newChat();
+  store.setDraft("two");
+  const sendingTwo = store.send();
+  const usageOne = { model: "deepseek-flash", inputTokens: 1200, outputTokens: 300, totalTokens: 1500 };
+  const usageTwo = { model: "deepseek-flash", inputTokens: 2000, outputTokens: 100, totalTokens: 2100 };
+  api.eventSinks[0]({ event: "usage", data: { usage: usageOne } });
+  api.eventSinks[1]({ event: "usage", data: { usage: usageTwo } });
+  expect(store.getState().contextUsage).toEqual(usageTwo);
+  await store.selectSession(owner);
+  expect(store.getState().contextUsage).toEqual(usageOne);
+  one.resolve({ ...result(first, "one", true), usage: usageOne });
+  two.resolve({ ...result(second, "two", true), usage: usageTwo });
+  await Promise.all([sendingOne, sendingTwo]);
+  expect(store.getState().contextUsage).toEqual(usageOne);
+  await store.selectConversation(second.id);
+  expect(store.getState().contextUsage).toEqual(usageTwo);
+});
+
+test("usage restores from the latest saved turn and missing usage clears old readings", async () => {
+  const api = new FakeApi();
+  const reading = { model: "deepseek-flash", inputTokens: 1200, outputTokens: 300, totalTokens: 1500 };
+  api.conversations = [first];
+  api.loads.set(first.id, async () => ({ ...savedConversation(first), activities: [{
+    turnId: "last", assistantMessageIndex: 1, records: [], usage: reading,
+  }] }));
+  const store = new ChatStore(api);
+  await store.initialize();
+  await store.selectConversation(first.id);
+  expect(store.getState().contextUsage).toEqual(reading);
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  store.setDraft("continue");
+  const sending = store.send();
+  api.eventSinks[0]({ event: "usage", data: { usage: null } });
+  expect(store.getState().contextUsage).toBeNull();
+  pending.resolve(result(first, "done", false));
+  await sending;
+  expect(store.getState().contextUsage).toBeNull();
+});
+
+
+test("a failed continuation clears intermediate model usage", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("task");
+  const sending = store.send();
+  const usage = { model: "deepseek-flash", inputTokens: 1200, outputTokens: 300, totalTokens: 1500 };
+  api.eventSinks[0]({ event: "usage", data: { usage } });
+  expect(store.getState().contextUsage).toEqual(usage);
+  pending.reject(new Error("provider failed after a tool"));
+  await sending;
+  expect(store.getState().contextUsage).toBeNull();
+});

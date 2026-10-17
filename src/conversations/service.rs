@@ -16,6 +16,7 @@ pub struct ConversationAskResult {
     pub metadata: ConversationMetadata,
     pub activities: Vec<ActivityRecord>,
     pub activity_duration_ms: u64,
+    pub usage: Option<crate::models::ModelUsage>,
     pub created: bool,
 }
 
@@ -193,8 +194,10 @@ impl<'a> ConversationService<'a> {
         };
         let mut sink_error = None;
         let mut collector = ActivityCollector::new();
+        let mut latest_usage = None;
         let mut capture_event = |event: &ToolEvent| {
             match event {
+                ToolEvent::Usage { usage } => latest_usage = usage.clone(),
                 ToolEvent::Status { status } => collector.status(match status {
                     RuntimeStatus::Thinking => "Thinking",
                     RuntimeStatus::PreparingAnswer => "Preparing answer",
@@ -243,6 +246,7 @@ impl<'a> ConversationService<'a> {
             u64::try_from(activity_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut activity_turn = collector.into_unassociated_turn();
         activity_turn.duration_ms = Some(activity_duration_ms);
+        activity_turn.usage = latest_usage.clone();
         let activities = activity_turn.records.clone();
 
         let metadata = match id {
@@ -277,6 +281,7 @@ impl<'a> ConversationService<'a> {
             metadata,
             activities,
             activity_duration_ms,
+            usage: latest_usage,
             created: id.is_none(),
         })
     }

@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{BufRead, BufReader};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::Client;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::conversations::MessageRole;
 use crate::media::ImageData;
 
-use super::{ModelInfo, ModelProvider, ModelRequest};
+use super::{ModelInfo, ModelProvider, ModelRequest, ModelResponse, ModelUsage};
 
 pub struct DeepSeekConfig {
     pub api_key: String,
@@ -65,50 +65,50 @@ impl ModelProvider for DeepSeekProvider {
         request: &ModelRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
+        self.stream_with_usage(request, on_delta)
+            .map(|response| response.content)
+    }
+
+    fn stream_with_usage(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelResponse, String> {
         let payload = self.chat_request(request, true)?;
-        let mut response = self
+        let response = self
             .client
             .post(self.chat_url())
             .bearer_auth(&self.config.api_key)
             .json(&payload)
             .send()
             .map_err(|error| format!("DeepSeek request failed: {error}"))?;
-
         if !response.status().is_success() {
             return Err(format!("DeepSeek returned HTTP {}", response.status()));
         }
-
-        let mut buffer = String::new();
-        let mut full_response = String::new();
-        let mut bytes = [0_u8; 8192];
-
-        loop {
-            let read = response
-                .read(&mut bytes)
-                .map_err(|error| format!("DeepSeek stream failed: {error}"))?;
-            if read == 0 {
+        let mut content = String::new();
+        let mut usage = None;
+        for line in BufReader::new(response).lines() {
+            let line = line.map_err(|error| format!("DeepSeek stream failed: {error}"))?;
+            if line.trim() == "data: [DONE]" {
                 break;
             }
-
-            buffer.push_str(&String::from_utf8_lossy(&bytes[..read]));
-            while let Some(newline) = buffer.find('\n') {
-                let line = buffer[..newline].trim().to_string();
-                buffer = buffer[newline + 1..].to_string();
-
-                if line.is_empty() {
-                    continue;
-                }
-                if line == "data: [DONE]" {
-                    return Ok(full_response);
-                }
-                if let Some(delta) = parse_stream_delta(&line)? {
-                    on_delta(&delta);
-                    full_response.push_str(&delta);
-                }
+            let Some(chunk) = parse_stream_chunk(line.trim())? else {
+                continue;
+            };
+            if let Some(raw) = &chunk.usage {
+                usage = parse_usage(&self.config.model, raw);
+            }
+            if let Some(delta) = chunk
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|choice| choice.delta.content)
+            {
+                on_delta(&delta);
+                content.push_str(&delta);
             }
         }
-
-        Ok(full_response)
+        Ok(ModelResponse { content, usage })
     }
 
     fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
@@ -190,6 +190,9 @@ impl DeepSeekProvider {
             model: self.config.model.clone(),
             messages,
             stream,
+            stream_options: stream.then_some(StreamOptions {
+                include_usage: true,
+            }),
             response_format: (!request.tools.is_empty()).then_some(ResponseFormat {
                 output_type: "json_object",
             }),
@@ -261,11 +264,18 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize)]
@@ -330,7 +340,9 @@ struct DeepSeekModel {
 
 #[derive(Deserialize)]
 struct ChatStreamResponse {
+    #[serde(default)]
     choices: Vec<ChatStreamChoice>,
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -343,18 +355,30 @@ struct ChatStreamDelta {
     content: Option<String>,
 }
 
-fn parse_stream_delta(line: &str) -> Result<Option<String>, String> {
-    let Some(data) = line.strip_prefix("data: ") else {
+fn parse_stream_chunk(line: &str) -> Result<Option<ChatStreamResponse>, String> {
+    let Some(data) = line.strip_prefix("data:") else {
         return Ok(None);
     };
-    let response: ChatStreamResponse = serde_json::from_str(data)
-        .map_err(|error| format!("DeepSeek stream response was invalid: {error}"))?;
+    serde_json::from_str(data.trim_start())
+        .map(Some)
+        .map_err(|error| format!("DeepSeek stream response was invalid: {error}"))
+}
 
-    Ok(response
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|choice| choice.delta.content))
+fn parse_usage(model: &str, raw: &serde_json::Value) -> Option<ModelUsage> {
+    let input_tokens = raw.get("prompt_tokens")?.as_u64()?;
+    let output_tokens = raw.get("completion_tokens")?.as_u64()?;
+    let total_tokens = input_tokens.checked_add(output_tokens)?;
+    if let Some(total) = raw.get("total_tokens") {
+        if total.as_u64()? != total_tokens {
+            return None;
+        }
+    }
+    Some(ModelUsage {
+        model: model.to_string(),
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    })
 }
 
 fn parse_model_list(response: &str) -> Result<Vec<ModelInfo>, String> {
@@ -391,7 +415,7 @@ mod tests {
         media::{ImageData, ImageDetail},
         models::{
             deepseek::{
-                parse_model_list, parse_stream_delta, render_model_instructions, DeepSeekConfig,
+                parse_model_list, parse_stream_chunk, render_model_instructions, DeepSeekConfig,
                 DeepSeekProvider,
             },
             ModelProvider, ModelRequest,
@@ -618,10 +642,10 @@ mod tests {
 
     #[test]
     fn parses_stream_delta_line() {
-        let delta =
-            parse_stream_delta(r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#).unwrap();
-
-        assert_eq!(delta, Some("hello".to_string()));
+        let chunk = parse_stream_chunk(r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hello"));
     }
 
     #[test]

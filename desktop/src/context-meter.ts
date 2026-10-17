@@ -1,6 +1,8 @@
 export interface ContextReading {
   maxTokens: number | null;
   usedTokens: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   loading?: boolean;
 }
 
@@ -26,6 +28,7 @@ export function createContextMeter(): ContextMeter {
       <strong>Context window</strong>
       <span class="context-token-ratio" data-context-ratio></span>
       <span data-model-context></span>
+      <span data-context-breakdown hidden></span>
       <span class="context-help" data-context-help></span>
     </div>`;
   const button = element.querySelector<HTMLButtonElement>("button")!;
@@ -34,6 +37,7 @@ export function createContextMeter(): ContextMeter {
   const tooltip = element.querySelector<HTMLElement>("[data-context-tooltip]")!;
   const ratio = element.querySelector<HTMLElement>("[data-context-ratio]")!;
   const maximum = element.querySelector<HTMLElement>("[data-model-context]")!;
+  const breakdown = element.querySelector<HTMLElement>("[data-context-breakdown]")!;
   const help = element.querySelector<HTMLElement>("[data-context-help]")!;
   tooltip.id = `context-tooltip-${++nextTooltip}`;
   button.setAttribute("aria-describedby", tooltip.id);
@@ -60,11 +64,11 @@ export function createContextMeter(): ContextMeter {
 
   return {
     element,
-    update({ maxTokens, usedTokens, loading = false }) {
+    update({ maxTokens, usedTokens, inputTokens = null, outputTokens = null, loading = false }) {
       const max = !loading && tokenCount(maxTokens, 1) ? maxTokens : null;
       const used = tokenCount(usedTokens, 0) ? usedTokens : null;
       const percentage = max !== null && used !== null ? used / max * 100 : null;
-      const label = percentage === null ? "—" : percentage > 100 ? ">100%" : `${Math.round(percentage)}%`;
+      const label = percentage === null ? "—" : percentage > 100 ? ">100%" : percentage > 0 && percentage < 1 ? "<1%" : `${Math.round(percentage)}%`;
       percent.textContent = label;
       ring.classList.toggle("context-ring-unknown", percentage === null);
       if (percentage === null) {
@@ -80,13 +84,16 @@ export function createContextMeter(): ContextMeter {
         ring.setAttribute("aria-label", "Context usage");
         ring.setAttribute("aria-valuemin", "0");
         ring.setAttribute("aria-valuemax", "100");
-        ring.setAttribute("aria-valuenow", String(Math.min(100, Math.round(percentage))));
+        ring.setAttribute("aria-valuenow", String(Math.min(100, percentage)));
       }
       const maxLabel = max === null ? "Unknown" : formatTokens(max);
       ratio.textContent = `${used === null ? "—" : formatTokens(used)} / ${maxLabel} tokens`;
       maximum.textContent = loading ? "Max context: Loading…"
         : max === null ? "Max context: Unknown" : `Max context: ${maxLabel} tokens (input + output)`;
-      help.textContent = used === null ? "Token usage is not available yet." : "Input and output share this context window.";
+      breakdown.hidden = !tokenCount(inputTokens, 0) || !tokenCount(outputTokens, 0);
+      breakdown.textContent = breakdown.hidden ? "" : `Input: ${formatTokens(inputTokens!)} · Output: ${formatTokens(outputTokens!)}`;
+      help.textContent = used === null ? "No token usage reported for this model yet."
+        : "Last model call. Input includes system instructions, history, and tools.";
       button.setAttribute("aria-label", `Context usage ${percentage === null ? "unavailable" : label}. ${maximum.textContent}`);
     },
     destroy() {

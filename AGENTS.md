@@ -245,9 +245,14 @@ event thread. Do not broaden frontend permissions to achieve concurrency.
 Model discovery preserves optional provider-reported `contextWindow` and
 `maxOutputTokens` limits in the shared model catalog. Model options contain names
 only; a compact context ring beside Send exposes exact used/max token details
-on hover, focus, or tap. Until runtime token tracking supplies real usage, show
-an em dash, not zero or an invented percentage. Maximum context includes input
-and output. Missing or zero limits remain unknown; do not infer limits from
+on hover, focus, or tap. The ring uses the latest chat-model call's reported
+input plus output usage, never the sum of repeated calls or the title-generation
+request. Input already includes system instructions, selected history, tools,
+and the current request; cached and reasoning breakdowns are subsets, not extra
+tokens. Carry optional usage through typed model responses and runtime events,
+and save it with successful activity turns. Restore only the newest saved turn's
+reading, and show an em dash when usage is absent or belongs to another selected
+model. Maximum context includes input and output. Missing or zero limits remain unknown; do not infer limits from
 model names or use hard-coded capacities.
 
 Keep native platform access narrow. Folder selection uses

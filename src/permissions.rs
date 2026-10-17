@@ -116,6 +116,9 @@ pub enum RuntimeStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ToolEvent {
+    Usage {
+        usage: Option<crate::models::ModelUsage>,
+    },
     Status {
         status: RuntimeStatus,
     },

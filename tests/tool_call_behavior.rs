@@ -992,10 +992,11 @@ fn runtime_returns_execution_failure_to_agent_and_emits_failed_event() {
     assert_eq!(retry["tool_results"][0]["success"], false);
     assert_eq!(retry["tool_results"][0]["output"], "simulated tool failure");
     assert!(matches!(events[0], ToolEvent::Status { .. }));
-    assert!(matches!(events[1], ToolEvent::Requested { .. }));
-    assert!(matches!(events[2], ToolEvent::Started { .. }));
+    assert!(matches!(events[1], ToolEvent::Usage { usage: None }));
+    assert!(matches!(events[2], ToolEvent::Requested { .. }));
+    assert!(matches!(events[3], ToolEvent::Started { .. }));
     assert!(matches!(
-        events[3],
+        events[4],
         ToolEvent::Finished { success: false, .. }
     ));
 }
@@ -1033,6 +1034,7 @@ fn runtime_emits_thinking_request_start_finish_and_preparing_statuses() {
             ToolEvent::Status {
                 status: RuntimeStatus::Thinking
             },
+            ToolEvent::Usage { usage: None },
             ToolEvent::Requested {
                 sequence: 0,
                 tool,
@@ -1050,7 +1052,8 @@ fn runtime_emits_thinking_request_start_finish_and_preparing_statuses() {
             },
             ToolEvent::Status {
                 status: RuntimeStatus::PreparingAnswer
-            }
+            },
+            ToolEvent::Usage { usage: None }
         ] if tool == "pwd" && started == "pwd" && finished == "pwd"
     ));
 }
