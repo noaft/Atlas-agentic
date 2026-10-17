@@ -1,3 +1,4 @@
+import { createComposerPicker } from "./composer-picker";
 import { createChatComposer } from "./chat-composer";
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
@@ -359,7 +360,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
   };
 
+  let pickerCleanups: Array<() => void> = [];
   const renderNow = (state: Readonly<ChatState>) => {
+    const focusedPickerLabel = document.activeElement?.closest(".composer-picker")
+      ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
     const isBusy = chatIsBusy(state);
@@ -580,12 +584,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       messages.scrollTop = followBottom ? messages.scrollHeight : previousScroll;
     }
 
+    pickerCleanups.splice(0).forEach((cleanup) => cleanup());
     composer.modelHost.replaceChildren();
     composer.permissionHost.replaceChildren();
     composer.feedbackHost.replaceChildren();
     composer.contextMeter.element.hidden = !state.settings || state.settings.apiKeySource === "missing";
     if (state.settings && state.settings.apiKeySource !== "missing") {
-      const label = document.createElement("label");
+      const label = document.createElement("div");
       const select = document.createElement("select");
       select.dataset.modelSelect = "";
       select.setAttribute("aria-label", "Model");
@@ -604,7 +609,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         state.modelListStatus === "loading" ||
         state.settings.environmentOverrides.includes("model");
       select.addEventListener("change", () => void store.selectModel(select.value));
-      label.append(select);
+      const modelPicker = createComposerPicker(select);
+      pickerCleanups.push(modelPicker.destroy);
+      label.append(modelPicker.element);
       composer.modelHost.append(label);
       const selectedModel = models.find((model) => model.id === state.settings?.activeModel);
       const reading = state.contextUsage?.model === state.settings.activeModel ? state.contextUsage : null;
@@ -645,7 +652,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         composer.feedbackHost.append(feedback);
       }
     }
-    const permissionLabel = document.createElement("label");
+    const permissionLabel = document.createElement("div");
     const permissionSelect = document.createElement("select");
     permissionSelect.dataset.permissionSelect = "";
     permissionSelect.setAttribute("aria-label", "Tool access");
@@ -666,7 +673,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         permissionSelect.value as import("./types").PermissionMode,
       ),
     );
-    permissionLabel.append(permissionSelect);
+    const accessPicker = createComposerPicker(permissionSelect);
+    pickerCleanups.push(accessPicker.destroy);
+    permissionLabel.append(accessPicker.element);
     composer.permissionHost.append(permissionLabel);
     if (state.activePermissionMode === "fullAccess") {
       const warning = document.createElement("span");
@@ -675,6 +684,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       composer.permissionHost.append(warning);
     }
     composer.updateState(state);
+    if (focusedPickerLabel) {
+      const trigger = [...composer.element.querySelectorAll<HTMLButtonElement>(".composer-picker-trigger")]
+        .find((candidate) => candidate.dataset.pickerLabel === focusedPickerLabel);
+      trigger?.focus();
+    }
 
     dialog.innerHTML = `<form method="dialog" class="dialog-card"><h2 id="rename-title">Rename conversation</h2><label for="rename-input">Title</label><input id="rename-input" autocomplete="off" data-rename-input /><div class="dialog-actions"><button type="button" class="secondary-button" data-cancel-rename>Cancel</button><button type="submit" class="primary-button" data-save-rename>Save</button></div></form>`;
     if (renameOpen) {
@@ -806,6 +820,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   const unsubscribe = store.subscribe(render);
   return () => {
     if (pendingFrame !== null) cancelFrame(pendingFrame);
+    pickerCleanups.splice(0).forEach((cleanup) => cleanup());
     composer.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();

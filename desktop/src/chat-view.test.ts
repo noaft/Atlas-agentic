@@ -1660,3 +1660,35 @@ test("the ring shows last request input plus output and ignores another model's 
   await store.selectModel("deepseek-flash");
   expect(root.querySelector("[data-context-percent]")?.textContent).toBe("13%");
 });
+
+
+test("custom composer menus save model and access through visible options", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const { root, store } = setup(api);
+  await store.initialize();
+  const model = root.querySelector<HTMLButtonElement>('.composer-picker-trigger[data-picker-label="Model"]')!;
+  expect(model).not.toBeNull();
+  model.click();
+  const pro = [...root.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent?.includes("DeepSeek V4 Pro"))!;
+  pro.click();
+  await flush();
+  expect(api.selectedModels).toEqual(["deepseek-v4-pro"]);
+  const access = root.querySelector<HTMLButtonElement>('.composer-picker-trigger[data-picker-label="Tool access"]')!;
+  access.click();
+  const workspace = [...root.querySelectorAll<HTMLElement>('[role="option"]')].find((row) => row.textContent?.includes("Workspace"))!;
+  workspace.click();
+  await flush();
+  expect(store.getState().activePermissionMode).toBe("workspace");
+});
+
+test("rerendering an open picker restores focus to its trigger", async () => {
+  const api = new ViewApi();
+  api.settings = { ...settings, apiKeySource: "settings" };
+  const { root, store } = setup(api);
+  await store.initialize();
+  root.querySelector<HTMLButtonElement>('[data-picker-label="Model"]')!.click();
+  expect(document.activeElement?.getAttribute("role")).toBe("listbox");
+  await store.selectPermissionMode("workspace");
+  expect(document.activeElement).toBe(root.querySelector('[data-picker-label="Model"]'));
+});

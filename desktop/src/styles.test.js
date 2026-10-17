@@ -83,16 +83,12 @@ test("chat content expands with the available window width", () => {
   expect(getComputedStyle(document.querySelector(".composer-note")).maxWidth).toBe("none");
 });
 
-test("model picker is visually borderless while keeping an accessible label", () => {
-  document.body.innerHTML = `
-    <div class="model-picker"><label><select aria-label="Model"><option>DeepSeek</option></select></label></div>`;
-
-  const select = document.querySelector("select");
-  const style = getComputedStyle(select);
-  expect(select.getAttribute("aria-label")).toBe("Model");
-  expect(style.borderStyle).toBe("none");
-  expect(style.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-  expect(style.appearance).toBe("none");
+test("composer picker uses a rounded custom trigger and floating menu", () => {
+  document.body.innerHTML = `<button class="composer-picker-trigger" aria-label="Model">DeepSeek</button><div class="composer-picker-menu" hidden></div>`;
+  const trigger = document.querySelector("button");
+  expect(trigger.getAttribute("aria-label")).toBe("Model");
+  expect(getComputedStyle(trigger).borderRadius).toBe("9px");
+  expect(getComputedStyle(document.querySelector(".composer-picker-menu")).display).toBe("none");
 });
 
 test("sidebar controls remain visible on desktop", () => {
