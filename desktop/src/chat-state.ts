@@ -1,5 +1,8 @@
+import { parseSlashCommand, taskArguments, taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
 import type {
+  TaskDescriptor,
+  TaskResult,
   ChatState,
   ChatEvent,
   ChatSessionSummary,
@@ -42,6 +45,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
+  tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
   memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
   sessions: [],
@@ -148,6 +152,7 @@ export class ChatStore {
   private workspaceToken = 0;
   private settingsToken = 0;
   private modelListToken = 0;
+  private taskCatalogToken = 0;
 
   constructor(private readonly api: AtlasApi) {
     this.chats.set(this.state.activeSessionId, {
@@ -172,7 +177,18 @@ export class ChatStore {
       settingsStatus: "loading",
       settingsErrorMessage: null,
     });
-    await Promise.all([this.loadConversationList(), this.loadInitialSettings()]);
+    await Promise.all([this.loadConversationList(), this.loadInitialSettings(), this.retryTasks()]);
+  }
+
+  async retryTasks(): Promise<void> {
+    const token = ++this.taskCatalogToken;
+    this.update({taskCatalogStatus: "loading", taskCatalogError: null});
+    try {
+      const tasks = await this.api.listTasks();
+      if (token === this.taskCatalogToken) this.update({tasks, taskCatalogStatus: "ready"});
+    } catch (error) {
+      if (token === this.taskCatalogToken) this.update({taskCatalogStatus: "error", taskCatalogError: errorMessage(error)});
+    }
   }
 
   private async loadConversationList(): Promise<void> {
@@ -357,7 +373,21 @@ export class ChatStore {
       return;
     const prompt = this.state.draftText.trim();
     if (!prompt) return;
-    if (prompt === "/compact") { await this.compact(); return; }
+    const command = parseSlashCommand(prompt);
+    if (command) {
+      if (this.state.taskCatalogStatus !== "ready") {
+        this.update({errorMessage: "Task catalog unavailable. Retry loading tasks."}); return;
+      }
+      const task = this.state.tasks.find(task => task.command.toLowerCase() === command.name);
+      if (!task) {
+        const suggestions = this.state.tasks.map(task => `/${task.command}`).join(", ");
+        this.update({errorMessage: `${command.name ? "Unknown command" : "Choose a task"}. Available tasks: ${suggestions || "none"}`}); return;
+      }
+      let args: Record<string, unknown>;
+      try { args = taskArguments(task, command.argumentsText); }
+      catch (error) { this.update({errorMessage: errorMessage(error)}); return; }
+      await this.runTask(task, args); return;
+    }
     const workspace = this.state.activeWorkspace;
     if (!workspace) {
       this.update({ errorMessage: "Choose a workspace folder before sending." });
@@ -455,26 +485,49 @@ export class ChatStore {
   }
 
   async cancelCompaction(): Promise<void> {
-    const id = this.state.activeConversationId;
-    if (!id || !this.state.compactionProgress) return;
-    try { await this.api.cancelCompaction(id); } catch (error) { this.update({ errorMessage: errorMessage(error) }); }
-  }
-  async compact(): Promise<void> {
-    if (this.state.status === "streaming" || this.state.status === "loading") return;
     const owner = this.state.activeSessionId;
     const chat = this.chats.get(owner)!;
+    const generation = chat.generation;
     const id = chat.state.activeConversationId;
-    if (!id) { this.updateSession(owner, { draftText: "", compactionMessage: "Start a conversation before compacting." }); return; }
+    if (!id || !chat.state.compactionProgress) return;
+    try { await this.api.cancelCompaction(id); }
+    catch (error) {
+      if (chat.generation === generation && chat.state.compactionProgress) {
+        this.updateSession(owner, {errorMessage: errorMessage(error)});
+      }
+    }
+  }
+  async runTask(task: TaskDescriptor, args: Record<string, unknown>): Promise<void> {
+    if (!this.state.historyLoaded || this.state.status === "streaming" || this.state.status === "loading" ||
+        this.state.workspaceBusy || this.state.permissionBusy || this.state.modelListStatus === "saving") return;
+    const unavailable = taskUnavailableReason(task, this.state);
+    if (unavailable) { this.update({errorMessage: unavailable}); return; }
+    const owner = this.state.activeSessionId;
+    const chat = this.chats.get(owner)!;
+    const submittedDraft = chat.state.draftText;
     const generation = ++chat.generation;
-    this.updateSession(owner, { status: "streaming", draftText: "", errorMessage: null, compactionMessage: null,
-      compactionProgress: { completedBlocks: 0, totalBlocks: 0 } });
+    this.updateSession(owner, {status: "streaming", draftText: "", errorMessage: null, compactionMessage: null,
+      compactionProgress: task.cancellable ? {completedBlocks: 0, totalBlocks: 0} : null});
     try {
-      const result = await this.api.compactConversation(id, (event) => this.handleChatEvent(owner, generation, event));
+      const result = await this.api.runTask(task.id, args, chat.state.activeConversationId,
+        event => this.handleChatEvent(owner, generation, event));
       if (generation !== chat.generation) return;
-      this.updateSession(owner, { memory: result.memory, status: "idle", compactionProgress: null, compactionMessage: result.message });
+      if (result.taskId !== task.id) throw new Error("Task returned an unexpected result.");
+      this.applyTaskResult(owner, result);
     } catch (error) {
       if (generation !== chat.generation) return;
-      this.updateSession(owner, { status: "error", compactionProgress: null, errorMessage: errorMessage(error) });
+      this.updateSession(owner, {status: "error", compactionProgress: null, errorMessage: errorMessage(error),
+        draftText: chat.state.draftText || submittedDraft});
+    }
+  }
+
+  private applyTaskResult(owner: string, result: TaskResult): void {
+    switch (result.outcome.kind) {
+      case "compaction": {
+        const {memory, message} = result.outcome.result;
+        this.updateSession(owner, {memory, status: "idle", compactionProgress: null, compactionMessage: message});
+        break;
+      }
     }
   }
 

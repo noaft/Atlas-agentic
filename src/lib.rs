@@ -7,6 +7,7 @@ pub mod models;
 pub mod permissions;
 pub mod runtime;
 pub mod settings;
+pub mod tasks;
 pub mod tools;
 pub mod workspace;
 

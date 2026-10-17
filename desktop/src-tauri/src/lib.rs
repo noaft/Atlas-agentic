@@ -48,6 +48,8 @@ pub fn run() {
             commands::cancel_tool_approvals,
             commands::cancel_compaction,
             commands::compact_conversation,
+            commands::list_tasks,
+            commands::run_task,
             commands::ask
         ])
         .run(tauri::generate_context!())

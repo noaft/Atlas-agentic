@@ -1,3 +1,4 @@
+import { taskFixtures } from "./task-fixtures.test-support";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { AtlasApi } from "./atlas-api";
@@ -28,6 +29,10 @@ const settings: SettingsView = {
 };
 
 class ComposerApi implements AtlasApi {
+  async listTasks() { return taskFixtures; }
+  async runTask(taskId: string, _args: Record<string, unknown>, id: string | null, onEvent: (event: ChatEvent) => void): Promise<import("./types").TaskResult> {
+    return {taskId, outcome: {kind: "compaction", result: await this.compactConversation(id!, onEvent)}};
+  }
   async cancelCompaction(): Promise<void> {}
   async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   async listConversations() {
@@ -246,4 +251,18 @@ test("destroy removes window listeners", async () => {
   measuredHeight.mockReturnValue(32);
   window.dispatchEvent(new Event("resize"));
   expect(composer.textarea.style.height).toBe("80px");
+});
+
+test("slash selection inserts then a subsequent Enter submits", async () => {
+  const {composer, store, submit} = await setup();
+  const state = {...store.getState(), activeConversationId: "saved", settings: {...settings, apiKeySource: "settings" as const}};
+  composer.updateState(state);
+  composer.textarea.value = "/"; composer.textarea.focus();
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  composer.updateState(state);
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(composer.textarea.value).toBe("/compact"); expect(submit).not.toHaveBeenCalled();
+  expect(store.getState().draftText).toBe("/compact");
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(submit).toHaveBeenCalledOnce();
 });

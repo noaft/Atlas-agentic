@@ -964,29 +964,62 @@ pub fn cancel_compaction(id: String, state: State<'_, DesktopState>) -> Result<(
 }
 
 #[tauri::command]
+pub fn list_tasks() -> Vec<atlas_agentic::tasks::TaskDescriptor> {
+    atlas_agentic::tasks::TaskRegistry::builtins().descriptors()
+}
+
+fn execute_task(
+    task: atlas_agentic::tasks::TaskRequest,
+    state: &DesktopState,
+    on_progress: &mut dyn FnMut(atlas_agentic::conversations::CompactionProgress),
+) -> Result<atlas_agentic::tasks::TaskResult, String> {
+    let registry = atlas_agentic::tasks::TaskRegistry::builtins();
+    registry.validate(&task)?;
+    let request = state
+        .active_requests
+        .acquire(task.conversation_id.as_ref())?;
+    let effective = state.settings_store.load()?.resolve_from_env()?;
+    let workspace = state.resolve_workspace(task.conversation_id.as_ref(), None, &effective)?;
+    let runtime = (state.runtime_factory)(&workspace, &effective)?;
+    let service = ConversationService::new(&runtime, &state.store, effective.history_limit);
+    registry.run(task, &service, Some(&request.cancelled), on_progress)
+}
+
+#[tauri::command]
+pub async fn run_task(
+    request: atlas_agentic::tasks::TaskRequest,
+    channel: Channel<ChatEvent>,
+    state: State<'_, DesktopState>,
+) -> Result<atlas_agentic::tasks::TaskResult, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_task(request, &state, &mut |progress| {
+            let _ = channel.send(ChatEvent::Compaction { progress });
+        })
+    })
+    .await
+    .map_err(|error| format!("Task worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn compact_conversation(
     id: String,
     channel: Channel<ChatEvent>,
     state: State<'_, DesktopState>,
 ) -> Result<atlas_agentic::conversations::CompactionResult, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let id = parse_id(&id)?;
-        let request = state.active_requests.acquire(Some(&id))?;
-        let effective = state.settings_store.load()?.resolve_from_env()?;
-        let workspace = state.resolve_workspace(Some(&id), None, &effective)?;
-        let runtime = (state.runtime_factory)(&workspace, &effective)?;
-        ConversationService::new(&runtime, &state.store, effective.history_limit)
-            .compact_cancellable(
-                &id,
-                &mut |progress| {
-                    let _ = channel.send(ChatEvent::Compaction { progress });
-                },
-                Some(&request.cancelled),
-            )
-    })
-    .await
-    .map_err(|e| format!("Compaction worker failed: {e}"))?
+    use atlas_agentic::tasks::{TaskOutcome, TaskRequest, COMPACT_TASK_ID};
+    let result = run_task(
+        TaskRequest {
+            task_id: COMPACT_TASK_ID.into(),
+            arguments: serde_json::json!({}),
+            conversation_id: Some(parse_id(&id)?),
+        },
+        channel,
+        state,
+    )
+    .await?;
+    let TaskOutcome::Compaction(result) = result.outcome;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2557,5 +2590,52 @@ conversation_title_prompt = "Return a short title."
             first.recv_timeout(Duration::from_secs(1)).unwrap(),
             AuthorizationDecision::Allow
         );
+    }
+    #[test]
+    fn task_validation_precedes_provider_setup_and_task_guard_matches_asks() {
+        use atlas_agentic::tasks::{TaskRequest, COMPACT_TASK_ID};
+        let data = TempDir::new().unwrap();
+        let store = ConversationStore::at(data.path().join("history"));
+        let first = store
+            .create_turn_with_workspace("one", "answer", Some(data.path()))
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let state = DesktopState::with_runtime_factory(
+            store,
+            40,
+            Arc::new(move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err("fake provider failure".into())
+            }),
+        );
+        assert_eq!(super::list_tasks()[0].id, COMPACT_TASK_ID);
+        let mut task = TaskRequest {
+            task_id: "unknown".into(),
+            arguments: serde_json::json!({}),
+            conversation_id: Some(first.id.clone()),
+        };
+        assert!(super::execute_task(task.clone(), &state, &mut |_| {})
+            .unwrap_err()
+            .contains("Unknown task"));
+        task.task_id = COMPACT_TASK_ID.into();
+        task.arguments = serde_json::json!({"bad": 1});
+        assert!(super::execute_task(task.clone(), &state, &mut |_| {})
+            .unwrap_err()
+            .contains("arguments"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        task.arguments = serde_json::json!({});
+        let guard = state.active_requests.acquire(Some(&first.id)).unwrap();
+        assert!(super::execute_task(task.clone(), &state, &mut |_| {})
+            .unwrap_err()
+            .contains("already running"));
+        drop(guard);
+        assert!(super::execute_task(task.clone(), &state, &mut |_| {})
+            .unwrap_err()
+            .contains("fake provider failure"));
+        assert!(super::execute_task(task, &state, &mut |_| {})
+            .unwrap_err()
+            .contains("fake provider failure"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

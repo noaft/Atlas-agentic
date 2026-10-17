@@ -201,8 +201,17 @@ The ring continues to show the last actual chat-model usage; summary usage is
 separate. Image token accounting is currently unavailable and explicitly disables
 automatic compaction for that request rather than pretending images use zero tokens.
 
-Use `/compact` in a saved desktop chat, or `atlas conversation compact <id>` from
-the CLI. Manual compaction produces one summary below 30% occupancy, two from 30%
+Type `/` at the start of the desktop composer to browse tasks. Filter by command,
+title, or description. Use Up/Down or Home/End to choose a row; Enter, Tab, or a
+click inserts the command. Press Enter again or Send to run it. Escape or an
+outside click closes the menu and keeps your draft. Tasks that need a saved chat
+or configured model show the missing requirement. Catalog failures offer Retry;
+ordinary messages still work. Unknown commands and unsupported arguments keep
+your draft and display an error instead of going to the chat model. Paths such as
+`/home/user/file.rs` and prose containing slash commands remain ordinary messages.
+
+The first registered task is `/compact` (no arguments). Use it in a saved desktop
+chat with a configured model, or `atlas conversation compact <id>` from the CLI. Manual compaction produces one summary below 30% occupancy, two from 30%
 to below 60%, and three at 60% or higher. Automatic compaction targets three.
 Short sources use fewer nonempty blocks. Each block produces one summary message;
 the latest **10 original messages** remain unchanged (extended to whole exchanges).
@@ -391,3 +400,19 @@ npm --prefix desktop run tauri -- build --debug --no-bundle
 
 Binary conversation tests use temporary data directories and a local fake model
 server, so the test suite needs no real API key or external model service.
+
+### Adding a built-in task
+
+`src/tasks/mod.rs` owns task descriptors, argument validation, and typed handlers.
+Add a stable ID and slash name, title/description, argument schema, requirements,
+and handler together in the registry, with tests for validation and dispatch.
+Duplicate IDs and command names are rejected. `list_tasks` exposes the catalog
+without model setup; `run_task` validates requests before resolving the saved
+workspace and invoking a handler. The CLI compact command shares this dispatcher;
+automatic compaction stays inside its existing runtime context.
+
+The composer reads the backend catalog through `atlas-api.ts`; do not add another
+frontend command list. New argument schemas require a frontend argument adapter,
+and new outcome kinds require an explicit result adapter, while discovery and
+slash-name parsing remain generic. Automatic model task routing, plugins, and
+user-defined tasks are future work.

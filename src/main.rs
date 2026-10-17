@@ -11,6 +11,7 @@ use atlas_agentic::{
     permissions::{AuthorizationDecision, AuthorizationRequest, ToolAuthorizer},
     render_conversation, render_conversation_metadata, render_conversation_summary, render_help,
     settings::SettingsStore,
+    tasks::{TaskOutcome, TaskRegistry, TaskRequest, COMPACT_TASK_ID},
     AppResult,
 };
 
@@ -40,13 +41,23 @@ fn run_command(command: AppResult) -> Result<(), String> {
                 Path::new("agents/atlas.toml"),
                 &effective,
             )?;
-            let result = ConversationService::new(&runtime, &store, effective.history_limit)
-                .compact(&id, &mut |progress| {
+            let service = ConversationService::new(&runtime, &store, effective.history_limit);
+            let result = TaskRegistry::builtins().run(
+                TaskRequest {
+                    task_id: COMPACT_TASK_ID.into(),
+                    arguments: serde_json::json!({}),
+                    conversation_id: Some(id),
+                },
+                &service,
+                None,
+                &mut |progress| {
                     eprintln!(
                         "Compacting context: {}/{}",
                         progress.completed_blocks, progress.total_blocks
                     )
-                })?;
+                },
+            )?;
+            let TaskOutcome::Compaction(result) = result.outcome;
             println!("{}", result.message);
         }
         AppResult::ConversationList => {

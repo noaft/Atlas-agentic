@@ -1,3 +1,4 @@
+import { createSlashMenu } from "./slash-menu";
 import { createContextMeter, type ContextMeter } from "./context-meter";
 import type { ChatStore } from "./chat-state";
 import type { ChatState } from "./types";
@@ -69,12 +70,26 @@ export function createChatComposer(
     resize(textarea);
   };
 
+  const menuHost = document.createElement("div");
+  element.append(menuHost);
+  const slashMenu = createSlashMenu(textarea, menuHost, (command) => {
+    store.setDraft(command);
+    refreshLayout();
+    updateSendAvailability(store.getState());
+  }, () => { void store.retryTasks(); });
+  const updateMenu = (state: Readonly<ChatState>) => slashMenu.update({
+    tasks: state.tasks, status: state.taskCatalogStatus, error: state.taskCatalogError,
+    state, sessionId: state.activeSessionId,
+  });
+  updateMenu(store.getState());
+
   textarea.addEventListener("input", () => {
     refreshLayout();
     store.setDraft(textarea.value);
     updateSendAvailability(store.getState());
   });
   textarea.addEventListener("keydown", (event) => {
+    if (slashMenu.handleKeydown(event)) return;
     if (
       event.key !== "Enter" ||
       event.shiftKey ||
@@ -109,6 +124,7 @@ export function createChatComposer(
     contextMeter,
     sendButton,
     updateState(state) {
+      updateMenu(state);
       textarea.placeholder = state.activeWorkspace
         ? "Message Atlas…"
         : "Starting folder unavailable";
@@ -119,6 +135,7 @@ export function createChatComposer(
     },
     replaceDraft(text) {
       textarea.value = text;
+      updateMenu(store.getState());
       refreshLayout();
       updateSendAvailability(store.getState());
     },
@@ -130,6 +147,7 @@ export function createChatComposer(
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     },
     destroy() {
+      slashMenu.destroy();
       contextMeter.destroy();
       window.removeEventListener("resize", resizeOnWindowChange);
     },

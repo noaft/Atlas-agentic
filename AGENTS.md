@@ -34,6 +34,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   ├── store.rs        Locked message/activity JSONL and atomic metadata updates
 │   │   ├── service.rs      Ask, activity capture, workspace persistence, and titles
 │   │   └── title.rs        Title sanitization
+│   ├── tasks/             Authoritative built-in task catalog and validated dispatch
 │   ├── settings.rs         Versioned private settings and environment precedence
 │   ├── workspace.rs        Automatic Atlas home provisioning and validation
 │   ├── models/             Model-provider trait and DeepSeek provider
@@ -215,6 +216,24 @@ names. Known oversized requests fail without discarding the protected tail.
 The desktop `/compact` must not create a chat message or persist an unsaved draft;
 progress, checkpoint restoration, cancellation and memory details belong to the
 owning session while other chats continue independently.
+
+`src/tasks/mod.rs` is the authoritative built-in task registry, initially
+`conversation.compact` (`/compact`, empty-object arguments). Keep descriptors,
+argument validation and typed handlers together; reject duplicate IDs/commands.
+Tauri `list_tasks` needs no model configuration, and `run_task` validates requests
+before provider setup, obtains native ownership once, derives the saved workspace,
+and delegates to the service's existing execution lease. CLI compact shares the
+registry; automatic compaction retains its direct runtime path without nested leases.
+All frontend task access stays in `atlas-api.ts`. The composer discovers tasks
+from the backend catalog, filters command/title/description, and inserts on
+Enter/Tab/click before a later Enter/Send executes. Keep unavailable tasks visible
+with reasons. Escape/outside click preserve input; unknown commands and invalid
+arguments never reach ordinary chat. Keep paths and prose as normal chat. Catalog
+failure/retry cannot block ordinary messages or overwrite drafts. Keep task/menu
+ownership per session. Do not add frontend fallback task names or automatic model
+routing in this release. Future handlers need registry validation/dispatch tests,
+argument support and typed outcome adapters as needed.
+
 
 After the first successful answer, the agent makes one non-streaming, no-tool title
 request using only the first input and `conversation_title_prompt` from

@@ -1,3 +1,4 @@
+import { taskFixtures } from "./task-fixtures.test-support";
 import { expect, test } from "vitest";
 
 import type { AtlasApi } from "./atlas-api";
@@ -76,7 +77,11 @@ const thinkingActivity: ActivityRecord = {
 };
 
 class FakeApi implements AtlasApi {
-  async cancelCompaction(): Promise<void> {}
+  async listTasks() { return taskFixtures; }
+  async runTask(taskId: string, _args: Record<string, unknown>, id: string | null, onEvent: (event: ChatEvent) => void): Promise<import("./types").TaskResult> {
+    return {taskId, outcome: {kind: "compaction", result: await this.compactConversation(id!, onEvent)}};
+  }
+  async cancelCompaction(_id: string): Promise<void> {}
   async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   listCalls = 0;
   loadCalls: string[] = [];
@@ -1407,6 +1412,7 @@ test("manual compact does not add messages or call the chat model", async () => 
   api.conversations = [first];
   api.loads.set(first.id, async () => savedConversation(first));
   let compacted = 0;
+  api.settings = {...settings, apiKeySource: "settings"};
   api.compactConversation = async () => { compacted++; return { memory: null, message: "Nothing older to compact" }; };
   const store = new ChatStore(api);
   await store.initialize();
@@ -1423,6 +1429,7 @@ test("manual compaction stays with its owner while another chat sends", async ()
   const api = new FakeApi();
   api.conversations = [first];
   api.loads.set(first.id, async () => savedConversation(first));
+  api.settings = {...settings, apiKeySource: "settings"};
   const pending = deferred<import("./types").CompactionResult>();
   let progress!: (event: ChatEvent) => void;
   api.compactConversation = async (_id: string, onEvent: (event: ChatEvent) => void) => { progress = onEvent; return pending.promise; };
@@ -1434,14 +1441,18 @@ test("manual compaction stays with its owner while another chat sends", async ()
   progress({ event: "compaction", data: { progress: { completedBlocks: 1, totalBlocks: 3 } } });
   expect(store.getState().compactionProgress).toBeNull();
   expect(store.getState().draftText).toBe("hello");
+  api.asks.push(async () => result(second, "Other chat answered", true));
+  await store.send();
+  expect(store.getState().messages.at(-1)?.content).toBe("Other chat answered");
+  store.setDraft("another draft");
   pending.resolve({ memory: null, message: "Compacted" }); await compacting;
-  expect(store.getState().draftText).toBe("hello");
+  expect(store.getState().draftText).toBe("another draft");
   await store.selectSession(owner);
   expect(store.getState().compactionMessage).toBe("Compacted");
 });
 
 test("a new request clears a previous compact notice so budget warnings remain visible", async () => {
- const api=new FakeApi();api.conversations=[first];api.loads.set(first.id,async()=>savedConversation(first));
+ const api=new FakeApi();api.settings={...settings,apiKeySource:"settings"};api.conversations=[first];api.loads.set(first.id,async()=>savedConversation(first));
  const store=new ChatStore(api);await store.initialize();await store.selectConversation(first.id);
  store.setDraft("/compact");await store.send();expect(store.getState().compactionMessage).not.toBeNull();
  const pending=deferred<ConversationAskResult>();api.asks.push(()=>pending.promise);
@@ -1449,4 +1460,90 @@ test("a new request clears a previous compact notice so budget warnings remain v
  api.eventSinks[0]({event:"contextStatus",data:{status:{available:false,message:"Unknown model limits",estimated:false,inputTokens:null,maxTokens:null}}});
  expect(store.getState().compactionMessage).toBeNull();
  pending.resolve(result(first,"done",false));await sending;
+});
+
+test("slash errors preserve drafts and never go to the model", async () => {
+  const api = new FakeApi(); const store = new ChatStore(api); await store.initialize();
+  for (const draft of ["/", "/missing", "/compact extra", "/compact"]) {
+    store.setDraft(draft); await store.send();
+    expect(store.getState().draftText).toBe(draft);
+    expect(store.getState().errorMessage).toBeTruthy();
+  }
+  expect(api.askCalls).toHaveLength(0);
+});
+
+test("catalog failure permits ordinary chat and retry preserves input", async () => {
+  const api = new FakeApi();
+  api.listTasks = async () => { throw new Error("catalog offline"); };
+  const store = new ChatStore(api); await store.initialize();
+  store.setDraft("/compact"); await store.send();
+  expect(store.getState().draftText).toBe("/compact");
+  expect(store.getState().errorMessage).toMatch(/catalog/);
+  store.setDraft("hello"); await store.send(); expect(api.askCalls).toHaveLength(1);
+  store.setDraft("keep draft"); api.listTasks = async () => taskFixtures;
+  await store.retryTasks(); expect(store.getState().draftText).toBe("keep draft");
+  expect(store.getState().taskCatalogStatus).toBe("ready");
+});
+
+test("catalog retry ignores older responses", async () => {
+  const api = new FakeApi(); const store = new ChatStore(api); await store.initialize();
+  const old = deferred<import("./types").TaskDescriptor[]>();
+  api.listTasks = () => old.promise; const pending = store.retryTasks();
+  api.listTasks = async () => []; await store.retryTasks(); old.resolve(taskFixtures); await pending;
+  expect(store.getState().tasks).toEqual([]);
+});
+
+test("task failure restores its owner command without overwriting newer draft", async () => {
+  const api = new FakeApi(); api.settings = {...settings, apiKeySource: "settings"};
+  api.conversations = [first]; api.loads.set(first.id, async () => savedConversation(first));
+  const store = new ChatStore(api); await store.initialize(); await store.selectConversation(first.id);
+  api.runTask = async () => { throw new Error("task failed"); };
+  store.setDraft("/COMPACT"); await store.send();
+  expect(store.getState().draftText).toBe("/COMPACT");
+  const pending = deferred<import("./types").TaskResult>(); api.runTask = () => pending.promise;
+  const running = store.send(); store.setDraft("new words"); pending.reject(new Error("failed")); await running;
+  expect(store.getState().draftText).toBe("new words");
+});
+
+test("manual task cancellation preserves prior memory and restores command", async () => {
+  const api = new FakeApi(); api.settings = {...settings, apiKeySource: "settings"};
+  api.conversations = [first]; api.loads.set(first.id, async () => savedConversation(first));
+  const pending = deferred<import("./types").TaskResult>();
+  api.runTask = () => pending.promise; let cancelId = "";
+  api.cancelCompaction = async (id: string) => {cancelId = id; pending.reject(new Error("Compaction cancelled"));};
+  const store = new ChatStore(api); await store.initialize(); await store.selectConversation(first.id);
+  const before = store.getState().messages;
+  store.setDraft("/compact"); const running = store.send(); await store.cancelCompaction(); await running;
+  expect(cancelId).toBe(first.id); expect(store.getState().draftText).toBe("/compact");
+  expect(store.getState().messages).toEqual(before); expect(store.getState().compactionProgress).toBeNull();
+});
+
+test("a delayed cancellation error stays with its initiating chat", async () => {
+  const api = new FakeApi(); api.settings = {...settings, apiKeySource: "settings"};
+  api.conversations = [first]; api.loads.set(first.id, async () => savedConversation(first));
+  const task = deferred<import("./types").TaskResult>(); api.runTask = () => task.promise;
+  const cancel = deferred<void>(); api.cancelCompaction = () => cancel.promise;
+  const store = new ChatStore(api); await store.initialize(); await store.selectConversation(first.id);
+  const owner = store.getState().activeSessionId;
+  store.setDraft("/compact"); const running = store.send(); const cancelling = store.cancelCompaction();
+  await store.newChat(); store.setDraft("other draft");
+  cancel.reject(new Error("cancel failed")); await cancelling;
+  expect(store.getState().errorMessage).toBeNull(); expect(store.getState().draftText).toBe("other draft");
+  await store.selectSession(owner); expect(store.getState().errorMessage).toBe("cancel failed");
+  task.resolve({taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Done"}}}); await running;
+});
+
+test("a stale cancellation failure cannot overwrite a newer request", async () => {
+  const api = new FakeApi(); api.settings = {...settings, apiKeySource: "settings"};
+  api.conversations = [first]; api.loads.set(first.id, async () => savedConversation(first));
+  const task = deferred<import("./types").TaskResult>(); api.runTask = () => task.promise;
+  const cancel = deferred<void>(); api.cancelCompaction = () => cancel.promise;
+  const store = new ChatStore(api); await store.initialize(); await store.selectConversation(first.id);
+  store.setDraft("/compact"); const running = store.send(); const cancelling = store.cancelCompaction();
+  task.resolve({taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Done"}}}); await running;
+  const ask = deferred<ConversationAskResult>(); api.asks.push(() => ask.promise);
+  store.setDraft("next request"); const sending = store.send();
+  cancel.reject(new Error("old cancellation failed")); await cancelling;
+  expect(store.getState().errorMessage).toBeNull();
+  ask.resolve(result(first, "done", false)); await sending;
 });

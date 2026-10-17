@@ -155,6 +155,9 @@ export interface ChatSessionSummary {
 }
 
 export interface ChatState {
+  tasks: TaskDescriptor[];
+  taskCatalogStatus: "idle" | "loading" | "ready" | "error";
+  taskCatalogError: string | null;
   memory: MemoryCheckpoint | null;
   compactionProgress: CompactionProgress | null;
   contextStatus: ContextStatus | null;
@@ -232,4 +235,19 @@ export interface SaveSettingsInput {
   historyLimit: number;
   defaultWorkspacePath: string | null;
   defaultPermissionMode: PermissionMode;
+}
+
+export interface TaskDescriptor {
+  id: string;
+  command: string;
+  title: string;
+  description: string;
+  argumentSchema: {type: string; properties?: Record<string, unknown>; additionalProperties?: boolean};
+  requiresConversation: boolean;
+  requiresModel: boolean;
+  cancellable: boolean;
+}
+export interface TaskResult {
+  taskId: string;
+  outcome: {kind: "compaction"; result: CompactionResult};
 }

@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  TaskDescriptor,
+  TaskResult,
   ChatEvent,
   Conversation,
   ConversationAskResult,
@@ -15,6 +17,8 @@ import type {
 } from "./types";
 
 export interface AtlasApi {
+  listTasks(): Promise<TaskDescriptor[]>;
+  runTask(taskId: string, args: Record<string, unknown>, conversationId: string | null, onEvent: (event: ChatEvent) => void): Promise<TaskResult>;
   cancelCompaction(id: string): Promise<void>;
   compactConversation(id: string, onEvent: (event: ChatEvent) => void): Promise<import("./types").CompactionResult>;
   listConversations(): Promise<ConversationMetadata[]>;
@@ -46,6 +50,11 @@ export interface AtlasApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    listTasks: () => invoke<TaskDescriptor[]>("list_tasks"),
+    runTask: (taskId, args, conversationId, onEvent) => {
+      const channel = new Channel<ChatEvent>(onEvent);
+      return invoke<TaskResult>("run_task", {request: {taskId, arguments: args, conversationId}, channel});
+    },
     cancelCompaction: (id) => invoke<void>("cancel_compaction", { id }),
     compactConversation: (id, onEvent) => {
       const channel = new Channel<ChatEvent>(onEvent);

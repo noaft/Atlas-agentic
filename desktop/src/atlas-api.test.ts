@@ -254,3 +254,20 @@ test("compact sends the saved chat ID and forwards progress without an ask", asy
  expect(calls).toEqual(["compact_conversation", "cancel_compaction"]);
  expect(events).toHaveLength(1);
 });
+
+test("task catalog and execution use validated request envelope and event channel", async () => {
+  mockIPC((command, payload) => {
+    if (command === "list_tasks") return [];
+    expect(command).toBe("run_task");
+    const args = payload as {request: unknown; channel: Channel<ChatEvent>};
+    expect(args.request).toEqual({taskId: "conversation.compact", arguments: {}, conversationId: metadata.id});
+    args.channel.onmessage({event: "compaction", data: {progress: {completedBlocks: 1, totalBlocks: 1}}});
+    return {taskId: "conversation.compact", outcome: {kind: "compaction", result: {memory: null, message: "Done"}}};
+  });
+  const api = createTauriAtlasApi();
+  expect(await api.listTasks()).toEqual([]);
+  const events: ChatEvent[] = [];
+  const result = await api.runTask("conversation.compact", {}, metadata.id, event => events.push(event));
+  expect(result.outcome.kind).toBe("compaction");
+  expect(events).toHaveLength(1);
+});

@@ -1,3 +1,4 @@
+import { taskFixtures } from "./task-fixtures.test-support";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { AtlasApi } from "./atlas-api";
@@ -78,6 +79,10 @@ function deferred<T>() {
 }
 
 class ViewApi implements AtlasApi {
+  async listTasks() { return taskFixtures; }
+  async runTask(taskId: string, _args: Record<string, unknown>, id: string | null, onEvent: (event: ChatEvent) => void): Promise<import("./types").TaskResult> {
+    return {taskId, outcome: {kind: "compaction", result: await this.compactConversation(id!, onEvent)}};
+  }
   async cancelCompaction(): Promise<void> {}
   async compactConversation(_id: string, _onEvent: (event: import("./types").ChatEvent) => void): Promise<import("./types").CompactionResult> { return { memory: null, message: "No older messages" }; }
   list = Promise.resolve<ConversationMetadata[]>([]);
@@ -1716,4 +1721,21 @@ test("automatic compaction exposes cancellation while the answer is pending", as
  const cancel=[...root.querySelectorAll<HTMLButtonElement>("button")].filter((button)=>button.textContent==="Cancel compaction");
  expect(cancel).toHaveLength(1);cancel[0].click();await Promise.resolve();expect(cancelled).toBe(1);
  pending.resolve({answer:"done",metadata,created:false});await sending;
+});
+
+test("slash menu inserts before executing compact and does not append chat history", async () => {
+  const api = new ViewApi(); api.settings = {...settings, apiKeySource: "settings"};
+  let calls = 0; api.runTask = async (taskId, args, id, _onEvent) => {
+    expect(taskId).toBe("conversation.compact"); expect(args).toEqual({}); expect(id).toBe(metadata.id);
+    calls++; return {taskId, outcome: {kind: "compaction", result: {memory: null, message: "Compacted"}}};
+  };
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const before = store.getState().messages;
+  const textarea = root.querySelector<HTMLTextAreaElement>("[data-composer]")!;
+  textarea.value = "/"; textarea.focus(); textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(textarea.value).toBe("/compact"); expect(calls).toBe(0);
+  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  await flush(); expect(calls).toBe(1); expect(store.getState().messages).toEqual(before);
+  expect(root.textContent).toContain("Compacted");
 });

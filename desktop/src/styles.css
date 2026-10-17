@@ -439,3 +439,28 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .memory-divider section { padding: 10px 0; border-top: 1px solid #e0d7eb; }
 .memory-divider p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .memory-status { margin: 6px 0; color: var(--muted); font-size: 12px; }
+
+.slash-menu {
+  position: fixed;
+  z-index: 50;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid #e8e2f0;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 36px #34234920;
+  text-align: left;
+}
+.slash-menu-option { padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.slash-menu-option:hover, .slash-menu-option[aria-selected="true"] { background: #f1eafa; }
+.slash-menu-option[aria-disabled="true"] { cursor: default; }
+.slash-menu-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 13px; }
+.slash-menu-title strong { color: #6b4390; }
+.slash-menu-title span { color: #4d4357; }
+.slash-menu-option p, .slash-menu-message { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: #71677d; overflow-wrap: anywhere; }
+.slash-menu-option small { display: block; margin-top: 4px; font-size: 11px; color: #8a6471; }
+.slash-menu-message { padding: 8px 10px; }
+.slash-menu-retry { margin: 4px 10px 8px; padding: 5px 9px; border: 0; border-radius: 8px; color: #6b4390; background: #f1eafa; cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
