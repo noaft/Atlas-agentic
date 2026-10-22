@@ -6,7 +6,7 @@ use crate::{
         list_models_from_definition_with_settings, provider_from_definition_with_settings,
         ModelInfo, ModelProvider,
     },
-    settings::{EffectiveSettings, SettingsStore},
+    settings::{AtlasSettings, EffectiveSettings, SettingsStore},
     tools::{
         system_computer_controller, CaptureScreenTool, CopyFileTool, CreateDirectoryTool,
         CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool,
@@ -20,10 +20,29 @@ use crate::{
 #[cfg(any(unix, windows))]
 use crate::tools::ExecCommandTool;
 
+/// Settings inspection stays available when an agent file is missing; runtime construction
+/// still reports invalid definitions before provider setup. Valid definitions supply defaults.
+pub fn resolve_settings_for_agent(
+    saved: &AtlasSettings,
+    agent_file: &Path,
+) -> Result<EffectiveSettings, String> {
+    match LocalAgentDefinition::from_file(agent_file) {
+        Ok(definition) => {
+            saved.resolve_for(&definition.model_provider, &definition.model, |name| {
+                std::env::var_os(name)
+            })
+        }
+        Err(_) => saved.resolve_from_env(),
+    }
+}
+
 pub fn build_runtime(workspace_root: &Path, agent_file: &Path) -> Result<Runtime, String> {
-    let settings = SettingsStore::from_user_config()?
-        .load()?
-        .resolve_from_env()?;
+    let definition = LocalAgentDefinition::from_file(agent_file)?;
+    let settings = SettingsStore::from_user_config()?.load()?.resolve_for(
+        &definition.model_provider,
+        &definition.model,
+        |name| std::env::var_os(name),
+    )?;
     build_runtime_with_settings(workspace_root, agent_file, &settings)
 }
 

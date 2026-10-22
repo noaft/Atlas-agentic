@@ -66,6 +66,7 @@ impl ModelProvider for Model {
         Ok(ModelResponse {
             content,
             usage: Some(ModelUsage {
+                source: None,
                 model: "selected-model".into(),
                 input_tokens: if first { 94_000 } else { 30_000 },
                 output_tokens: 1000,
@@ -204,6 +205,7 @@ fn usage_from_another_model_cannot_trigger_compaction_before_the_first_call() {
     for _ in 0..9 {
         let mut activity = ActivityCollector::new().into_unassociated_turn();
         activity.usage = Some(ModelUsage {
+            source: None,
             model: "other-model".into(),
             input_tokens: 94000,
             output_tokens: 1000,

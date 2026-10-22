@@ -88,3 +88,12 @@ test("small positive usage stays distinguishable from an unused context", () => 
   expect(meter.element.querySelector("[data-context-percent]")?.textContent).toBe("<1%");
   expect(meter.element.querySelector("[data-context-ratio]")?.textContent).toBe("512 / 1,048,576 tokens");
 });
+
+test("provider attribution remains visible when combined context capacity is unknown", () => {
+  const meter = setup();
+  meter.update({ maxTokens: null, usedTokens: 1500, inputTokens: 1200, outputTokens: 300, provider: "OpenAI", model: "alias", inputTokenLimit: 6000 });
+  expect(meter.element.querySelector("[data-context-percent]")?.textContent).toBe("—");
+  expect(meter.element.textContent).toContain("OpenAI · alias");
+  expect(meter.element.textContent).toContain("Input limit: 6,000 tokens");
+  expect(meter.element.textContent).toContain("1,500 / Unknown tokens");
+});

@@ -2,8 +2,8 @@
 
 A desktop-first AI assistant for conversation, files, applications, computer
 control, and coding. The Tauri desktop app and Rust CLI share the same agent,
-tools, and local conversation history. DeepSeek is the current model provider;
-multi-agent routing is planned.
+tools, and local conversation history. Supports DeepSeek, OpenAI, Anthropic,
+Google Gemini, and custom OpenAI-compatible endpoints. Multi-agent routing is planned.
 
 ## Quick start
 
@@ -19,7 +19,8 @@ npm ci --prefix desktop
 npm --prefix desktop run tauri dev
 ```
 
-Open **Settings** to add your DeepSeek API key and choose a model. New chats use
+Open **Settings**, choose a provider, add its API key, and refresh the model list
+or enter a model ID. New chats use
 an automatically created `Atlas` folder in your home directory; choose another
 folder per chat or set a default in Settings.
 
@@ -54,9 +55,41 @@ an API key. The CLI uses your current directory as its starting folder.
 
 ## Settings and access
 
-Desktop Settings supports the API key, base URL, model, model limits, default
-folder, and tool-access mode. Environment variables override saved settings:
-`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL`.
+Desktop Settings saves separate credentials, endpoint, model, and model limits for
+each provider. Switching providers preserves unsaved Settings drafts until Save
+or Cancel. Refresh models also works before selecting a model; discovery failure
+does not prevent using a manually entered ID.
+
+`ATLAS_PROVIDER` overrides the saved provider; otherwise the agent's provider is
+the fallback. Each provider's environment fields override its saved profile:
+
+| Provider | Environment prefix | Protocol |
+| --- | --- | --- |
+| DeepSeek | `DEEPSEEK` | Chat Completions |
+| OpenAI | `OPENAI` | Responses |
+| Anthropic | `ANTHROPIC` | Messages |
+| Google Gemini | `GEMINI` | generateContent |
+| OpenAI-compatible | `ATLAS_COMPATIBLE` | Chat Completions |
+
+Append `_API_KEY`, `_BASE_URL`, or `_MODEL` to the prefix. Provider IDs for
+`ATLAS_PROVIDER` are `deepseek`, `openai`, `anthropic`, `gemini`, and
+`openai-compatible`. For example:
+
+```bash
+export ATLAS_PROVIDER="openai"
+export OPENAI_API_KEY="your_api_key_here"
+export OPENAI_MODEL="your_model_id"
+cargo run -- ask "hello atlas"
+```
+
+Custom endpoints require a base URL. Settings offers keyless access for local
+endpoints and optional JSON mode, streamed usage, image support, and sampling
+parameters under **Advanced model options**. Compatibility depends on the
+endpoint and selected model. Unknown optional sampling parameters are omitted.
+The configurable default output budget is a request limit, not model capacity.
+
+Settings v1 migrates in memory; the next explicit settings update saves v2.
+Existing DeepSeek credentials, selected models, and history remain usable.
 The default agent is configured in [agents/atlas.toml](agents/atlas.toml).
 Saved API keys are plaintext in the user-local `settings.json`, protected by
 private filesystem permissions where supported. Never commit credentials.
@@ -88,7 +121,17 @@ Built-in tools:
 
 Conversations are stored locally outside the repository. Atlas keeps original
 history and compacts older context when usable model limits are available. Set
-missing context/output limits in Settings. Summary requests consume model tokens.
+missing combined context/output limits in Settings. Overrides belong to a model
+and provider endpoint; changing endpoints does not reuse old limits. Providers
+that report only an input limit do not establish a combined context capacity.
+Summary requests consume model tokens.
+
+The ring beside Send shows the latest chat-model call's input plus output usage,
+with exact token details on hover, focus, or tap. It excludes title and summary
+requests and does not add repeated tool calls together. Cached/reasoning tokens
+are counted once according to each provider's usage fields. Missing usage,
+unknown combined capacity, or a different selected provider/model shows an em
+dash. Older saved readings without provider identity load but remain unattributed.
 
 For manual compaction, type `/` in the desktop composer and select **/compact**,
 or use the CLI command above. **Send always sends ordinary chat text**, including

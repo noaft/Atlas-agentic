@@ -488,3 +488,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .compaction-details p { max-height: 160px; overflow-y: auto; margin: 8px 0 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .compaction-card[data-phase="failed"] { border-color: #e8d9d6; background: #fdfaf9; }
 .compaction-card[data-phase="done"] .compaction-title { color: #4b7354; }
+
+.settings-advanced { display: grid; gap: 12px; }
+.settings-advanced[open] { padding-bottom: 8px; }
+.settings-advanced summary { cursor: pointer; margin-bottom: 12px; color: var(--muted); }
+.model-provider-label { display: block; font-size: 11px; color: var(--muted); margin: 0 8px 3px; }

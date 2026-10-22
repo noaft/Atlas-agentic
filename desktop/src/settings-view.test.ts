@@ -66,7 +66,7 @@ function fixture(currentSettings = settings) {
   } as AtlasApi;
   const store = new ChatStore(api);
   const root = document.createElement("div");
-  return { root, saves, store };
+  return { root, saves, store, api };
 }
 
 test("settings renders a blank masked key and explains environment authority", async () => {
@@ -207,4 +207,84 @@ test("editing both model limits preserves the first value before saving", async 
  fields[0].value="100000";fields[0].dispatchEvent(new Event("input"));
  fields[1].value="4096";fields[1].dispatchEvent(new Event("input"));
  expect(store.getState().settingsDraft?.modelLimits?.[settings.activeModel]).toEqual({contextWindow:100000,maxOutputTokens:4096});
+});
+
+const multiSettings = {
+  ...settings, provider: "deepseek", source: { provider: "deepseek", sourceId: "deepseek-source" },
+  providers: [
+    { provider: "deepseek", name: "DeepSeek", envPrefix: "DEEPSEEK", apiKeySource: "settings", baseUrl: "https://api.deepseek.com", model: "deepseek-flash", activeModel: "deepseek-flash", source: {provider:"deepseek",sourceId:"deepseek-source"}, environmentOverrides: [], modelLimits: {}, capabilities: {}, allowKeyless: false, requestOutputTokens: 4096 },
+    { provider: "openai", name: "OpenAI", envPrefix: "OPENAI", apiKeySource: "missing", baseUrl: "https://api.openai.com/v1", model: "", activeModel: "", source: {provider:"openai",sourceId:"openai-source"}, environmentOverrides: [], modelLimits: {}, capabilities: {}, allowKeyless: false, requestOutputTokens: 4096 },
+  ],
+} as SettingsView;
+
+test("provider switching preserves separate unsaved credentials and manual models", async () => {
+  const { store, saves } = fixture(multiSettings);
+  await store.initialize(); store.openSettings();
+  store.updateSettingsDraft({ apiKey: "deepseek-draft" });
+  store.selectSettingsProvider("openai");
+  expect(store.getState().settingsDraft?.apiKey).toBe("");
+  store.updateSettingsDraft({ apiKey: "openai-draft", model: "manual-alias" });
+  store.selectSettingsProvider("deepseek");
+  expect(store.getState().settingsDraft?.apiKey).toBe("deepseek-draft");
+  store.selectSettingsProvider("openai");
+  expect(store.getState().settingsDraft?.model).toBe("manual-alias");
+  expect(saves).toHaveLength(0);
+  store.cancelSettings(); store.openSettings();
+  expect(store.getState().settingsDraft?.apiKey).toBe("");
+});
+
+test("provider settings exposes provider selection manual model and refresh", async () => {
+  const {store,root} = fixture(multiSettings);
+  await store.initialize(); store.openSettings();
+  renderSettings(root,store.getState(),store);
+  const provider = root.querySelector<HTMLSelectElement>("[data-settings-provider]");
+  expect(provider).not.toBeNull();
+  expect([...provider!.options].map(o=>o.textContent)).toEqual(["DeepSeek","OpenAI"]);
+  expect(root.querySelector<HTMLInputElement>("[data-settings-model]")).not.toBeNull();
+  expect(root.querySelector("[data-refresh-settings-models]")).not.toBeNull();
+});
+
+test("editing discovery credentials resets loading and rejects stale catalog responses", async () => {
+  const {store,api,saves} = fixture(multiSettings);
+  await store.initialize(); store.openSettings(); store.selectSettingsProvider("openai");
+  let resolve!: (models: import("./types").ModelInfo[]) => void;
+  const requests: unknown[] = [];
+  api.listModels = async input => { requests.push(input); return new Promise(done => { resolve = done; }); };
+  store.updateSettingsDraft({apiKey:"transient-key"});
+  const pending = store.refreshSettingsModels();
+  expect(store.getState().settingsModelsStatus).toBe("loading");
+  expect(requests).toEqual([expect.objectContaining({provider:"openai",patch:expect.objectContaining({apiKey:"transient-key"})})]);
+  expect(saves).toHaveLength(0);
+  store.updateSettingsDraft({apiKey:"new-key"});
+  expect(store.getState().settingsModelsStatus).toBe("idle");
+  resolve([{id:"stale-model",name:"Stale"}]); await pending;
+  expect(store.getState().settingsModels).toEqual([]);
+});
+
+test("fresh limits entered for a changed endpoint bind to the draft endpoint", async () => {
+  const {store,saves}=fixture(multiSettings);await store.initialize();store.openSettings();store.selectSettingsProvider("openai");
+  store.updateSettingsDraft({baseUrl:"https://another.test/v1",model:"alias"});
+  store.updateSettingsDraft({modelLimits:{alias:{contextWindow:6000,maxOutputTokens:1000}}});
+  await store.saveSettings();
+  expect(saves[0].profilePatches?.find(p=>p.provider==="openai")?.limitsSourceId).toBeNull();
+});
+
+test("inherited limits survive trailing slash edits but clear on a different endpoint", async () => {
+  const current=structuredClone(multiSettings);
+  current.providers!.find(p=>p.provider==="openai")!.modelLimits={alias:{contextWindow:6000,maxOutputTokens:1000}};
+  const {store}=fixture(current);await store.initialize();store.openSettings();store.selectSettingsProvider("openai");
+  store.updateSettingsDraft({baseUrl:"https://api.openai.com/v1/"});
+  expect(store.getState().settingsDraft?.modelLimits?.alias.contextWindow).toBe(6000);
+  store.updateSettingsDraft({baseUrl:"https://another.test/v1"});
+  expect(store.getState().settingsDraft?.modelLimits).toEqual({});
+});
+
+test("reopening Settings rejects discovery owned by a discarded draft", async () => {
+  const {store,api}=fixture(multiSettings);await store.initialize();store.openSettings();
+  let resolve!: (models: import("./types").ModelInfo[]) => void;
+  api.listModels=async()=>new Promise(done=>{resolve=done;});
+  store.updateSettingsDraft({baseUrl:"https://discarded.test/v1"});
+  const pending=store.refreshSettingsModels();await store.newChat();store.openSettings();
+  resolve([{id:"discarded-model",name:"Discarded"}]);await pending;
+  expect(store.getState().settingsModels).toEqual([]);
 });

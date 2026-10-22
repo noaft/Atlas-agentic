@@ -588,13 +588,13 @@ impl FakeDeepSeek {
                     r#"{"type":"final","content":"Hello from Atlas"}"#.to_string()
                 };
                 let (content_type, body) = if request["stream"] == true {
-                    let delta = json!({"choices":[{"delta":{"content":streamed_content}}]});
+                    let delta = json!({"choices":[{"delta":{"content":streamed_content},"finish_reason":"stop"}]});
                     (
                         "text/event-stream",
                         format!("data: {delta}\n\ndata: [DONE]\n\n"),
                     )
                 } else {
-                    ("application/json", json!({"choices":[{"message":{"role":"assistant","content":"Atlas greeting"}}]}).to_string())
+                    ("application/json", json!({"choices":[{"message":{"role":"assistant","content":"Atlas greeting"},"finish_reason":"stop"}]}).to_string())
                 };
                 sender.send(request).unwrap();
                 write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -670,4 +670,27 @@ fn cli_reports_when_automatic_compaction_capacity_is_unknown() {
         .unwrap();
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Automatic compaction unavailable"));
+}
+
+#[test]
+fn cli_resolves_provider_and_model_fallback_from_the_agent_before_starting_runtime() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let path = fixture.workspace.path().join("agents/atlas.toml");
+    let agent = std::fs::read_to_string(&path).unwrap().replace(
+        "model_provider = \"deepseek\"",
+        "model_provider = \"openai-compatible\"",
+    );
+    std::fs::write(path, agent).unwrap();
+    let server = FakeDeepSeek::new();
+    let output = fixture
+        .command()
+        .env("ATLAS_COMPATIBLE_API_KEY", "fake_key_for_test")
+        .env("ATLAS_COMPATIBLE_BASE_URL", &server.url)
+        .args(["ask", "hello atlas"])
+        .output()
+        .unwrap();
+    let stdout = successful_stdout(output);
+    assert!(stdout.contains("Hello from Atlas"));
+    assert!(stdout.contains("Atlas greeting"));
 }

@@ -1643,7 +1643,7 @@ test("the context ring opens details without sending and survives streamed updat
 
 test("the ring shows last request input plus output and ignores another model's usage", async () => {
   const api = new ViewApi();
-  api.settings = { ...settings, apiKeySource: "settings" };
+  api.settings = { ...settings, apiKeySource: "settings", source: {provider:"deepseek",sourceId:"current"} };
   api.availableModels = [
     { id: "deepseek-flash", name: "Flash", contextWindow: 128000 },
     { id: "deepseek-v4-pro", name: "Pro", contextWindow: 128000 },
@@ -1654,7 +1654,7 @@ test("the ring shows last request input plus output and ignores another model's 
   await store.initialize();
   inputComposer(root, "hello");
   click(root, "[data-send]");
-  const usage = { model: "deepseek-flash", inputTokens: 15000, outputTokens: 1000, totalTokens: 16000 };
+  const usage = { source: {provider:"deepseek" as const,sourceId:"current"}, model: "deepseek-flash", inputTokens: 15000, outputTokens: 1000, totalTokens: 16000 };
   api.eventSink!({ event: "usage", data: { usage } });
   expect(root.querySelector("[data-context-percent]")?.textContent).toBe("13%");
   expect(root.querySelector("[data-context-ratio]")?.textContent).toBe("16,000 / 128,000 tokens");
@@ -1829,4 +1829,23 @@ test("visible compaction stays in the existing notice grid row", async () => {
   expect(card.parentElement).toBe(notices.parentElement);
   expect(card.parentElement?.classList.contains("notice-area")).toBe(true);
   pending.resolve({answer: "done", metadata, created: false}); await sending;
+});
+
+test("same model usage requires matching provider source and legacy unknown is hidden", async () => {
+  const api = new ViewApi();
+  const source = {provider:"deepseek" as const,sourceId:"current"};
+  api.settings = { ...settings, apiKeySource:"settings", source };
+  api.availableModels = [{id:"deepseek-flash",name:"Flash",contextWindow:6000}];
+  const pending = deferred<ConversationAskResult>(); api.askImpl = () => pending.promise;
+  const {root,store} = setup(api); await store.initialize();
+  inputComposer(root,"hello"); click(root,"[data-send]");
+  const reading={model:"deepseek-flash",inputTokens:1200,outputTokens:300,totalTokens:1500};
+  for (const wrong of [undefined,{provider:"openai" as const,sourceId:"another"},{provider:"deepseek" as const,sourceId:"old-endpoint"}]) {
+    api.eventSink!({event:"usage",data:{usage:{...reading,source:wrong}}});
+    expect(root.querySelector("[data-context-percent]")?.textContent).toBe("—");
+  }
+  const usage={...reading,source};
+  api.eventSink!({event:"usage",data:{usage}});
+  expect(root.querySelector("[data-context-percent]")?.textContent).toBe("25%");
+  pending.resolve({answer:"done",metadata,created:true,usage}); await flush();
 });

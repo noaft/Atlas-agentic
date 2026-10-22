@@ -5,7 +5,7 @@ use std::{
 };
 
 use atlas_agentic::{
-    app::{build_runtime_with_settings, load_dotenv},
+    app::{build_runtime_with_settings, load_dotenv, resolve_settings_for_agent},
     conversations::{ConversationId, ConversationService, ConversationStore},
     handle_command,
     permissions::{AuthorizationDecision, AuthorizationRequest, ToolAuthorizer},
@@ -31,9 +31,10 @@ fn run_command(command: AppResult) -> Result<(), String> {
             conversation_id,
         } => run_ask(&prompt, conversation_id.as_ref())?,
         AppResult::ConversationCompact { id } => {
-            let effective = SettingsStore::from_user_config()?
-                .load()?
-                .resolve_from_env()?;
+            let effective = resolve_settings_for_agent(
+                &SettingsStore::from_user_config()?.load()?,
+                Path::new("agents/atlas.toml"),
+            )?;
             let store = ConversationStore::from_user_data()?;
             let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
             let runtime = build_runtime_with_settings(
@@ -97,9 +98,10 @@ fn run_command(command: AppResult) -> Result<(), String> {
 }
 
 fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
-    let settings = SettingsStore::from_user_config()?
-        .load()?
-        .resolve_from_env()?;
+    let settings = resolve_settings_for_agent(
+        &SettingsStore::from_user_config()?.load()?,
+        Path::new("agents/atlas.toml"),
+    )?;
     let store = ConversationStore::from_user_data()?;
     let workspace = std::env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;

@@ -105,13 +105,13 @@ fn rejects_zero_history_blank_model_blank_base_url_and_unknown_version() {
 
     fs::write(
         &path,
-        r#"{"version":2,"deepseek":{"apiKey":null,"baseUrl":"https://api.deepseek.com","model":"deepseek-flash"},"conversation":{"historyLimit":40},"workspace":{"defaultPath":null}}"#,
+        r#"{"version":999,"deepseek":{"apiKey":null,"baseUrl":"https://api.deepseek.com","model":"deepseek-flash"},"conversation":{"historyLimit":40},"workspace":{"defaultPath":null}}"#,
     )
     .unwrap();
     assert!(store
         .load()
         .unwrap_err()
-        .contains("unsupported settings version: 2"));
+        .contains("unsupported settings version: 999"));
 }
 
 #[test]

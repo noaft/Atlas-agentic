@@ -4,6 +4,9 @@ export interface ContextReading {
   inputTokens?: number | null;
   outputTokens?: number | null;
   loading?: boolean;
+  provider?: string;
+  model?: string;
+  inputTokenLimit?: number | null;
 }
 
 export interface ContextMeter {
@@ -26,6 +29,8 @@ export function createContextMeter(): ContextMeter {
     </button>
     <div class="context-tooltip" role="tooltip" data-context-tooltip hidden>
       <strong>Context window</strong>
+      <span data-context-source hidden></span>
+      <span data-input-limit hidden></span>
       <span class="context-token-ratio" data-context-ratio></span>
       <span data-model-context></span>
       <span data-context-breakdown hidden></span>
@@ -37,6 +42,8 @@ export function createContextMeter(): ContextMeter {
   const tooltip = element.querySelector<HTMLElement>("[data-context-tooltip]")!;
   const ratio = element.querySelector<HTMLElement>("[data-context-ratio]")!;
   const maximum = element.querySelector<HTMLElement>("[data-model-context]")!;
+  const source = element.querySelector<HTMLElement>("[data-context-source]")!;
+  const inputLimit = element.querySelector<HTMLElement>("[data-input-limit]")!;
   const breakdown = element.querySelector<HTMLElement>("[data-context-breakdown]")!;
   const help = element.querySelector<HTMLElement>("[data-context-help]")!;
   tooltip.id = `context-tooltip-${++nextTooltip}`;
@@ -64,7 +71,9 @@ export function createContextMeter(): ContextMeter {
 
   return {
     element,
-    update({ maxTokens, usedTokens, inputTokens = null, outputTokens = null, loading = false }) {
+    update({ maxTokens, usedTokens, inputTokens = null, outputTokens = null, loading = false, provider, model, inputTokenLimit = null }) {
+      source.hidden = !provider || !model; source.textContent = source.hidden ? "" : `${provider} · ${model}`;
+      inputLimit.hidden = !tokenCount(inputTokenLimit, 1); inputLimit.textContent = inputLimit.hidden ? "" : `Input limit: ${formatTokens(inputTokenLimit!)} tokens`;
       const max = !loading && tokenCount(maxTokens, 1) ? maxTokens : null;
       const used = tokenCount(usedTokens, 0) ? usedTokens : null;
       const percentage = max !== null && used !== null ? used / max * 100 : null;

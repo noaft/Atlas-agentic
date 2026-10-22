@@ -19,7 +19,13 @@ use crate::permissions::PermissionMode;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-pub const SETTINGS_VERSION: u32 = 1;
+mod migration;
+pub mod providers;
+pub use providers::{
+    ModelSource, ProviderCapabilities, ProviderId, ProviderSettings, ScopedModelLimits,
+};
+
+pub const SETTINGS_VERSION: u32 = 2;
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-flash";
 pub const DEFAULT_HISTORY_LIMIT: usize = 40;
@@ -30,6 +36,10 @@ type SettingsPublisher = dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync;
 #[serde(rename_all = "camelCase")]
 pub struct AtlasSettings {
     pub version: u32,
+    #[serde(default)]
+    pub selected_provider: Option<ProviderId>,
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, ProviderSettings>,
     pub deepseek: DeepSeekSettings,
     pub conversation: ConversationSettings,
     pub workspace: WorkspaceSettings,
@@ -54,6 +64,8 @@ impl Default for AtlasSettings {
     fn default() -> Self {
         Self {
             version: SETTINGS_VERSION,
+            selected_provider: None,
+            providers: Default::default(),
             deepseek: DeepSeekSettings::default(),
             conversation: ConversationSettings::default(),
             workspace: WorkspaceSettings::default(),
@@ -67,9 +79,13 @@ impl AtlasSettings {
         if self.version != SETTINGS_VERSION {
             return Err(format!("unsupported settings version: {}", self.version));
         }
+        for (id, profile) in &self.providers {
+            profile.validate(ProviderId::parse(id)?)?;
+        }
         if self.deepseek.base_url.trim().is_empty() {
             return Err("DeepSeek base URL cannot be blank".to_string());
         }
+        providers::normalize_url(&self.deepseek.base_url)?;
         if self.deepseek.model.trim().is_empty() {
             return Err("DeepSeek model cannot be blank".to_string());
         }
@@ -86,31 +102,116 @@ impl AtlasSettings {
         &self,
         environment: impl Fn(&str) -> Option<OsString>,
     ) -> Result<EffectiveSettings, String> {
+        self.resolve_for("deepseek", DEFAULT_DEEPSEEK_MODEL, environment)
+    }
+
+    pub fn provider_profile(&self, provider: ProviderId) -> ProviderSettings {
+        let mut profile = self
+            .providers
+            .get(provider.as_str())
+            .cloned()
+            .unwrap_or_else(|| ProviderSettings::defaults(provider));
+        if profile.base_url.is_empty() && provider != ProviderId::OpenaiCompatible {
+            profile.base_url = provider.descriptor().base_url;
+        }
+        if provider == ProviderId::Deepseek {
+            profile.api_key = self.deepseek.api_key.clone();
+            profile.base_url = self.deepseek.base_url.clone();
+            if profile.model.is_none() && !self.providers.contains_key("deepseek") {
+                profile.model = Some(self.deepseek.model.clone());
+            }
+            if !self.providers.contains_key("deepseek") {
+                if let Ok(source) = providers::source_for(provider, &profile.base_url) {
+                    for (model, limits) in &self.conversation.model_limits {
+                        profile
+                            .model_limits
+                            .entry(model.clone())
+                            .or_insert_with(|| ScopedModelLimits {
+                                source_id: source.source_id.clone(),
+                                limits: *limits,
+                            });
+                    }
+                }
+            }
+        }
+        profile
+    }
+
+    pub fn resolve_for(
+        &self,
+        agent_provider: &str,
+        agent_model: &str,
+        environment: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<EffectiveSettings, String> {
         self.validate()?;
+        let env_provider = environment_string(&environment, "ATLAS_PROVIDER")?;
+        let provider = if let Some(value) = env_provider.as_deref() {
+            ProviderId::parse(value)?
+        } else {
+            match self.selected_provider {
+                Some(provider) => provider,
+                None => ProviderId::parse(agent_provider)?,
+            }
+        };
+        let profile = self.provider_profile(provider);
+        let descriptor = provider.descriptor();
+        let prefix = descriptor.env_prefix;
         let mut effective = EffectiveSettings {
-            api_key: self.deepseek.api_key.clone(),
-            base_url: self.deepseek.base_url.clone(),
-            model: self.deepseek.model.clone(),
+            provider,
+            source: None,
+            capabilities: profile.capabilities.clone(),
+            allow_keyless: profile.allow_keyless,
+            model_from_agent: false,
+            request_output_tokens: profile
+                .request_output_tokens
+                .unwrap_or(descriptor.request_output_tokens),
+            api_key: profile.api_key.clone(),
+            base_url: profile.base_url.clone(),
+            model: profile.model.clone().unwrap_or_default(),
             history_limit: self.conversation.history_limit,
-            model_limits: self.conversation.model_limits.clone(),
+            model_limits: Default::default(),
             default_workspace: self.workspace.default_path.clone(),
             default_permission_mode: self.permissions.default_mode,
             environment_overrides: BTreeSet::new(),
         };
-
-        if let Some(value) = environment_string(&environment, "DEEPSEEK_API_KEY")? {
+        if env_provider.is_some() {
+            effective
+                .environment_overrides
+                .insert(SettingField::Provider);
+        }
+        if let Some(value) = environment_string(&environment, &format!("{prefix}_API_KEY"))? {
             effective.api_key = Some(value);
             effective.environment_overrides.insert(SettingField::ApiKey);
         }
-        if let Some(value) = environment_string(&environment, "DEEPSEEK_BASE_URL")? {
+        if let Some(value) = environment_string(&environment, &format!("{prefix}_BASE_URL"))? {
             effective.base_url = value;
             effective
                 .environment_overrides
                 .insert(SettingField::BaseUrl);
         }
-        if let Some(value) = environment_string(&environment, "DEEPSEEK_MODEL")? {
+        if let Some(value) = environment_string(&environment, &format!("{prefix}_MODEL"))? {
             effective.model = value;
             effective.environment_overrides.insert(SettingField::Model);
+        } else if provider.as_str() == agent_provider
+            && (effective.model.is_empty()
+                || (provider == ProviderId::Deepseek
+                    && effective.model == DEFAULT_DEEPSEEK_MODEL
+                    && !self.providers.contains_key("deepseek")))
+        {
+            effective.model = agent_model.to_string();
+            effective.model_from_agent = true;
+        }
+        if !effective.base_url.is_empty() {
+            effective.source = Some(providers::source_for(provider, &effective.base_url)?);
+            effective.model_limits = profile
+                .model_limits
+                .iter()
+                .filter(|(_, limits)| {
+                    Some(limits.source_id.as_str())
+                        == effective.source.as_ref().map(|s| s.source_id.as_str())
+                })
+                .map(|(m, l)| (m.clone(), l.limits))
+                .collect();
         }
         if let Some(value) = environment("ATLAS_HISTORY_MESSAGES") {
             let value = value.into_string().map_err(|_| history_limit_error())?;
@@ -135,6 +236,7 @@ impl AtlasSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingField {
+    Provider,
     ApiKey,
     BaseUrl,
     Model,
@@ -143,6 +245,12 @@ pub enum SettingField {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct EffectiveSettings {
+    pub provider: ProviderId,
+    pub source: Option<ModelSource>,
+    pub capabilities: ProviderCapabilities,
+    pub allow_keyless: bool,
+    pub request_output_tokens: u64,
+    pub model_from_agent: bool,
     pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
@@ -178,11 +286,8 @@ impl fmt::Debug for EffectiveSettings {
 
 impl EffectiveSettings {
     fn validate(&self) -> Result<(), String> {
-        if self.base_url.trim().is_empty() {
-            return Err("DeepSeek base URL cannot be blank".to_string());
-        }
-        if self.model.trim().is_empty() {
-            return Err("DeepSeek model cannot be blank".to_string());
+        if !self.base_url.is_empty() {
+            providers::normalize_url(&self.base_url)?;
         }
         if self.history_limit == 0 {
             return Err("conversation history limit must be a positive integer".to_string());
@@ -346,8 +451,9 @@ impl SettingsStore {
         File::open(&self.path)
             .and_then(|mut file| file.read_to_string(&mut input))
             .map_err(|error| format!("failed to read {}: {error}", self.path.display()))?;
-        let settings: AtlasSettings = serde_json::from_str(&input)
+        let mut settings: AtlasSettings = serde_json::from_str(&input)
             .map_err(|error| format!("failed to parse {}: {error}", self.path.display()))?;
+        migration::upgrade(&mut settings);
         settings.validate()?;
         Ok(settings)
     }

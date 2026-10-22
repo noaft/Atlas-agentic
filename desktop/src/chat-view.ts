@@ -404,10 +404,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       const draft = state.settingsDraft;
       const previousDraft = previous?.settingsDraft;
       const textEdit = editingInput && previousDraft && draft &&
+        previousDraft.selectedProvider === draft.selectedProvider &&
+        previousDraft.model === draft.model &&
         previousDraft.defaultWorkspace === draft.defaultWorkspace &&
         previousDraft.defaultPermissionMode === draft.defaultPermissionMode;
       if (previous?.screen === "settings" && previous.settings === state.settings &&
           previous.settingsStatus === state.settingsStatus && previous.settingsErrorMessage === state.settingsErrorMessage &&
+          previous.settingsModels === state.settingsModels && previous.settingsModelsStatus === state.settingsModelsStatus && previous.settingsModelsError === state.settingsModelsError &&
           (previousDraft === draft || textEdit)) {
         if (draft) {
           const key = settingsScreen.querySelector<HTMLInputElement>("[data-settings-api-key]");
@@ -422,6 +425,11 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       settingsScreen.hidden = false;
       settingsScreen.style.display = "contents";
       main.className = "settings-main";
+      const scrollBefore = settingsScreen.querySelector<HTMLElement>(".settings-scroll")?.scrollTop ?? 0;
+      const openAdvanced = settingsScreen.querySelector<HTMLDetailsElement>(".settings-advanced")?.open ?? false;
+      const active = document.activeElement instanceof HTMLInputElement ? document.activeElement : null;
+      const fieldName = active?.dataset.settingsField;
+      const selection = active?.type === "text" || active?.type === "password" ? [active.selectionStart, active.selectionEnd] : null;
       settingsScreen.replaceChildren();
       const mobileHeader = document.createElement("header");
       mobileHeader.className = "settings-mobile-header";
@@ -435,6 +443,13 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       settingsHost.className = "settings-scroll";
       settingsScreen.append(mobileHeader, settingsHost);
       renderSettings(settingsHost, state, store);
+      settingsHost.scrollTop = scrollBefore;
+      const advanced = settingsHost.querySelector<HTMLDetailsElement>(".settings-advanced"); if (advanced) advanced.open = openAdvanced;
+      if (fieldName && previousDraft?.selectedProvider === draft?.selectedProvider) {
+        const replacement = [...settingsHost.querySelectorAll<HTMLInputElement>("[data-settings-field]")].find(input => input.dataset.settingsField === fieldName);
+        replacement?.focus({preventScroll: true});
+        if (replacement && selection && selection[0] !== null && selection[1] !== null) replacement.setSelectionRange(selection[0], selection[1]);
+      }
       return;
     }
 
@@ -617,8 +632,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     composer.modelHost.replaceChildren();
     composer.permissionHost.replaceChildren();
     composer.feedbackHost.replaceChildren();
-    composer.contextMeter.element.hidden = !state.settings || state.settings.apiKeySource === "missing";
-    if (state.settings && state.settings.apiKeySource !== "missing") {
+    const selectedProvider = state.settings?.providers?.find(p => p.provider === state.settings?.provider);
+    const hasModelAccess = state.settings && (state.settings.apiKeySource !== "missing" || selectedProvider?.allowKeyless);
+    composer.contextMeter.element.hidden = !hasModelAccess;
+    if (state.settings && hasModelAccess) {
       const label = document.createElement("div");
       const select = document.createElement("select");
       select.dataset.modelSelect = "";
@@ -640,17 +657,25 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       select.addEventListener("change", () => void store.selectModel(select.value));
       const modelPicker = createComposerPicker(select);
       pickerCleanups.push(modelPicker.destroy);
+      if (state.settings.provider) {
+        const providerLabel = document.createElement("span"); providerLabel.className = "model-provider-label";
+        providerLabel.dataset.modelProvider = ""; providerLabel.textContent = selectedProvider?.name ?? state.settings.provider;
+        label.append(providerLabel);
+      }
       label.append(modelPicker.element);
       composer.modelHost.append(label);
       const selectedModel = models.find((model) => model.id === state.settings?.activeModel);
       const configuredLimit = state.settings.modelLimits?.[state.settings.activeModel]?.contextWindow;
-      const reading = state.contextUsage?.model === state.settings.activeModel ? state.contextUsage : null;
+      const reading = state.settings.source && state.contextUsage?.source?.sourceId === state.settings.source.sourceId &&
+        state.contextUsage.source.provider === state.settings.source.provider && state.contextUsage.model === state.settings.activeModel ? state.contextUsage : null;
       composer.contextMeter.update({
         maxTokens: configuredLimit ?? selectedModel?.contextWindow ?? null,
         usedTokens: reading?.totalTokens ?? null,
         inputTokens: reading?.inputTokens ?? null,
         outputTokens: reading?.outputTokens ?? null,
         loading: state.modelListStatus === "loading",
+        provider: selectedProvider?.name ?? state.settings.provider ?? state.settings.source?.provider, model: state.settings.activeModel,
+        inputTokenLimit: selectedModel?.inputTokenLimit,
       });
       const modelControlledByEnvironment =
         state.settings.environmentOverrides.includes("model");
@@ -659,7 +684,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         status.className = "model-picker-status";
         status.dataset.modelStatus = "";
         status.textContent = modelControlledByEnvironment
-          ? "Controlled by DEEPSEEK_MODEL"
+          ? `Controlled by ${selectedProvider?.envPrefix ?? "DEEPSEEK"}_MODEL`
           : "Loading models…";
         composer.modelHost.append(status);
       }

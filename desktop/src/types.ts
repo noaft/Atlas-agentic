@@ -68,7 +68,26 @@ export interface ActivityTurn {
   records: ActivityRecord[];
 }
 
+export type ProviderId = "deepseek" | "openai" | "anthropic" | "gemini" | "openai-compatible";
+export interface ModelSource { provider: ProviderId; sourceId: string }
+export interface ProviderCapabilities { temperature?: boolean | null; topP?: boolean | null; jsonMode?: boolean | null; streamUsage?: boolean | null; imageInput?: boolean | null }
+export interface ProviderSettingsView {
+  provider: ProviderId; name: string; envPrefix: string; source: ModelSource | null;
+  apiKeySource: ApiKeySource; baseUrl: string; model: string; activeModel: string;
+  environmentOverrides: string[]; modelLimits: Record<string, ModelLimits>;
+  capabilities: ProviderCapabilities; allowKeyless: boolean; requestOutputTokens: number;
+}
+export interface ProviderDraft {
+  limitsSourceId?: string | null;
+  apiKey: string; clearApiKey: boolean; baseUrl: string; model: string;
+  modelLimits?: Record<string, ModelLimits>; capabilities?: ProviderCapabilities;
+  allowKeyless?: boolean; requestOutputTokens?: number;
+}
+export interface ProviderSettingsPatch extends Omit<ProviderDraft, "apiKey"> { provider: ProviderId; apiKey: string | null; limitsSourceId?: string | null }
+export interface ModelDiscoveryInput { provider: ProviderId; patch?: ProviderSettingsPatch }
+
 export interface ModelUsage {
+  source?: ModelSource | null;
   model: string;
   inputTokens: number;
   outputTokens: number;
@@ -76,6 +95,9 @@ export interface ModelUsage {
 }
 
 export interface ModelInfo {
+  source?: ModelSource | null;
+  inputTokenLimit?: number | null;
+  capabilities?: ProviderCapabilities;
   id: string;
   name: string;
   contextWindow?: number | null;
@@ -189,6 +211,9 @@ export interface ChatState {
   screen: "chat" | "settings";
   settings: SettingsView | null;
   settingsDraft: SettingsDraft | null;
+  settingsModels?: ModelInfo[];
+  settingsModelsStatus?: "idle" | "loading" | "error";
+  settingsModelsError?: string | null;
   settingsStatus: SettingsStatus;
   settingsErrorMessage: string | null;
   availableModels: ModelInfo[];
@@ -208,6 +233,9 @@ export interface ConversationGroup {
 export type ApiKeySource = "missing" | "settings" | "environment";
 
 export interface SettingsView {
+  provider?: ProviderId;
+  source?: ModelSource | null;
+  providers?: ProviderSettingsView[];
   modelLimits?: Record<string, ModelLimits>;
   apiKeySource: ApiKeySource;
   baseUrl: string;
@@ -218,10 +246,13 @@ export interface SettingsView {
   defaultWorkspaceAutomatic: boolean;
   defaultWorkspaceError: string | null;
   defaultPermissionMode: PermissionMode;
-  environmentOverrides: Array<"apiKey" | "baseUrl" | "model" | "historyLimit">;
+  environmentOverrides: Array<"provider" | "apiKey" | "baseUrl" | "model" | "historyLimit">;
 }
 
-export interface SettingsDraft {
+export interface SettingsDraft extends ProviderDraft {
+  selectedProvider?: ProviderId;
+  profileDrafts?: Partial<Record<ProviderId, ProviderDraft>>;
+  editedProviders?: ProviderId[];
   modelLimits?: Record<string, ModelLimits>;
   apiKey: string;
   clearApiKey: boolean;
@@ -233,6 +264,8 @@ export interface SettingsDraft {
 }
 
 export interface SaveSettingsInput {
+  selectedProvider?: ProviderId;
+  profilePatches?: ProviderSettingsPatch[];
   modelLimits?: Record<string, ModelLimits>;
   apiKey: string | null;
   clearApiKey: boolean;

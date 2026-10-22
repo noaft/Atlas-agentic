@@ -1,4 +1,5 @@
 mod commands;
+mod provider_settings;
 mod requests;
 
 use std::path::{Path, PathBuf};

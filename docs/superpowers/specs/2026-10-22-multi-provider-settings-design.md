@@ -1,6 +1,7 @@
 # Multi-provider settings, model discovery, and usage
 
-Status: proposed for written-spec review. Product implementation has not started.
+Status: approved and implemented. See the implementation plan for verification and
+compatibility decisions.
 
 ## Intent and scope
 
@@ -234,9 +235,18 @@ Finish implementation with one focused commit after reviewing staged changes.
 - [Gemini model limits](https://ai.google.dev/api/models)
 - [DeepSeek model discovery](https://api-docs.deepseek.com/api/list-models/)
 
-## Review and next stage
+## Implementation outcome
 
-This spec records the approved feature scope and proposed implementation
-boundaries. After written-spec approval, prepare a detailed implementation plan
-and obtain its required review before editing product code. Execute inline
-unless the user explicitly selects delegation. No subagents are authorized yet.
+Implemented inline after spec and plan approval. A fresh read-only review found
+six important issues; regression tests reproduced them and verified the fixes.
+Rust, native desktop and frontend suites, format checks, strict Clippy checks,
+frontend production build and Tauri debug build pass. Tests use fake loopback
+providers; live-provider and platform capture/input behavior were not exercised.
+
+Implementation preserves the existing `EffectiveSettings` snapshot instead of
+adding duplicate resolved-profile/config types. Generation alone requires a
+model; discovery accepts an unselected model. The catalog bridge retains arrays,
+with per-model source identities and request-generation tokens protecting empty
+and stale results. Legacy DeepSeek fields remain synchronized at the settings
+boundary. A terminal SSE frame may omit its final newline; incomplete answers
+still fail. These choices retain compatibility while adding adapter boundaries.

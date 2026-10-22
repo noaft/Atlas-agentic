@@ -11,6 +11,9 @@ import type {
   ConversationMetadata,
   DisplayMessage,
   ModelInfo,
+  ProviderId,
+  ProviderDraft,
+  ProviderSettingsPatch,
   PermissionMode,
   SettingsDraft,
   SettingsView,
@@ -107,7 +110,14 @@ const moveToTop = (
   ...conversations.filter((conversation) => conversation.id !== metadata.id),
 ];
 
+const normalizedEndpoint = (value: string): string => {
+  try { return new URL(value.trim()).toString().replace(/\/+$/, ""); }
+  catch { return value.trim().replace(/\/+$/, ""); }
+};
+
 const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
+  ...(settings.provider ? { selectedProvider: settings.provider, profileDrafts: {}, editedProviders: [] } : {}),
+  limitsSourceId: settings.source?.sourceId ?? null,
   apiKey: "",
   clearApiKey: false,
   baseUrl: settings.baseUrl,
@@ -116,6 +126,9 @@ const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
   ...(settings.modelLimits ? { modelLimits: structuredClone(settings.modelLimits) } : {}),
   defaultWorkspace: settings.defaultWorkspaceAutomatic ? null : settings.defaultWorkspace,
   defaultPermissionMode: settings.defaultPermissionMode,
+  capabilities: settings.providers?.find(p => p.provider === settings.provider)?.capabilities,
+  allowKeyless: settings.providers?.find(p => p.provider === settings.provider)?.allowKeyless,
+  requestOutputTokens: settings.providers?.find(p => p.provider === settings.provider)?.requestOutputTokens,
 });
 
 const usableDefaultWorkspace = (settings: SettingsView | null): Workspace | null =>
@@ -127,7 +140,7 @@ const sameWorkspace = (left: Workspace | null, right: Workspace | null): boolean
 const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo[] =>
   models.some((model) => model.id === configured)
     ? models
-    : [{ id: configured, name: configured }, ...models];
+    : configured ? [{ id: configured, name: configured }, ...models] : models;
 
 const sessionKeys = [
   "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
@@ -229,7 +242,7 @@ export class ChatStore {
           this.update({ activeWorkspace: usableDefaultWorkspace(settings) });
         }
       }
-      if (settings.apiKeySource === "missing") {
+      if (settings.apiKeySource === "missing" && !settings.providers?.find(p => p.provider === settings.provider)?.allowKeyless) {
         this.modelListToken += 1;
         this.update({
           availableModels: [],
@@ -250,6 +263,7 @@ export class ChatStore {
   }
 
   async newChat(): Promise<void> {
+    this.settingsDiscoveryToken++;
     this.selectionToken += 1;
     this.workspaceToken += 1;
     const id = `local-${++this.nextSession}`;
@@ -263,6 +277,7 @@ export class ChatStore {
   }
 
   async selectSession(id: string): Promise<void> {
+    this.settingsDiscoveryToken++;
     const chat = this.chats.get(id);
     if (!chat) return;
     this.selectionToken += 1;
@@ -271,6 +286,7 @@ export class ChatStore {
   }
 
   async selectConversation(id: string): Promise<void> {
+    this.settingsDiscoveryToken++;
     const existing = [...this.chats].find(([, chat]) => chat.state.activeConversationId === id);
     if (existing?.[1].state.historyLoaded) return this.selectSession(existing[0]);
     const sessionId = existing?.[0] ?? `local-${++this.nextSession}`;
@@ -577,9 +593,11 @@ export class ChatStore {
     )
       return;
     this.settingsToken += 1;
+    this.settingsDiscoveryToken += 1;
     this.update({
       screen: "settings",
       settingsDraft: draftFromSettings(this.state.settings),
+      settingsModels: [], settingsModelsStatus: "idle", settingsModelsError: null,
       settingsStatus: "idle",
       settingsErrorMessage: null,
     });
@@ -599,6 +617,7 @@ export class ChatStore {
   cancelSettings(): void {
     if (this.state.settingsStatus === "saving") return;
     this.settingsToken += 1;
+    this.settingsDiscoveryToken += 1;
     this.update({
       screen: "chat",
       settingsDraft: null,
@@ -609,7 +628,56 @@ export class ChatStore {
 
   updateSettingsDraft(patch: Partial<SettingsDraft>): void {
     if (!this.state.settingsDraft || this.state.settingsStatus === "saving") return;
-    this.update({ settingsDraft: { ...this.state.settingsDraft, ...patch } });
+    const draft = this.state.settingsDraft;
+    const changedEndpoint = patch.baseUrl !== undefined && normalizedEndpoint(patch.baseUrl) !== normalizedEndpoint(draft.baseUrl);
+    if (changedEndpoint) patch = { ...patch, modelLimits: {}, limitsSourceId: null };
+    const profileFields = ["apiKey", "clearApiKey", "baseUrl", "model", "modelLimits", "capabilities", "allowKeyless", "requestOutputTokens"];
+    const edited = draft.selectedProvider && Object.keys(patch).some(key => profileFields.includes(key))
+      ? [...new Set([...(draft.editedProviders ?? []), draft.selectedProvider])] : draft.editedProviders;
+    const invalidatesCatalog = Object.keys(patch).some(key => ["baseUrl", "apiKey", "clearApiKey", "allowKeyless"].includes(key));
+    if (invalidatesCatalog) this.settingsDiscoveryToken++;
+    const resetCatalog = invalidatesCatalog && (this.state.settingsModelsStatus === "loading" || !!this.state.settingsModels?.length || !!this.state.settingsModelsError);
+    this.update({ settingsDraft: { ...draft, ...patch, editedProviders: edited },
+      ...(resetCatalog ? { settingsModels: [], settingsModelsStatus: "idle" as const, settingsModelsError: null } : {}) });
+  }
+
+  private settingsDiscoveryToken = 0;
+
+  private profileDraft(draft: SettingsDraft): ProviderDraft {
+    return { limitsSourceId: draft.limitsSourceId, apiKey: draft.apiKey, clearApiKey: draft.clearApiKey, baseUrl: draft.baseUrl, model: draft.model,
+      modelLimits: draft.modelLimits, capabilities: draft.capabilities, allowKeyless: draft.allowKeyless, requestOutputTokens: draft.requestOutputTokens };
+  }
+
+  selectSettingsProvider(provider: ProviderId): void {
+    const draft = this.state.settingsDraft;
+    const profile = this.state.settings?.providers?.find(p => p.provider === provider);
+    if (!draft || !profile || this.state.settingsStatus === "saving" || this.state.settings?.environmentOverrides.includes("provider")) return;
+    const profiles = { ...draft.profileDrafts };
+    if (draft.selectedProvider) profiles[draft.selectedProvider] = this.profileDraft(draft);
+    const next = profiles[provider] ?? { apiKey: "", clearApiKey: false, baseUrl: profile.baseUrl, model: profile.model,
+      limitsSourceId: profile.source?.sourceId ?? null, modelLimits: structuredClone(profile.modelLimits), capabilities: structuredClone(profile.capabilities), allowKeyless: profile.allowKeyless, requestOutputTokens: profile.requestOutputTokens };
+    this.settingsDiscoveryToken++;
+    this.update({ settingsDraft: { ...draft, ...next, selectedProvider: provider, profileDrafts: profiles }, settingsModels: [], settingsModelsStatus: "idle", settingsModelsError: null });
+  }
+
+  private profilePatch(provider: ProviderId, draft: ProviderDraft): ProviderSettingsPatch {
+    return { ...draft, provider, apiKey: draft.apiKey.trim() || null, limitsSourceId: draft.limitsSourceId ?? null };
+  }
+
+  async refreshSettingsModels(): Promise<void> {
+    const draft = this.state.settingsDraft;
+    if (!draft?.selectedProvider || this.state.settingsStatus === "saving") return;
+    const token = ++this.settingsDiscoveryToken;
+    const provider = draft.selectedProvider;
+    this.update({ settingsModelsStatus: "loading", settingsModelsError: null });
+    try {
+      const models = await this.api.listModels({ provider, patch: this.profilePatch(provider, this.profileDraft(draft)) });
+      if (token !== this.settingsDiscoveryToken || this.state.screen !== "settings" || this.state.settingsDraft?.selectedProvider !== provider) return;
+      this.update({ settingsModels: models, settingsModelsStatus: "idle" });
+    } catch (error) {
+      if (token !== this.settingsDiscoveryToken || this.state.screen !== "settings") return;
+      this.update({ settingsModelsStatus: "error", settingsModelsError: errorMessage(error) });
+    }
   }
 
   async chooseDefaultWorkspace(): Promise<void> {
@@ -638,7 +706,10 @@ export class ChatStore {
     const activeWorkspaceBeforeSave = this.state.activeWorkspace;
     this.update({ settingsStatus: "saving", settingsErrorMessage: null });
     try {
+      const drafts = { ...draft.profileDrafts };
+      if (draft.selectedProvider) drafts[draft.selectedProvider] = this.profileDraft(draft);
       const settings = await this.api.saveSettings({
+        ...(draft.selectedProvider ? { selectedProvider: draft.selectedProvider, profilePatches: (draft.editedProviders ?? []).map(provider => this.profilePatch(provider, drafts[provider]!)) } : {}),
         apiKey: draft.apiKey.trim() || null,
         clearApiKey: draft.clearApiKey,
         baseUrl: draft.baseUrl,
@@ -670,7 +741,7 @@ export class ChatStore {
         settingsErrorMessage: null,
         activeWorkspace,
       });
-      if (settings.apiKeySource === "missing") {
+      if (settings.apiKeySource === "missing" && !settings.providers?.find(p => p.provider === settings.provider)?.allowKeyless) {
         this.modelListToken += 1;
         this.update({
           availableModels: [],
@@ -691,7 +762,7 @@ export class ChatStore {
   }
 
   async retryModels(): Promise<void> {
-    if (!this.state.settings || this.state.settings.apiKeySource === "missing") return;
+    if (!this.state.settings || (this.state.settings.apiKeySource === "missing" && !this.state.settings.providers?.find(p => p.provider === this.state.settings?.provider)?.allowKeyless)) return;
     await this.loadModels();
   }
 
@@ -713,7 +784,7 @@ export class ChatStore {
       modelListRetryAvailable: false,
     });
     try {
-      const updated = await this.api.setModel(model);
+      const updated = await this.api.setModel(model, settings.source);
       if (token !== this.modelListToken) return;
       this.update({
         settings: updated,
@@ -741,8 +812,8 @@ export class ChatStore {
       modelListRetryAvailable: false,
     });
     try {
-      const models = await this.api.listModels();
-      if (token !== this.modelListToken) return;
+      const models = await this.api.listModels(settings.provider ? { provider: settings.provider } : undefined);
+      if (token !== this.modelListToken || this.state.settings?.source?.sourceId !== settings.source?.sourceId) return;
       this.update({
         availableModels: withConfiguredModel(models, settings.activeModel),
         modelListStatus: "idle",
@@ -750,7 +821,7 @@ export class ChatStore {
         modelListRetryAvailable: false,
       });
     } catch (error) {
-      if (token !== this.modelListToken) return;
+      if (token !== this.modelListToken || this.state.settings?.source?.sourceId !== settings.source?.sourceId) return;
       this.update({
         availableModels: withConfiguredModel([], settings.activeModel),
         modelListStatus: "error",

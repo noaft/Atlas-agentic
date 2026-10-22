@@ -111,7 +111,7 @@ fn terminal_usage_without_newline_is_read_and_missing_or_invalid_usage_stays_unk
         (r#"{"prompt_tokens":-1,"completion_tokens":5}"#, None),
     ] {
         let body = format!(
-            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"answer\"}}}}],\"usage\":{raw}}}"
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"answer\"}},\"finish_reason\":\"stop\"}}],\"usage\":{raw}}}"
         );
         let (provider, _requests, server) = provider(body);
         let response = provider.stream_with_usage(&request(), &mut |_| {}).unwrap();
@@ -154,6 +154,7 @@ impl ModelProvider for UsageModel {
 }
 fn usage(total: u64) -> ModelUsage {
     ModelUsage {
+        source: None,
         model: "test-model".into(),
         input_tokens: total - 5,
         output_tokens: 5,
@@ -248,5 +249,14 @@ fn interrupted_stream_does_not_return_a_successful_usage_reading() {
         model: "test-model".into(),
     });
     assert!(provider.stream_with_usage(&request(), &mut |_| {}).is_err());
+    server.join().unwrap();
+}
+
+#[test]
+fn deepseek_partial_stream_without_a_terminal_event_is_not_successful() {
+    let (provider, requests, server) =
+        provider("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".into());
+    assert!(provider.stream_with_usage(&request(), &mut |_| {}).is_err());
+    requests.recv().unwrap();
     server.join().unwrap();
 }

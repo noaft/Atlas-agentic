@@ -1,0 +1,26 @@
+[deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+env_prefix = "DEEPSEEK"
+request_output_tokens = 4096
+[openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+env_prefix = "OPENAI"
+request_output_tokens = 4096
+[anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+env_prefix = "ANTHROPIC"
+request_output_tokens = 4096
+api_version = "2023-06-01"
+[gemini]
+name = "Google Gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_prefix = "GEMINI"
+request_output_tokens = 4096
+[openai-compatible]
+name = "OpenAI-compatible"
+base_url = ""
+env_prefix = "ATLAS_COMPATIBLE"
+request_output_tokens = 4096

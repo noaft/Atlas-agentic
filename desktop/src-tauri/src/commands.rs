@@ -1,3 +1,8 @@
+use crate::provider_settings::{
+    self, ModelDiscoveryInput, ProviderSettingsPatch, ProviderSettingsView,
+};
+use atlas_agentic::app::resolve_settings_for_agent;
+use atlas_agentic::settings::{ModelSource, ProviderId};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -174,7 +179,7 @@ impl DesktopState {
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResultDto, String> {
         let _request = self.active_requests.acquire(conversation_id)?;
-        let effective = self.settings_store.load()?.resolve_from_env()?;
+        let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
         ConversationService::new(&runtime, &self.store, effective.history_limit)
@@ -578,6 +583,9 @@ impl ToolAuthorizer for DesktopAuthorizer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsViewDto {
+    pub provider: ProviderId,
+    pub source: Option<ModelSource>,
+    pub providers: Vec<ProviderSettingsView>,
     pub model_limits: std::collections::BTreeMap<String, atlas_agentic::models::ModelLimits>,
     pub api_key_source: &'static str,
     pub base_url: String,
@@ -591,9 +599,13 @@ pub struct SettingsViewDto {
     pub environment_overrides: Vec<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSettingsInput {
+    #[serde(default)]
+    pub selected_provider: Option<ProviderId>,
+    #[serde(default)]
+    pub profile_patches: Vec<ProviderSettingsPatch>,
     #[serde(default)]
     pub model_limits:
         Option<std::collections::BTreeMap<String, atlas_agentic::models::ModelLimits>>,
@@ -608,7 +620,7 @@ pub struct SaveSettingsInput {
 
 fn load_settings_impl(state: &DesktopState) -> Result<SettingsViewDto, String> {
     let saved = state.settings_store.load()?;
-    let effective = saved.resolve_from_env()?;
+    let effective = resolve_settings_for_agent(&saved, &state.agent_file)?;
     let (default_workspace, default_workspace_automatic, default_workspace_error) =
         match effective.default_workspace.as_deref() {
             Some(configured) => match validate_workspace_path(configured) {
@@ -644,7 +656,7 @@ fn settings_view(
         .contains(&SettingField::ApiKey)
     {
         "environment"
-    } else if saved.deepseek.api_key.is_some() {
+    } else if saved.provider_profile(effective.provider).api_key.is_some() {
         "settings"
     } else {
         "missing"
@@ -653,19 +665,24 @@ fn settings_view(
         .environment_overrides
         .iter()
         .map(|field| match field {
+            SettingField::Provider => "provider",
             SettingField::ApiKey => "apiKey",
             SettingField::BaseUrl => "baseUrl",
             SettingField::Model => "model",
             SettingField::HistoryLimit => "historyLimit",
         })
         .collect();
+    let profile = saved.provider_profile(effective.provider);
     SettingsViewDto {
+        provider: effective.provider,
+        source: effective.source.clone(),
+        providers: provider_settings::views(saved),
         api_key_source,
-        base_url: saved.deepseek.base_url.clone(),
-        model: saved.deepseek.model.clone(),
+        base_url: profile.base_url,
+        model: profile.model.unwrap_or_default(),
         active_model: effective.model.clone(),
         history_limit: saved.conversation.history_limit,
-        model_limits: saved.conversation.model_limits.clone(),
+        model_limits: effective.model_limits.clone(),
         default_workspace,
         default_workspace_automatic,
         default_workspace_error,
@@ -682,19 +699,41 @@ fn save_settings_impl(
         return Err("cannot set and clear the API key in the same save".to_string());
     }
     state.settings_store.update(|saved| {
-        if input.clear_api_key {
-            saved.deepseek.api_key = None;
-        } else if let Some(api_key) = input.api_key {
-            if api_key.trim().is_empty() {
-                return Err("DeepSeek API key cannot be blank".to_string());
+        if input.selected_provider.is_some() || !input.profile_patches.is_empty() {
+            if saved
+                .resolve_from_env()?
+                .environment_overrides
+                .contains(&SettingField::Provider)
+                && input.selected_provider != Some(saved.resolve_from_env()?.provider)
+            {
+                return Err("provider is controlled by ATLAS_PROVIDER".into());
             }
-            saved.deepseek.api_key = Some(api_key);
-        }
-        saved.deepseek.base_url = input.base_url;
-        saved.deepseek.model = input.model;
-        saved.conversation.history_limit = input.history_limit;
-        if let Some(limits) = &input.model_limits {
-            saved.conversation.model_limits = limits.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            for patch in &input.profile_patches {
+                if !seen.insert(patch.provider) {
+                    return Err("Duplicate provider settings patch".into());
+                }
+                provider_settings::apply_profile(saved, patch)?;
+            }
+            if let Some(provider) = input.selected_provider {
+                saved.selected_provider = Some(provider);
+            }
+            saved.conversation.history_limit = input.history_limit;
+        } else {
+            if input.clear_api_key {
+                saved.deepseek.api_key = None;
+            } else if let Some(api_key) = input.api_key {
+                if api_key.trim().is_empty() {
+                    return Err("DeepSeek API key cannot be blank".to_string());
+                }
+                saved.deepseek.api_key = Some(api_key);
+            }
+            saved.deepseek.base_url = input.base_url;
+            saved.deepseek.model = input.model;
+            saved.conversation.history_limit = input.history_limit;
+            if let Some(limits) = &input.model_limits {
+                saved.conversation.model_limits = limits.clone();
+            }
         }
         saved.workspace.default_path = input
             .default_workspace_path
@@ -709,7 +748,7 @@ fn save_settings_impl(
 }
 
 fn list_models_impl(state: &DesktopState) -> Result<Vec<ModelInfo>, String> {
-    let settings = state.settings_store.load()?.resolve_from_env()?;
+    let settings = resolve_settings_for_agent(&state.settings_store.load()?, &state.agent_file)?;
     list_available_models_with_settings(&state.agent_file, &settings)
 }
 
@@ -719,20 +758,47 @@ async fn list_models_in_background(state: DesktopState) -> Result<Vec<ModelInfo>
         .map_err(|error| format!("Atlas model list worker failed: {error}"))?
 }
 
+#[cfg(test)]
 fn set_model_impl(model: &str, state: &DesktopState) -> Result<SettingsViewDto, String> {
+    set_model_for_source(model, None, state)
+}
+fn set_model_for_source(
+    model: &str,
+    source: Option<&ModelSource>,
+    state: &DesktopState,
+) -> Result<SettingsViewDto, String> {
     let model = model.trim();
     if model.is_empty() {
-        return Err("DeepSeek model cannot be blank".to_string());
+        return Err("Provider model cannot be blank".into());
     }
     state.settings_store.update(|saved| {
-        let effective = saved.resolve_from_env()?;
+        let effective = resolve_settings_for_agent(saved, &state.agent_file)?;
+        if let Some(source) = source {
+            if effective.source.as_ref() != Some(source) {
+                return Err("Provider changed; reload models before selecting a model".into());
+            }
+        }
         if effective
             .environment_overrides
             .contains(&SettingField::Model)
         {
-            return Err("model is controlled by DEEPSEEK_MODEL".to_string());
+            return Err(format!(
+                "model is controlled by {}_MODEL",
+                effective.provider.descriptor().env_prefix
+            ));
         }
-        saved.deepseek.model = model.to_string();
+        if effective.provider == ProviderId::Deepseek && source.is_none() {
+            saved.deepseek.model = model.into();
+        } else {
+            let mut profile = saved.provider_profile(effective.provider);
+            profile.model = Some(model.into());
+            if effective.provider == ProviderId::Deepseek {
+                saved.deepseek.model = model.into();
+            }
+            saved
+                .providers
+                .insert(effective.provider.as_str().into(), profile);
+        }
         Ok(())
     })?;
     load_settings_impl(state)
@@ -857,17 +923,27 @@ pub async fn save_settings(
 }
 
 #[tauri::command]
-pub async fn list_models(state: State<'_, DesktopState>) -> Result<Vec<ModelInfo>, String> {
-    list_models_in_background(state.inner().clone()).await
+pub async fn list_models(
+    request: Option<ModelDiscoveryInput>,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<ModelInfo>, String> {
+    if let Some(input) = request {
+        let state = state.inner().clone();
+        run_blocking(move || provider_settings::discover(&state.settings_store.load()?, &input))
+            .await
+    } else {
+        list_models_in_background(state.inner().clone()).await
+    }
 }
 
 #[tauri::command]
 pub async fn set_model(
     model: String,
+    source: Option<ModelSource>,
     state: State<'_, DesktopState>,
 ) -> Result<SettingsViewDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || set_model_impl(&model, &state)).await
+    run_blocking(move || set_model_for_source(&model, source.as_ref(), &state)).await
 }
 
 #[tauri::command]
@@ -978,7 +1054,7 @@ fn execute_task(
     let request = state
         .active_requests
         .acquire(task.conversation_id.as_ref())?;
-    let effective = state.settings_store.load()?.resolve_from_env()?;
+    let effective = resolve_settings_for_agent(&state.settings_store.load()?, &state.agent_file)?;
     let workspace = state.resolve_workspace(task.conversation_id.as_ref(), None, &effective)?;
     let runtime = (state.runtime_factory)(&workspace, &effective)?;
     let service = ConversationService::new(&runtime, &state.store, effective.history_limit);
@@ -1187,6 +1263,7 @@ mod tests {
     #[test]
     fn usage_events_and_saved_activity_expose_the_same_camel_case_reading() {
         let usage = atlas_agentic::models::ModelUsage {
+            source: None,
             model: "test-model".into(),
             input_tokens: 1200,
             output_tokens: 300,
@@ -2171,6 +2248,56 @@ conversation_title_prompt = "Return a short title."
     }
 
     #[test]
+    fn settings_and_model_updates_use_the_agent_provider_fallback() {
+        let config = TempDir::new().unwrap();
+        let agent = config.path().join("agent.toml");
+        std::fs::write(&agent,"name='test'\ndisplay_name='Test'\nmodel_provider='openai'\nmodel='alias'\nsystem_prompt='System'\nconversation_title_prompt='Title'\n").unwrap();
+        let mut state = DesktopState::new_with_settings(
+            ConversationStore::at(config.path().join("data")),
+            SettingsStore::at(config.path().join("settings.json")),
+        );
+        state.agent_file = agent;
+        let view = load_settings_impl(&state).unwrap();
+        assert_eq!(view.provider, atlas_agentic::settings::ProviderId::Openai);
+        assert_eq!(view.active_model, "alias");
+        let updated =
+            super::set_model_for_source("manual-alias", view.source.as_ref(), &state).unwrap();
+        assert_eq!(
+            updated.provider,
+            atlas_agentic::settings::ProviderId::Openai
+        );
+        assert_eq!(updated.active_model, "manual-alias");
+    }
+
+    #[test]
+    fn provider_profile_save_is_isolated_and_view_never_exposes_keys() {
+        let config = TempDir::new().unwrap();
+        let settings_store = SettingsStore::at(config.path().join("settings.json"));
+        let mut saved = AtlasSettings::default();
+        saved.deepseek.api_key = Some("keep-deepseek".into());
+        settings_store.save(&saved).unwrap();
+        let state = DesktopState::new_with_settings(
+            ConversationStore::at(config.path().join("data")),
+            settings_store.clone(),
+        );
+        let input: SaveSettingsInput = serde_json::from_value(serde_json::json!({
+            "apiKey":null,"clearApiKey":false,"baseUrl":"https://api.deepseek.com","model":"deepseek-flash","historyLimit":40,"defaultWorkspacePath":null,"defaultPermissionMode":"ask",
+            "selectedProvider":"openai", "profilePatches":[{"provider":"openai","apiKey":"private-openai","clearApiKey":false,"baseUrl":"https://example.test/v1","model":"alias"}]
+        })).unwrap();
+        let view = save_settings_impl(input, &state).unwrap();
+        let serialized = serde_json::to_value(&view).unwrap();
+        assert_eq!(serialized["provider"], "openai");
+        assert!(!serialized.to_string().contains("private-openai"));
+        assert!(!serialized.to_string().contains("keep-deepseek"));
+        let loaded = settings_store.load().unwrap();
+        assert_eq!(loaded.deepseek.api_key.as_deref(), Some("keep-deepseek"));
+        assert_eq!(
+            loaded.resolve_with(|_| None).unwrap().api_key.as_deref(),
+            Some("private-openai")
+        );
+    }
+
+    #[test]
     fn blank_api_key_input_preserves_saved_key_and_clear_removes_only_it() {
         let data = TempDir::new().unwrap();
         let config = TempDir::new().unwrap();
@@ -2182,6 +2309,8 @@ conversation_title_prompt = "Return a short title."
         settings_store.save(&saved).unwrap();
         let state = DesktopState::new_with_settings(store, settings_store.clone());
         let input = SaveSettingsInput {
+            selected_provider: None,
+            profile_patches: Vec::new(),
             model_limits: None,
             api_key: None,
             clear_api_key: false,
@@ -2227,6 +2356,8 @@ conversation_title_prompt = "Return a short title."
 
         let result = save_settings_impl(
             SaveSettingsInput {
+                selected_provider: None,
+                profile_patches: Vec::new(),
                 model_limits: None,
                 api_key: None,
                 clear_api_key: false,
@@ -2280,6 +2411,8 @@ conversation_title_prompt = "Return a short title."
 
         let error = save_settings_impl(
             SaveSettingsInput {
+                selected_provider: None,
+                profile_patches: Vec::new(),
                 model_limits: None,
                 api_key: None,
                 clear_api_key: false,
@@ -2448,6 +2581,8 @@ conversation_title_prompt = "Return a short title."
 
         save_settings_impl(
             SaveSettingsInput {
+                selected_provider: None,
+                profile_patches: Vec::new(),
                 model_limits: None,
                 api_key: Some(secret.to_string()),
                 clear_api_key: false,
