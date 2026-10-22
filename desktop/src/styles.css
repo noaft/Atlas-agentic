@@ -298,9 +298,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .composer-box textarea { width: 100%; max-height: min(40dvh, 18rem); padding: 7px 0; resize: none; overflow-y: auto; border: 0; outline: 0; color: var(--ink); background: transparent; line-height: 1.45; }
 
-.composer-controls { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; }
-.composer-pickers { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.composer-controls { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.composer-pickers { display: flex; flex: 1 1 260px; min-width: 0; flex-wrap: wrap; align-items: center; gap: 10px; }
 .model-picker, .permission-picker { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.model-picker > div { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.model-picker .composer-picker-trigger { width: 100%; }
+.permission-picker { flex-shrink: 0; }
 .composer-picker { position: relative; min-width: 0; }
 .composer-picker-trigger { display: block; max-width: min(260px, 54vw); overflow: hidden; padding: 7px 10px; border: 1px solid rgba(140,120,181,.16); border-radius: 9px; background: rgba(237,231,247,.5); color: var(--ink); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .composer-picker-trigger:hover:not(:disabled), .composer-picker-trigger[aria-expanded="true"] { background: var(--lavender); border-color: rgba(140,120,181,.35); }
@@ -318,7 +321,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .model-picker-error { min-width: 0; overflow-wrap: anywhere; }
 .model-picker-retry { flex: 0 0 auto; padding: 4px 8px; border: 0; border-radius: 7px; background: var(--lavender); color: var(--ink); }
 
-.composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; }
+.composer-actions { margin-left: auto; display: flex; flex: 0 0 auto; align-items: center; gap: 9px; }
 .context-meter { position: relative; }
 .context-meter[hidden] { display: none; }
 .context-meter-toggle { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); }
@@ -492,4 +495,4 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .settings-advanced { display: grid; gap: 12px; }
 .settings-advanced[open] { padding-bottom: 8px; }
 .settings-advanced summary { cursor: pointer; margin-bottom: 12px; color: var(--muted); }
-.model-provider-label { display: block; font-size: 11px; color: var(--muted); margin: 0 8px 3px; }
+.model-provider-label { flex: 0 0 auto; white-space: nowrap; font-size: 11px; color: var(--muted); }
