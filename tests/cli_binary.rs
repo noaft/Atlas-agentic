@@ -122,6 +122,120 @@ fn help_command_does_not_require_deepseek_key_or_agent_file() {
 }
 
 #[test]
+fn startup_and_failures_are_written_to_a_local_backend_log() {
+    let fixture = CliFixture::new();
+    let output = fixture.command().arg("unknown").output().unwrap();
+    assert!(!output.status.success());
+    let log = std::fs::read_to_string(fixture.data.path().join("logs/atlas.jsonl")).unwrap();
+    let events: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(events
+        .iter()
+        .any(|e| e["event"] == "application.started" && e["component"] == "cli"));
+    let failed = events
+        .iter()
+        .find(|e| e["event"] == "operation.failed")
+        .unwrap();
+    assert_eq!(failed["fields"]["operation"], "cli.command");
+    assert!(failed["fields"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown command"));
+    assert!(failed["requestId"].as_str().is_some());
+    assert!(failed["fields"]["durationMs"].as_u64().is_some());
+    assert!(failed["timestamp"].as_str().is_some());
+}
+
+#[test]
+fn log_location_can_be_overridden_and_logging_failure_does_not_block_startup() {
+    let fixture = CliFixture::new();
+    let logs = TempDir::new().unwrap();
+    successful_stdout(
+        fixture
+            .command()
+            .env("ATLAS_LOG_DIR", logs.path())
+            .arg("help")
+            .output()
+            .unwrap(),
+    );
+    assert!(logs.path().join("atlas.jsonl").exists());
+    assert!(!fixture.data.path().join("logs").exists());
+    let blocked = logs.path().join("not-a-directory");
+    std::fs::write(&blocked, "occupied").unwrap();
+    let output = fixture
+        .command()
+        .env("ATLAS_LOG_DIR", &blocked)
+        .arg("help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("backend logging unavailable"));
+}
+
+#[test]
+fn model_failure_logs_correlated_errors_without_credentials_or_prompt() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || loop {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let request = read_request(&mut socket);
+        // Context budgeting may discover model limits before the chat request.
+        if request["models"] == true {
+            let body = r#"{"data":[]}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            continue;
+        }
+        socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        break;
+    });
+    let output = fixture
+        .command()
+        .env("DEEPSEEK_API_KEY", "fake_key_for_test")
+        .env("DEEPSEEK_BASE_URL", endpoint)
+        .args(["ask", "private prompt body"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(!output.status.success());
+    let log = std::fs::read_to_string(fixture.data.path().join("logs/atlas.jsonl")).unwrap();
+    assert!(!log.contains("fake_key_for_test"));
+    assert!(!log.contains("private prompt body"));
+    let events: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(events
+        .iter()
+        .any(|e| e["event"] == "provider.configured" && e["fields"]["provider"] == "deepseek"));
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "operation.failed")
+        .collect();
+    assert!(failed
+        .iter()
+        .any(|e| e["fields"]["operation"] == "model.chat"));
+    assert!(failed
+        .iter()
+        .any(|e| e["fields"]["operation"] == "cli.command"));
+    assert!(failed
+        .iter()
+        .all(|e| e["requestId"] == failed[0]["requestId"]));
+    assert!(
+        failed
+            .iter()
+            .all(|e| e["fields"]["error"].as_str().unwrap().contains("503")),
+        "{log}"
+    );
+}
+
+#[test]
 fn invalid_commands_are_reported_before_provider_setup() {
     let fixture = CliFixture::new();
     for (args, expected) in [

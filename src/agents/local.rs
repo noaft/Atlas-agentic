@@ -84,15 +84,25 @@ impl Agent for LocalAgent {
         &self,
         request: &crate::models::SummaryRequest,
     ) -> Result<crate::models::SummaryResponse, String> {
-        self.model.summarize(request)
+        crate::diagnostics::run(
+            "model.summary",
+            serde_json::json!({"model": self.model_name()}),
+            || self.model.summarize(request),
+        )
     }
     fn process_request_with_usage(
         &self,
         request: &super::AgentRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<crate::models::ModelResponse, String> {
-        self.model
-            .stream_with_usage(&self.model_request(request), on_delta)
+        crate::diagnostics::run(
+            "model.chat",
+            serde_json::json!({"model": self.model_name()}),
+            || {
+                self.model
+                    .stream_with_usage(&self.model_request(request), on_delta)
+            },
+        )
     }
 
     fn name(&self) -> &str {
@@ -233,18 +243,24 @@ impl Agent for LocalAgent {
     }
 
     fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
-        self.model.complete(&ModelRequest {
-            memory_blocks: &[],
-            max_output_tokens: None,
-            system_prompt: &self.definition.conversation_title_prompt,
-            user_prompt: first_input,
-            history: &[],
-            activity_context: None,
-            tools: &[],
-            images: &[],
-            temperature: self.definition.temperature,
-            top_p: self.definition.top_p,
-        })
+        crate::diagnostics::run(
+            "model.title",
+            serde_json::json!({"model": self.model_name()}),
+            || {
+                self.model.complete(&ModelRequest {
+                    memory_blocks: &[],
+                    max_output_tokens: None,
+                    system_prompt: &self.definition.conversation_title_prompt,
+                    user_prompt: first_input,
+                    history: &[],
+                    activity_context: None,
+                    tools: &[],
+                    images: &[],
+                    temperature: self.definition.temperature,
+                    top_p: self.definition.top_p,
+                })
+            },
+        )
     }
 }
 

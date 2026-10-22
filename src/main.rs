@@ -17,7 +17,12 @@ use atlas_agentic::{
 
 fn main() {
     load_dotenv();
-    if let Err(error) = handle_command(std::env::args().skip(1)).and_then(run_command) {
+    atlas_agentic::diagnostics::init("cli");
+    if let Err(error) =
+        atlas_agentic::diagnostics::run("cli.command", serde_json::json!({}), || {
+            handle_command(std::env::args().skip(1)).and_then(run_command)
+        })
+    {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }

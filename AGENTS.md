@@ -35,6 +35,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   ├── service.rs      Ask, activity capture, workspace persistence, and titles
 │   │   └── title.rs        Title sanitization
 │   ├── tasks/             Authoritative built-in task catalog and validated dispatch
+│   ├── diagnostics.rs      Private rotating backend logs and request correlation
 │   ├── settings.rs         Versioned private settings and environment precedence
 │   ├── workspace.rs        Automatic Atlas home provisioning and validation
 │   ├── models/             Native/compatible adapters, discovery, usage, and budgets
@@ -203,6 +204,19 @@ multiword titles. Help and all conversation management commands parse and run
 without a model API key or agent configuration. List is newest-update-first and
 shows IDs, titles, creation/update times, and message counts; show includes saved
 roles, content, and UTC timestamps.
+
+Backend diagnostics initialize at CLI/desktop startup and write JSON lines to
+`logs/atlas.jsonl` under the same data root (`ATLAS_DATA_DIR` applies).
+`ATLAS_LOG_DIR` overrides only the log directory; `ATLAS_LOG_STDERR=1` also emits
+entries to stderr. Keep files bounded at 5 MiB with three backups, private Unix
+creation modes, and process-safe rotation. Logging failures must not block app
+use; bound log-lock acquisition and omit response-derived parser-error values.
+Correlate worker operations and nested model calls with a request ID; log
+startup, operation outcomes/durations, provider/model metadata, and tool
+names/outcomes. Never log prompts, response bodies, tool arguments/output,
+screenshots, or credentials. Register saved credentials for redaction before
+provider setup; omit endpoint URLs from diagnostics. Failed requests belong in
+these diagnostic logs even though failed turns remain absent from chat history.
 
 Conversation storage is resolved using a platform directory library: Linux/WSL
 uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses

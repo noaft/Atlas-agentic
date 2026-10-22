@@ -2,6 +2,7 @@ use crate::provider_settings::{
     self, ModelDiscoveryInput, ProviderSettingsPatch, ProviderSettingsView,
 };
 use atlas_agentic::app::resolve_settings_for_agent;
+use atlas_agentic::diagnostics;
 use atlas_agentic::settings::{ModelSource, ProviderId};
 use std::{
     collections::HashMap,
@@ -753,9 +754,13 @@ fn list_models_impl(state: &DesktopState) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn list_models_in_background(state: DesktopState) -> Result<Vec<ModelInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_models_impl(&state))
-        .await
-        .map_err(|error| format!("Atlas model list worker failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        diagnostics::run("desktop.list_models", serde_json::json!({}), || {
+            list_models_impl(&state)
+        })
+    })
+    .await
+    .map_err(|error| format!("Atlas model list worker failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -864,11 +869,14 @@ fn delete_impl(id: &str, state: &DesktopState) -> Result<DeleteResult, String> {
 }
 
 async fn run_blocking<T: Send + 'static>(
+    name: &'static str,
     operation: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(operation)
-        .await
-        .map_err(|error| format!("Atlas desktop worker failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        diagnostics::run(name, serde_json::json!({}), operation)
+    })
+    .await
+    .map_err(|error| format!("Atlas desktop worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -876,7 +884,7 @@ pub async fn list_conversations(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ConversationMetadataDto>, String> {
     let state = state.inner().clone();
-    run_blocking(move || list_impl(&state)).await
+    run_blocking("desktop.list_conversations", move || list_impl(&state)).await
 }
 
 #[tauri::command]
@@ -885,7 +893,7 @@ pub async fn load_conversation(
     state: State<'_, DesktopState>,
 ) -> Result<ConversationDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || load_impl(&id, &state)).await
+    run_blocking("desktop.load_conversation", move || load_impl(&id, &state)).await
 }
 
 #[tauri::command]
@@ -895,7 +903,10 @@ pub async fn rename_conversation(
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || rename_impl(&id, &title, &state)).await
+    run_blocking("desktop.rename_conversation", move || {
+        rename_impl(&id, &title, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -904,13 +915,16 @@ pub async fn delete_conversation(
     state: State<'_, DesktopState>,
 ) -> Result<DeleteResult, String> {
     let state = state.inner().clone();
-    run_blocking(move || delete_impl(&id, &state)).await
+    run_blocking("desktop.delete_conversation", move || {
+        delete_impl(&id, &state)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn load_settings(state: State<'_, DesktopState>) -> Result<SettingsViewDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || load_settings_impl(&state)).await
+    run_blocking("desktop.load_settings", move || load_settings_impl(&state)).await
 }
 
 #[tauri::command]
@@ -919,7 +933,10 @@ pub async fn save_settings(
     state: State<'_, DesktopState>,
 ) -> Result<SettingsViewDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || save_settings_impl(input, &state)).await
+    run_blocking("desktop.save_settings", move || {
+        save_settings_impl(input, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -929,8 +946,10 @@ pub async fn list_models(
 ) -> Result<Vec<ModelInfo>, String> {
     if let Some(input) = request {
         let state = state.inner().clone();
-        run_blocking(move || provider_settings::discover(&state.settings_store.load()?, &input))
-            .await
+        run_blocking("desktop.list_models", move || {
+            provider_settings::discover(&state.settings_store.load()?, &input)
+        })
+        .await
     } else {
         list_models_in_background(state.inner().clone()).await
     }
@@ -943,12 +962,18 @@ pub async fn set_model(
     state: State<'_, DesktopState>,
 ) -> Result<SettingsViewDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || set_model_for_source(&model, source.as_ref(), &state)).await
+    run_blocking("desktop.set_model", move || {
+        set_model_for_source(&model, source.as_ref(), &state)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn validate_workspace(path: String) -> Result<WorkspaceDto, String> {
-    run_blocking(move || validate_workspace_impl(&path)).await
+    run_blocking("desktop.validate_workspace", move || {
+        validate_workspace_impl(&path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -958,7 +983,10 @@ pub async fn assign_conversation_workspace(
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || assign_workspace_impl(&id, &path, &state)).await
+    run_blocking("desktop.assign_workspace", move || {
+        assign_workspace_impl(&id, &path, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -968,7 +996,10 @@ pub async fn set_conversation_permission_mode(
     state: State<'_, DesktopState>,
 ) -> Result<ConversationMetadataDto, String> {
     let state = state.inner().clone();
-    run_blocking(move || set_permission_mode_impl(&id, permission_mode, &state)).await
+    run_blocking("desktop.set_permission_mode", move || {
+        set_permission_mode_impl(&id, permission_mode, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1012,21 +1043,27 @@ where
     E: FnMut(&ToolEvent) + Send + 'static,
 {
     tauri::async_runtime::spawn_blocking(move || {
-        let DesktopAskCallbacks {
-            authorizer,
-            mut on_delta,
-            mut on_tool_event,
-        } = callbacks;
-        let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
-        state.ask_with_workspace_permission_authorizer_and_fallible_sink(
-            &prompt,
-            conversation_id.as_ref(),
-            workspace_path.as_deref().map(Path::new),
-            permission_mode,
-            AskCallbacks {
-                authorizer: &authorizer,
-                on_delta: &mut on_delta,
-                on_tool_event: &mut on_tool_event,
+        diagnostics::run(
+            "desktop.ask",
+            serde_json::json!({"conversationId": conversation_id}),
+            || {
+                let DesktopAskCallbacks {
+                    authorizer,
+                    mut on_delta,
+                    mut on_tool_event,
+                } = callbacks;
+                let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
+                state.ask_with_workspace_permission_authorizer_and_fallible_sink(
+                    &prompt,
+                    conversation_id.as_ref(),
+                    workspace_path.as_deref().map(Path::new),
+                    permission_mode,
+                    AskCallbacks {
+                        authorizer: &authorizer,
+                        on_delta: &mut on_delta,
+                        on_tool_event: &mut on_tool_event,
+                    },
+                )
             },
         )
     })
@@ -1069,8 +1106,11 @@ pub async fn run_task(
 ) -> Result<atlas_agentic::tasks::TaskResult, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        execute_task(request, &state, &mut |progress| {
-            let _ = channel.send(ChatEvent::Compaction { progress });
+        let context = serde_json::json!({"taskId": request.task_id, "conversationId": request.conversation_id});
+        diagnostics::run("desktop.run_task", context, || {
+            execute_task(request, &state, &mut |progress| {
+                let _ = channel.send(ChatEvent::Compaction { progress });
+            })
         })
     })
     .await

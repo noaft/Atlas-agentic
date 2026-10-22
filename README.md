@@ -138,6 +138,45 @@ or use the CLI command above. **Send always sends ordinary chat text**, includin
 literal `/compact`; selecting the task runs compaction. Recent exchanges remain
 intact. Deleted conversations move to local trash for manual recovery.
 
+## Backend logs
+
+The desktop app and CLI create a local backend log at startup, including when a
+request fails before conversation history can be saved. Logs contain UTC timestamps,
+request IDs, provider/model names, operation durations, tool names/outcomes, and
+sanitized errors. Response-derived validation details are omitted from parser
+errors. Logs do not record prompts, response bodies, tool arguments or output,
+screenshots, or API keys.
+
+The default file is `logs/atlas.jsonl` inside the Atlas data directory:
+
+- Linux/WSL: `${XDG_DATA_HOME:-~/.local/share}/atlas/logs/atlas.jsonl`
+- macOS: `~/Library/Application Support/atlas/logs/atlas.jsonl`
+- Windows: `%LOCALAPPDATA%\atlas\logs\atlas.jsonl`
+
+`ATLAS_DATA_DIR` also relocates the logs. Set `ATLAS_LOG_DIR` to override just the
+log directory. Each entry is one JSON line, written immediately. Files rotate at
+5 MiB with three backups (`atlas.1.jsonl` through `atlas.3.jsonl`). New log files
+and directories use private permissions on Unix. A log-write failure warns on
+stderr and does not prevent normal app use. Lock acquisition waits at most 50 ms;
+a contended write is skipped so another process cannot stall Atlas.
+
+Follow the backend live on Linux with the default location:
+
+```bash
+tail -F "${XDG_DATA_HOME:-$HOME/.local/share}/atlas/logs/atlas.jsonl"
+```
+
+To also show the same entries in the terminal while developing:
+
+```bash
+ATLAS_LOG_STDERR=1 npm --prefix desktop run tauri dev
+```
+
+Find an `operation.failed` entry and use its `requestId` to follow the related
+operations and model calls. This diagnostic log is separate from saved chat
+activity; failed requests are logged even though they are not saved as messages.
+An app already running needs a restart to use the new logging behavior.
+
 ## Development
 
 Run the core checks:

@@ -23,6 +23,7 @@ fn create_desktop_state(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     load_dotenv();
+    atlas_agentic::diagnostics::init("desktop");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -54,7 +55,15 @@ pub fn run() {
             commands::ask
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run Atlas desktop application");
+        .unwrap_or_else(|error| {
+            atlas_agentic::diagnostics::event(
+                "ERROR",
+                "application.failed",
+                serde_json::json!({"error": error.to_string()}),
+            );
+            panic!("failed to run Atlas desktop application: {error}");
+        });
+    atlas_agentic::diagnostics::event("INFO", "application.stopped", serde_json::json!({}));
 }
 
 #[cfg(test)]

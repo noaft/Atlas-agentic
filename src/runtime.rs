@@ -274,6 +274,11 @@ impl Runtime {
                             request: request.clone(),
                         });
                         if authorizer.authorize(&request)? == AuthorizationDecision::Deny {
+                            crate::diagnostics::event(
+                                "INFO",
+                                "tool.denied",
+                                serde_json::json!({"tool": tool, "sequence": sequence}),
+                            );
                             on_tool_event(&ToolEvent::Denied {
                                 sequence,
                                 tool: tool.clone(),
@@ -297,6 +302,12 @@ impl Runtime {
                         tool: tool.clone(),
                         args: args.clone(),
                     };
+                    let tool_started = std::time::Instant::now();
+                    crate::diagnostics::event(
+                        "INFO",
+                        "tool.started",
+                        serde_json::json!({"tool": tool, "sequence": sequence}),
+                    );
                     let result = self.tools.execute_authorized(&tool_call, &authorization);
                     let (success, output) = match result {
                         Ok(result) => {
@@ -326,6 +337,14 @@ impl Runtime {
                         }
                         Err(error) => (false, error),
                     };
+                    crate::diagnostics::event(
+                        if success { "INFO" } else { "ERROR" },
+                        "tool.finished",
+                        serde_json::json!({
+                            "tool": tool, "sequence": sequence, "success": success,
+                            "durationMs": u64::try_from(tool_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        }),
+                    );
                     on_tool_event(&ToolEvent::Finished {
                         sequence,
                         tool: tool.clone(),

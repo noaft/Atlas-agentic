@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 /// List a provider's catalog without constructing a generation client or requiring a model.
 pub fn discover_models(settings: &EffectiveSettings) -> Result<Vec<ModelInfo>, String> {
+    crate::diagnostics::provider_settings(settings);
     validate_profile(settings)?;
     let client = client();
     let endpoint = format!("{}/models", settings.base_url.trim_end_matches('/'));

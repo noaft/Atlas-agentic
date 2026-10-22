@@ -135,6 +135,7 @@ pub fn provider_from_definition_with_settings(
     definition: &LocalAgentDefinition,
     settings: &EffectiveSettings,
 ) -> Result<Box<dyn ModelProvider>, String> {
+    crate::diagnostics::provider_settings(settings);
     match settings.provider.as_str() {
         "deepseek" => {
             let api_key = settings
