@@ -472,6 +472,9 @@ export class ChatStore {
         messages: chat.state.messages.map((message) => ({
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
+          failureReason: message.delivery === "pending" && message.role === "assistant"
+            ? errorMessage(error)
+            : message.failureReason,
         })),
         draftText: chat.state.draftText || prompt,
         status: "error",

@@ -164,6 +164,7 @@ export interface DisplayMessage {
   content: string;
   createdAt: string | null;
   delivery: MessageDelivery;
+  failureReason?: string;
   activity?: ActivityRecord[];
   activityDurationMs?: number | null;
 }

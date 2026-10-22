@@ -697,7 +697,36 @@ test("failed send restores the live draft", async () => {
   expect(composer(root)).toBe(input);
   expect(input.parentElement).toBe(parent);
   expect(input.value).toBe("xin chào");
+  expect(root.querySelector(".message-assistant .message-failure-reason")?.textContent)
+    .toBe("Request failed: send failed");
+  expect(root.querySelector(".message-user .message-failure-reason")).toBeNull();
   expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(false);
+});
+
+test("failed replies show the backend reason as text in their owning chat", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async (_prompt, _id, _path, onDelta) => {
+    onDelta("Partial answer");
+    return pending.promise;
+  };
+  const { root, store } = setup(api);
+  await store.initialize();
+  const owner = store.getState().activeSessionId;
+  inputComposer(root, "build the news app");
+  const sending = store.send();
+  await store.newChat();
+  const reason = "Provider returned HTTP 429: <img src=x onerror=alert(1)>";
+  pending.reject(new Error(reason));
+  await sending;
+  expect(root.textContent).not.toContain(reason);
+
+  await store.selectSession(owner);
+  const reply = root.querySelector(".message-assistant.delivery-failed")!;
+  expect(reply.textContent).toContain("Partial answer");
+  expect(reply.querySelector(".message-failed")?.textContent).toContain(reason);
+  expect(reply.querySelector(".message-failed img")).toBeNull();
+  expect(composer(root).value).toBe("build the news app");
 });
 
 test("failed send does not overwrite text entered while streaming", async () => {

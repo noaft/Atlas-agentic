@@ -143,6 +143,13 @@ function renderMessage(message: DisplayMessage): HTMLElement {
     const failed = document.createElement("div");
     failed.className = "message-failed";
     failed.textContent = "Not saved — retry from the composer.";
+    if (message.failureReason) {
+      const reason = document.createElement("div");
+      reason.className = "message-failure-reason";
+      reason.setAttribute("role", "alert");
+      reason.textContent = `Request failed: ${message.failureReason}`;
+      failed.prepend(reason);
+    }
     article.append(failed);
   }
   return article;
