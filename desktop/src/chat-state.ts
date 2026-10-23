@@ -915,6 +915,7 @@ export class ChatStore {
       return;
     }
     if (event.event === "runtimeStatus") {
+      if (event.data.status === "preparingAnswer") return;
       this.updateSession(owner, {
         toolActivity: [
           ...state.toolActivity,
@@ -924,7 +925,7 @@ export class ChatStore {
             kind: "status",
             tool: null,
             arguments: null,
-            summary: event.data.status === "thinking" ? "Thinking" : "Preparing answer",
+            summary: "Thinking",
             details: null,
             status: "status",
           },

@@ -69,6 +69,7 @@ function renderActivity(
   records: RenderableActivity[],
   durationMs?: number | null,
 ): HTMLDetailsElement {
+  records = records.filter((record) => record.outcome !== null || record.summary !== "Preparing answer");
   const details = document.createElement("details");
   details.className = "activity-disclosure";
   details.dataset.activity = "";

@@ -27,7 +27,7 @@ impl Tool for UpdateProgressTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().into(),
-            description: "Show a brief user-facing update about what you are doing or will do next, then continue the task. Use before multi-step work and when the next step changes. Each update replaces the previous update; the final answer replaces the update. Describe actions or verified findings, not private reasoning or secrets.".into(),
+            description: "Tell the user your next concrete action and why it matters, then continue working. Call this BEFORE starting multi-step work and again when the next meaningful step changes; do not wait until the final answer to communicate. Write 1-2 short sentences in the user's language. Example: I will inspect the project files first so I can follow the existing structure. Later: The changes are ready. I will run the tests next to verify the behavior. Describe planned actions or verified findings; do not claim planned work is complete, expose private reasoning or secrets, repeat generic status labels, or announce every tool call. Simple direct answers need no update. Each update replaces the previous update, and the final answer replaces it. This tool does not finish the task.".into(),
             input_schema: serde_json::json!({
                 "type": "object", "properties": {
                     "message": {"type": "string", "minLength": 1, "maxLength": MESSAGE_LIMIT}

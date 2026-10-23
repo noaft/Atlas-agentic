@@ -140,7 +140,11 @@ literal `/compact`; selecting the task runs compaction. Recent exchanges remain
 intact. Deleted conversations move to local trash for manual recovery.
 
 For tasks with multiple steps, Atlas can call `update_progress` to explain its
-current work or next step. The desktop shows the latest update in the existing
+next concrete action and its purpose. The default agent and tool instructions
+ask for an update before multi-step work and when the next meaningful step changes,
+in the user's language. Simple direct answers need no update. This remains a model
+instruction, rather than a runtime guarantee. The desktop hides the automatic
+"Preparing answer" label and shows the latest update in the existing
 assistant bubble, then replaces it with the final answer. Successful turns keep
 all updates in their activity JSONL and collapsed Activity details; later turns
 in the same chat receive them through the existing bounded activity context and

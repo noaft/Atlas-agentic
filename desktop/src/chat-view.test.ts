@@ -1886,6 +1886,9 @@ test("agent progress replaces the live message and final answer replaces progres
   const {root, store} = setup(api);
   await store.initialize();
   store.setDraft("do some work"); const sending = store.send();
+  api.eventSink!({event: "runtimeStatus", data: {status: "preparingAnswer"}});
+  await flushStreaming();
+  expect(root.textContent).not.toContain("Preparing answer");
   api.eventSink!({event: "progress", data: {message: "I will inspect the files."}});
   await flushStreaming();
   const content = () => root.querySelector(".message-assistant .message-content")!;
@@ -1897,7 +1900,11 @@ test("agent progress replaces the live message and final answer replaces progres
   api.eventSink!({event: "delta", data: {content: "Verified answer"}});
   await flushStreaming();
   expect(content().textContent?.trim()).toBe("Verified answer");
-  pending.resolve({answer: "Verified answer", metadata, created: true}); await sending;
+  pending.resolve({answer: "Verified answer", metadata, created: true, activities: [{
+    sequence: 0, kind: "status", tool: null, arguments: null, outcome: null,
+    summary: "Preparing answer", details: null, createdAt: "2026-10-23T00:00:00Z",
+  }]}); await sending;
+  expect(root.textContent).not.toContain("Preparing answer");
   expect(content().textContent?.trim()).toBe("Verified answer");
   expect(root.querySelectorAll(".message-assistant")).toHaveLength(1);
 });
