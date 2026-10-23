@@ -116,6 +116,9 @@ pub enum RuntimeStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ToolEvent {
+    Progress {
+        message: String,
+    },
     ResponseReset,
     Compaction {
         progress: crate::conversations::CompactionProgress,

@@ -111,6 +111,7 @@ Built-in tools:
 
 | Purpose | Tools |
 | --- | --- |
+| Explain ongoing work | `update_progress` |
 | Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
 | Manage files | `create_file`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
 | Open and execute | `open_file`, `open_application`, `exec_command` |
@@ -137,6 +138,14 @@ For manual compaction, type `/` in the desktop composer and select **/compact**,
 or use the CLI command above. **Send always sends ordinary chat text**, including
 literal `/compact`; selecting the task runs compaction. Recent exchanges remain
 intact. Deleted conversations move to local trash for manual recovery.
+
+For tasks with multiple steps, Atlas can call `update_progress` to explain its
+current work or next step. The desktop shows the latest update in the existing
+assistant bubble, then replaces it with the final answer. Successful turns keep
+all updates in their activity JSONL and collapsed Activity details; later turns
+in the same chat receive them through the existing bounded activity context and
+compaction path. Updates describe plans or progress, not proof that work finished.
+The CLI writes progress to stderr and the final answer to stdout.
 
 When a chat response does not match Atlas's tool protocol, the runtime sends the
 validation error and invalid reply back to the model and keeps repairing within

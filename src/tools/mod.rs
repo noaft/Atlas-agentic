@@ -19,6 +19,7 @@ mod pwd;
 mod read_file;
 mod ripgrep;
 mod search_files;
+mod update_progress;
 mod workspace_path;
 
 pub use computer::{
@@ -46,6 +47,7 @@ pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;
 pub use ripgrep::RipgrepTool;
 pub use search_files::SearchFilesTool;
+pub use update_progress::UpdateProgressTool;
 
 use std::{any::Any, collections::HashMap};
 
@@ -63,6 +65,12 @@ pub struct ToolDefinition {
 pub struct ToolResult {
     pub message: String,
     pub attachments: Vec<ToolAttachment>,
+    pub effects: Vec<ToolEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolEffect {
+    Progress(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +83,15 @@ impl ToolResult {
         Self {
             message: message.into(),
             attachments: Vec::new(),
+            effects: Vec::new(),
+        }
+    }
+
+    pub fn with_progress(message: impl Into<String>) -> Self {
+        Self {
+            message: "Progress update shown. Continue the task.".into(),
+            attachments: Vec::new(),
+            effects: vec![ToolEffect::Progress(message.into())],
         }
     }
 
@@ -82,6 +99,7 @@ impl ToolResult {
         Self {
             message: message.into(),
             attachments: vec![ToolAttachment::Image(image)],
+            effects: Vec::new(),
         }
     }
 }

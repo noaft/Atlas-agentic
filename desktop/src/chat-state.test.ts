@@ -1575,3 +1575,26 @@ test("response resets clear only the owning chat's partial answer", async () => 
   expect(store.getState().messages.at(-1)?.content).toBe("Recovered");
   two.resolve(result(second, "Keep me", true)); await sendingTwo;
 });
+
+
+test("progress updates belong to their running session and cannot alter a saved answer", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise);
+  const store = new ChatStore(api); await store.initialize();
+  const owner = store.getState().activeSessionId;
+  store.setDraft("do work"); const sending = store.send();
+  await store.newChat(); store.setDraft("keep my new draft");
+  api.eventSinks[0]({event: "progress", data: {message: "Inspecting files"}});
+  expect(store.getState().draftText).toBe("keep my new draft");
+  expect(store.getState().messages).toHaveLength(0);
+  await store.selectSession(owner);
+  expect(store.getState().messages.at(-1)?.progressMessage).toBe("Inspecting files");
+  api.eventSinks[0]({event: "responseReset"});
+  expect(store.getState().messages.at(-1)?.progressMessage).toBe("Inspecting files");
+  pending.resolve(result(first, "Done", true)); await sending;
+  expect(store.getState().messages.at(-1)?.progressMessage).toBeUndefined();
+  api.eventSinks[0]({event: "progress", data: {message: "stale update"}});
+  expect(store.getState().messages.at(-1)?.content).toBe("Done");
+  expect(store.getState().messages.at(-1)?.progressMessage).toBeUndefined();
+});

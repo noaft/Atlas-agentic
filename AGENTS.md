@@ -53,6 +53,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 
 The built-in runtime tools are:
 
+- `update_progress`: show a concise current/next-step message without ending the task
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
@@ -228,9 +229,20 @@ activity and memory sidecars to `trash/` and reports the history recovery locati
 is manual, with no CLI restore command.
 
 `ConversationService` coordinates the store and runtime. Save only successful
-user/final-assistant pairs to ordinary message history. Save sanitized, bounded
-runtime status and tool activity from successful turns in the separate sidecar;
-failed overall turns save neither. Never persist screenshot pixels, image data,
+user/final-assistant pairs to ordinary message history.
+
+`update_progress` returns a typed tool effect consumed by the runtime, emits a
+`progress` event, and continues the same tool loop. Show only the latest progress
+in the owning session's pending assistant bubble; streamed/final answer text takes
+its place. Keep progress separate from answer deltas and ignore late callbacks.
+Save progress as activity records on successful turns and include it in existing
+bounded future-turn context/compaction, explicitly labeled as progress rather than
+completed work. Never turn progress into separate ordinary chat messages or add
+its text to diagnostic logs. The CLI sends progress to stderr. Tool effects are
+separate from image attachments; do not broaden native/frontend permissions.
+
+Save sanitized, bounded runtime status and tool activity from successful turns in
+the separate sidecar; failed overall turns save neither. Never persist screenshot pixels, image data,
 or tool attachments. New activity batches also store elapsed runtime/model work
 duration; legacy batches without it remain valid. Raw activity details remain
 local, while later model turns receive only a separately capped summary from the

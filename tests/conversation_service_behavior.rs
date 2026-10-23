@@ -1095,3 +1095,84 @@ fn failed_overall_turn_discards_collected_activity() {
     assert_eq!(saved.messages.len(), 2);
     assert!(saved.activities.is_empty());
 }
+
+#[test]
+fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
+    use atlas_agentic::{conversations::ActivityKind, tools::UpdateProgressTool};
+    let temp = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(temp.path().join("data"));
+    let (runtime, requests) = runtime(
+        &store,
+        vec![
+            Response::success(vec![
+                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will inspect the files."}}"#,
+            ]),
+            Response::success(vec![
+                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will run the tests next."}}"#,
+            ]),
+            Response::success(vec![
+                r#"{"type":"final","content":"Finished and verified."}"#,
+            ]),
+            Response::success(vec![
+                r#"{"type":"final","content":"Continuing with prior context."}"#,
+            ]),
+        ],
+        Ok("Progress task"),
+    );
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    let service = ConversationService::new(&runtime, &store, 40);
+    let result = service.ask("do work", None, &mut |_| {}).unwrap();
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert_eq!(saved.messages[1].content, "Finished and verified.");
+    let progress: Vec<_> = saved.activities[0]
+        .records
+        .iter()
+        .filter(|r| r.kind == ActivityKind::Progress)
+        .collect();
+    assert_eq!(progress.len(), 2);
+    assert!(progress[0].summary.contains("I will inspect the files."));
+    assert!(progress[1].summary.contains("I will run the tests next."));
+    let json = fs::read_to_string(
+        temp.path()
+            .join("data/activities")
+            .join(format!("{}.jsonl", result.metadata.id)),
+    )
+    .unwrap();
+    assert!(json.contains("I will inspect the files."));
+    service
+        .ask("continue", Some(&result.metadata.id), &mut |_| {})
+        .unwrap();
+    let requests = requests.borrow();
+    let later = requests.iter().rfind(|request| !request.title).unwrap();
+    assert_eq!(later.history.len(), 2);
+    let activity = later.activity_context.as_deref().unwrap();
+    assert!(activity.contains("I will inspect the files."));
+    assert!(activity.contains("I will run the tests next."));
+    assert!(activity.contains("not a completed action"));
+}
+
+#[test]
+fn failed_turn_does_not_persist_progress_as_chat_or_activity() {
+    use atlas_agentic::tools::UpdateProgressTool;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("data");
+    let store = ConversationStore::at(root.clone());
+    let (runtime, _) = runtime(
+        &store,
+        vec![
+            Response::success(vec![
+                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will inspect the files."}}"#,
+            ]),
+            Response::failure(),
+        ],
+        Ok("unused"),
+    );
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    let error = ConversationService::new(&runtime, &store, 40)
+        .ask("do work", None, &mut |_| {})
+        .unwrap_err();
+    assert_eq!(error, "model unavailable");
+    assert!(store.list().unwrap().is_empty());
+    assert!(!root.join("activities").exists());
+}

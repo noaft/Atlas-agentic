@@ -271,6 +271,7 @@ impl<'a> ConversationService<'a> {
         let mut latest_usage = None;
         let mut capture_event = |event: &ToolEvent| {
             match event {
+                ToolEvent::Progress { message } => collector.progress(message),
                 ToolEvent::Usage { usage } => latest_usage = usage.clone(),
                 ToolEvent::Status { status } => collector.status(match status {
                     RuntimeStatus::Thinking => "Thinking",

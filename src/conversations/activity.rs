@@ -15,6 +15,7 @@ const CONTEXT_HEADING: &str = "Recent Atlas activity (facts from earlier success
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ActivityKind {
+    Progress,
     Status,
     ToolCall,
     ToolResult,
@@ -77,6 +78,19 @@ impl ActivityCollector {
             arguments: None,
             outcome: None,
             summary: summary.into(),
+            details: None,
+            created_at: Utc::now(),
+        });
+    }
+
+    pub fn progress(&mut self, message: &str) {
+        self.push(ActivityRecord {
+            sequence: 0,
+            kind: ActivityKind::Progress,
+            tool: None,
+            arguments: None,
+            outcome: None,
+            summary: format!("Atlas progress (not a completed action): {message}"),
             details: None,
             created_at: Utc::now(),
         });

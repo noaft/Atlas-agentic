@@ -125,6 +125,9 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
             let _ = stdout.flush();
         },
         &mut |event| match event {
+            atlas_agentic::permissions::ToolEvent::Progress { message } => {
+                eprintln!("Progress: {message}")
+            }
             atlas_agentic::permissions::ToolEvent::ContextStatus { status }
                 if !status.available =>
             {

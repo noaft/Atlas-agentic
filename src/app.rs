@@ -12,7 +12,7 @@ use crate::{
         CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool,
         MouseClickTool, MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool,
         OpenFileTool, PwdTool, ReadFileTool, RipgrepTool, SearchFilesTool, ToolRegistry,
-        TypeTextTool,
+        TypeTextTool, UpdateProgressTool,
     },
     Runtime,
 };
@@ -80,6 +80,7 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(OpenFileTool::new(workspace_root)),
         Box::new(OpenApplicationTool::new()),
         Box::new(CurrentTimeTool::new()),
+        Box::new(UpdateProgressTool::new()),
         Box::new(MouseMoveTool::new(computer.clone())),
         Box::new(MouseClickTool::new(computer.clone())),
         Box::new(MouseScrollTool::new(computer.clone())),
@@ -148,6 +149,7 @@ mod tests {
             "ripgrep",
             "search_files",
             "type_text",
+            "update_progress",
         ];
         #[cfg(any(unix, windows))]
         expected.push("exec_command");

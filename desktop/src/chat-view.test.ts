@@ -1878,3 +1878,26 @@ test("same model usage requires matching provider source and legacy unknown is h
   expect(root.querySelector("[data-context-percent]")?.textContent).toBe("25%");
   pending.resolve({answer:"done",metadata,created:true,usage}); await flush();
 });
+
+test("agent progress replaces the live message and final answer replaces progress", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const {root, store} = setup(api);
+  await store.initialize();
+  store.setDraft("do some work"); const sending = store.send();
+  api.eventSink!({event: "progress", data: {message: "I will inspect the files."}});
+  await flushStreaming();
+  const content = () => root.querySelector(".message-assistant .message-content")!;
+  expect(content().textContent).toBe("I will inspect the files.");
+  api.eventSink!({event: "progress", data: {message: "I will test the changes. <img src=x>"}});
+  await flushStreaming();
+  expect(content().textContent).toBe("I will test the changes. <img src=x>");
+  expect(content().querySelector("img")).toBeNull();
+  api.eventSink!({event: "delta", data: {content: "Verified answer"}});
+  await flushStreaming();
+  expect(content().textContent?.trim()).toBe("Verified answer");
+  pending.resolve({answer: "Verified answer", metadata, created: true}); await sending;
+  expect(content().textContent?.trim()).toBe("Verified answer");
+  expect(root.querySelectorAll(".message-assistant")).toHaveLength(1);
+});

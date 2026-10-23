@@ -10,7 +10,7 @@ use crate::{
         requires_confirmation, AuthorizationDecision, AuthorizationRequest, MissingAuthorizer,
         PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
     },
-    tools::{ToolAttachment, ToolRegistry},
+    tools::{ToolAttachment, ToolEffect, ToolRegistry},
 };
 
 #[derive(Serialize)]
@@ -335,6 +335,13 @@ impl Runtime {
                     let result = self.tools.execute_authorized(&tool_call, &authorization);
                     let (success, output) = match result {
                         Ok(result) => {
+                            for effect in result.effects {
+                                match effect {
+                                    ToolEffect::Progress(message) => {
+                                        on_tool_event(&ToolEvent::Progress { message })
+                                    }
+                                }
+                            }
                             let images = result
                                 .attachments
                                 .into_iter()

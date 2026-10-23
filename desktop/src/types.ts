@@ -46,7 +46,7 @@ export interface ConversationAskResult {
   usage?: ModelUsage | null;
 }
 
-export type ActivityKind = "status" | "toolCall" | "toolResult";
+export type ActivityKind = "status" | "toolCall" | "toolResult" | "progress";
 export type ActivityOutcome = "succeeded" | "failed" | "denied";
 
 export interface ActivityRecord {
@@ -112,6 +112,7 @@ export interface AuthorizationRequest {
 }
 
 export type ChatEvent =
+  | { event: "progress"; data: { message: string } }
   | { event: "responseReset" }
   | { event: "compaction"; data: { progress: CompactionProgress } }
   | { event: "contextStatus"; data: { status: ContextStatus } }
@@ -166,6 +167,7 @@ export interface DisplayMessage {
   createdAt: string | null;
   delivery: MessageDelivery;
   failureReason?: string;
+  progressMessage?: string;
   activity?: ActivityRecord[];
   activityDurationMs?: number | null;
 }

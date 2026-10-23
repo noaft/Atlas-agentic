@@ -128,7 +128,7 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   const content = document.createElement("div");
   content.className = "message-content";
   const renderedContent =
-    message.content || (message.delivery === "pending" ? "Thinking…" : "");
+    message.content || (message.delivery === "pending" ? message.progressMessage || "Thinking…" : "");
   if (message.role === "assistant" && message.content) {
     renderMarkdown(content, renderedContent);
   } else {
@@ -803,7 +803,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const followBottom = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 48;
     if (previous.messages !== state.messages) {
       if (message.content) renderMarkdown(content, message.content);
-      else content.textContent = "Thinking…";
+      else content.textContent = message.progressMessage || "Thinking…";
     }
     if (previous.toolActivity !== state.toolActivity) {
       const oldDisclosure = article.querySelector<HTMLDetailsElement>("[data-live-turn-activity]");

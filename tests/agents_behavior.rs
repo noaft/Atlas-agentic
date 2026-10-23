@@ -207,6 +207,7 @@ fn readme_documents_the_complete_default_toolset_and_permission_modes() {
     let readme = std::fs::read_to_string("README.md").unwrap();
     for tool_name in [
         "current_time",
+        "update_progress",
         "pwd",
         "ls",
         "read_file",

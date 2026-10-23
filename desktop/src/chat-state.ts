@@ -440,6 +440,7 @@ export class ChatStore {
         return {
           ...message,
           content: completedAssistant ? completed.answer : message.content,
+          progressMessage: completedAssistant ? undefined : message.progressMessage,
           delivery:
             message.delivery === "pending" ? ("saved" as const) : message.delivery,
           activity: completedAssistant
@@ -893,6 +894,15 @@ export class ChatStore {
     }
     if (event.event === "delta") {
       this.appendDelta(owner, event.data.content);
+      return;
+    }
+    if (event.event === "progress") {
+      const messages = [...state.messages];
+      const last = messages.at(-1);
+      if (last?.role === "assistant" && last.delivery === "pending") {
+        messages[messages.length - 1] = { ...last, content: "", progressMessage: event.data.message };
+        this.updateSession(owner, { messages });
+      }
       return;
     }
     if (event.event === "responseReset") {
