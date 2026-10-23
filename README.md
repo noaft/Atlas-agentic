@@ -144,7 +144,8 @@ The desktop app and CLI create a local backend log at startup, including when a
 request fails before conversation history can be saved. Logs contain UTC timestamps,
 request IDs, provider/model names, operation durations, tool names/outcomes, and
 sanitized errors. Response-derived validation details are omitted from parser
-errors. Logs do not record prompts, response bodies, tool arguments or output,
+errors; protocol errors retain safe failure reasons and parser line/column positions.
+Logs do not record prompts, response bodies, tool arguments or output,
 screenshots, or API keys.
 
 The default file is `logs/atlas.jsonl` inside the Atlas data directory:

@@ -164,6 +164,46 @@ fn private_options() -> OpenOptions {
     }
 }
 
+// Build diagnostics from a fixed vocabulary: Serde errors can quote private values.
+fn protocol_reason(detail: &str) -> String {
+    let detail = detail.trim();
+    let reason = match detail {
+        "response was empty" => "response was empty".to_string(),
+        "type must be the first field" => "type must be the first field".to_string(),
+        "tool_call needs tool" => "tool_call needs tool".to_string(),
+        _ if detail.starts_with("missing field ") => ["type", "content", "tool", "args"]
+            .into_iter()
+            .find(|field| detail.starts_with(&format!("missing field `{field}`")))
+            .map(|field| format!("missing required field `{field}`"))
+            .unwrap_or_else(|| "missing required protocol field".into()),
+        _ if detail.starts_with("unknown variant") => {
+            "unsupported response type; expected `final` or `tool_call`".into()
+        }
+        _ if detail.starts_with("invalid type:") => {
+            "incorrect JSON type for a protocol field".into()
+        }
+        _ if detail.starts_with("invalid value:") => "invalid protocol field value".into(),
+        _ if detail.starts_with("EOF while parsing") => "incomplete JSON".into(),
+        _ if detail.starts_with("expected value") => "expected a JSON value".into(),
+        _ if detail.starts_with("trailing characters") => "unexpected text after JSON".into(),
+        _ if detail.starts_with("key must be a string") => {
+            "JSON object keys must be strings".into()
+        }
+        _ => "invalid JSON or protocol structure".into(),
+    };
+    // Only retain numeric source positions, never text surrounding the offending value.
+    let position = detail
+        .rsplit_once(" at line ")
+        .and_then(|(_, position)| position.split_once(" column "))
+        .and_then(|(line, column)| {
+            Some((line.parse::<usize>().ok()?, column.parse::<usize>().ok()?))
+        });
+    match position {
+        Some((line, column)) => format!("{reason} at line {line} column {column}"),
+        None => reason,
+    }
+}
+
 fn sanitize_fields(value: &mut Value, secrets: &[String]) {
     match value {
         Value::String(text) => {
@@ -197,19 +237,27 @@ fn sanitize_fields(value: &mut Value, secrets: &[String]) {
                 } else {
                     if key == "error" {
                         if let Value::String(error) = value {
-                            for marker in [
-                                "invalid agent tool protocol:",
-                                "unknown variant",
-                                "unknown field",
-                                "invalid type:",
-                                "invalid value:",
-                            ] {
-                                if let Some(offset) = error.find(marker) {
-                                    *error = format!(
-                                        "{}{marker} [response validation details omitted]",
-                                        &error[..offset]
-                                    );
-                                    break;
+                            if let Some(detail) = error.strip_prefix("invalid agent tool protocol:")
+                            {
+                                *error = format!(
+                                    "invalid agent tool protocol: {}",
+                                    protocol_reason(detail)
+                                );
+                            } else {
+                                for marker in [
+                                    "invalid agent tool protocol:",
+                                    "unknown variant",
+                                    "unknown field",
+                                    "invalid type:",
+                                    "invalid value:",
+                                ] {
+                                    if let Some(offset) = error.find(marker) {
+                                        *error = format!(
+                                            "{}{marker} [response validation details omitted]",
+                                            &error[..offset]
+                                        );
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -428,6 +476,43 @@ mod tests {
         let text = fs::read_to_string(root.path().join("atlas.jsonl")).unwrap();
         assert!(!text.contains("private model response fragment"));
         assert!(text.contains("invalid agent tool protocol"));
+    }
+
+    #[test]
+    fn protocol_failures_keep_actionable_reasons_and_positions() {
+        for (response, reason) in [
+            ("", "response was empty"),
+            (
+                r#"{"content":"private response text","type":"final"}"#,
+                "type must be the first field",
+            ),
+            (r#"{"type":"final"}"#, "missing required field `content`"),
+            (
+                r#"{"type":"private response text"}"#,
+                "unsupported response type; expected `final` or `tool_call`",
+            ),
+            (
+                r#"{"type":"final","content":{"private":"response text"}}"#,
+                "incorrect JSON type for a protocol field",
+            ),
+            ("{", "incomplete JSON"),
+            ("private response text", "expected a JSON value"),
+            (r#"{"type":"tool_call","tool":" "}"#, "tool_call needs tool"),
+        ] {
+            let error =
+                crate::agent_output::AgentOutput::parse_tool_protocol(response).unwrap_err();
+            let mut fields = json!({"error": error});
+            sanitize_fields(&mut fields, &[]);
+            let detail = fields["error"].as_str().unwrap();
+            assert!(detail.contains(reason), "{response}: {detail}");
+            assert!(!detail.contains("private response text"));
+            if error.contains(" at line ") {
+                assert!(
+                    detail.contains(" at line "),
+                    "parser position lost: {detail}"
+                );
+            }
+        }
     }
 
     #[test]
