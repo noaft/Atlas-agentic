@@ -19,7 +19,6 @@ mod pwd;
 mod read_file;
 mod ripgrep;
 mod search_files;
-mod update_progress;
 mod workspace_path;
 
 pub use computer::{
@@ -47,7 +46,6 @@ pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;
 pub use ripgrep::RipgrepTool;
 pub use search_files::SearchFilesTool;
-pub use update_progress::UpdateProgressTool;
 
 use std::{any::Any, collections::HashMap};
 
@@ -65,12 +63,6 @@ pub struct ToolDefinition {
 pub struct ToolResult {
     pub message: String,
     pub attachments: Vec<ToolAttachment>,
-    pub effects: Vec<ToolEffect>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolEffect {
-    Progress(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,15 +75,6 @@ impl ToolResult {
         Self {
             message: message.into(),
             attachments: Vec::new(),
-            effects: Vec::new(),
-        }
-    }
-
-    pub fn with_progress(message: impl Into<String>) -> Self {
-        Self {
-            message: "Progress update shown. Continue the task.".into(),
-            attachments: Vec::new(),
-            effects: vec![ToolEffect::Progress(message.into())],
         }
     }
 
@@ -99,7 +82,6 @@ impl ToolResult {
         Self {
             message: message.into(),
             attachments: vec![ToolAttachment::Image(image)],
-            effects: Vec::new(),
         }
     }
 }
@@ -107,11 +89,6 @@ impl ToolResult {
 pub trait Tool {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
-    /// Opt in to display-only streaming of a string argument, bounded in characters.
-    /// This never authorizes execution or persists unvalidated text.
-    fn progress_preview_field(&self) -> Option<(&str, usize)> {
-        None
-    }
     fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
         Ok(ToolRisk::ReadOnly)
     }
@@ -223,7 +200,7 @@ impl ToolRegistry {
     pub fn execute(&self, output: &AgentOutput) -> Result<ToolResult, String> {
         match output {
             AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
-            AgentOutput::ToolCall { tool, args } => self
+            AgentOutput::ToolCall { tool, args, .. } => self
                 .tools
                 .get(tool)
                 .ok_or_else(|| format!("unknown tool: {tool}"))?
@@ -238,7 +215,7 @@ impl ToolRegistry {
     ) -> Result<ToolResult, String> {
         match output {
             AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
-            AgentOutput::ToolCall { tool, args } => {
+            AgentOutput::ToolCall { tool, args, .. } => {
                 if tool != &authorization.tool || args != &authorization.args {
                     return Err("tool call changed after authorization".to_string());
                 }
@@ -267,10 +244,6 @@ impl ToolRegistry {
             arguments: tool.summarize(args),
             context,
         })
-    }
-
-    pub fn progress_preview_field(&self, name: &str) -> Option<(&str, usize)> {
-        self.tools.get(name)?.progress_preview_field()
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

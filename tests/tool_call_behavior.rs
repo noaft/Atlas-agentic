@@ -1830,16 +1830,15 @@ fn incomplete_response_repair_respects_limits_and_never_retries_authentication_e
 
 #[test]
 fn progress_message_is_previewed_in_chunks_before_validation_and_cleared_on_invalid_calls() {
-    use atlas_agentic::tools::UpdateProgressTool;
     let model = ToolProtocolStreamingModel::new([
         vec![
-            r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Checking "#,
+            r#"{"type":"tool_call","message":"Checking "#,
             r#"files \uD83D"#,
-            r#"\uDE80"}}"#,
+            r#"\uDE80","tool":"pwd","args":{}}"#,
         ],
         vec![
-            r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Discard"#,
-            r#" this","extra":true}}"#,
+            r#"{"type":"tool_call","message":"Discard"#,
+            r#" this","tool":false,"args":{}}"#,
         ],
         vec![r#"{"type":"final","content":"Done"}"#],
     ]);
@@ -1847,7 +1846,7 @@ fn progress_message_is_previewed_in_chunks_before_validation_and_cleared_on_inva
         definition(),
         Box::new(model),
     ))]))
-    .with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
     let mut events = Vec::new();
     let mut answer_chunks = String::new();
     let answer = runtime
@@ -1890,13 +1889,12 @@ fn progress_message_is_previewed_in_chunks_before_validation_and_cleared_on_inva
 }
 
 #[test]
-fn progress_previews_are_bounded_opt_in_and_cleared_on_provider_errors() {
-    use atlas_agentic::tools::UpdateProgressTool;
+fn tool_call_messages_are_bounded_and_cleared_on_provider_errors() {
     for error in ["generation interrupted", "HTTP 401"] {
         let model = IncompleteResponseModel {
             responses: RefCell::new(VecDeque::from([
                 (
-                    r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Discard preview"#,
+                    r#"{"type":"tool_call","message":"Discard preview"#,
                     Some(error),
                 ),
                 (r#"{"type":"final","content":"Recovered"}"#, None),
@@ -1907,7 +1905,7 @@ fn progress_previews_are_bounded_opt_in_and_cleared_on_provider_errors() {
             definition(),
             Box::new(model),
         ))]))
-        .with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+        .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
         let mut events = Vec::new();
         let result = runtime.ask_stream_with_history_and_authorization(
             "work",
@@ -1931,7 +1929,7 @@ fn progress_previews_are_bounded_opt_in_and_cleared_on_provider_errors() {
             .any(|e| matches!(e, ToolEvent::Progress { .. } | ToolEvent::Started { .. })));
     }
     let oversized = format!(
-        r#"{{"type":"tool_call","tool":"update_progress","args":{{"message":"{}"}}}}"#,
+        r#"{{"type":"tool_call","message":"{}","tool":"pwd","args":{{}}}}"#,
         "🦀".repeat(1001)
     );
     let model = QueueModel::new([
@@ -1944,10 +1942,7 @@ fn progress_previews_are_bounded_opt_in_and_cleared_on_provider_errors() {
         definition(),
         Box::new(model),
     ))]))
-    .with_tools(ToolRegistry::new(vec![
-        Box::new(UpdateProgressTool::new()),
-        Box::new(PwdTool::new(".")),
-    ]));
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
     let mut previews = Vec::new();
     runtime
         .ask_stream_with_history_and_authorization(

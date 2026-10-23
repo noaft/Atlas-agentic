@@ -1098,20 +1098,20 @@ fn failed_overall_turn_discards_collected_activity() {
 
 #[test]
 fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
-    use atlas_agentic::{conversations::ActivityKind, tools::UpdateProgressTool};
+    use atlas_agentic::conversations::ActivityKind;
     let temp = tempfile::tempdir().unwrap();
     let store = ConversationStore::at(temp.path().join("data"));
     let (runtime, requests) = runtime(
         &store,
         vec![
             Response::success(vec![
-                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Unvalidated preview"#,
+                r#"{"type":"tool_call","message":"Unvalidated preview"#,
             ]),
             Response::success(vec![
-                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will inspect the files."}}"#,
+                r#"{"type":"tool_call","message":"I will inspect the files.","tool":"pwd","args":{}}"#,
             ]),
             Response::success(vec![
-                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will run the tests next."}}"#,
+                r#"{"type":"tool_call","message":"I will run the tests next.","tool":"pwd","args":{}}"#,
             ]),
             Response::success(vec![
                 r#"{"type":"final","content":"Finished and verified."}"#,
@@ -1122,7 +1122,7 @@ fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
         ],
         Ok("Progress task"),
     );
-    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
     let service = ConversationService::new(&runtime, &store, 40);
     let result = service.ask("do work", None, &mut |_| {}).unwrap();
     let saved = store.load(&result.metadata.id).unwrap();
@@ -1158,7 +1158,6 @@ fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
 
 #[test]
 fn failed_turn_does_not_persist_progress_as_chat_or_activity() {
-    use atlas_agentic::tools::UpdateProgressTool;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("data");
     let store = ConversationStore::at(root.clone());
@@ -1166,13 +1165,13 @@ fn failed_turn_does_not_persist_progress_as_chat_or_activity() {
         &store,
         vec![
             Response::success(vec![
-                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will inspect the files."}}"#,
+                r#"{"type":"tool_call","message":"I will inspect the files.","tool":"pwd","args":{}}"#,
             ]),
             Response::failure(),
         ],
         Ok("unused"),
     );
-    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    let runtime = runtime.with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
     let error = ConversationService::new(&runtime, &store, 40)
         .ask("do work", None, &mut |_| {})
         .unwrap_err();

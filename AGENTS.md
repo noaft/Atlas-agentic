@@ -53,7 +53,6 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 
 The built-in runtime tools are:
 
-- `update_progress`: show a concise current/next-step message without ending the task
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
@@ -231,22 +230,23 @@ is manual, with no CLI restore command.
 `ConversationService` coordinates the store and runtime. Save only successful
 user/final-assistant pairs to ordinary message history.
 
-`update_progress` returns a typed tool effect consumed by the runtime, emits a
-`progress` event, and continues the same tool loop. Show only the latest progress
-in the owning session's pending assistant bubble; streamed/final answer text takes
-its place. Keep progress separate from answer deltas and ignore late callbacks.
-Tools explicitly opt into bounded display-only string previews through
-`progress_preview_field`; only the progress tool currently opts in. Runtime
-emits cumulative `progressPreview` events while receiving that argument, then
-clears the preview on every model-call exit. Do not execute or persist previews;
-only validated tool execution emits committed `Progress`. Keep previews separate
-from the last committed update in the desktop so rejection restores that update.
-Never stream ordinary tool arguments or raw protocol JSON into the chat bubble.
-Save progress as activity records on successful turns and include it in existing
-bounded future-turn context/compaction, explicitly labeled as progress rather than
-completed work. Never turn progress into separate ordinary chat messages or add
-its text to diagnostic logs. The CLI sends progress to stderr. Tool effects are
-separate from image attachments; do not broaden native/frontend permissions.
+Ordinary `tool_call` responses may include an optional top-level `message` string
+of 1–1000 Unicode characters after trimming. Runtime-injected protocol instructions
+explain this field; the agent prompt guides when to provide next-step updates.
+Place it after `type`, before `tool` and `args`, for early streaming. No separate
+progress tool or model call is needed. Runtime emits transient cumulative
+`progressPreview` events and clears them on every model-call exit. Never execute
+or persist previews, expose ordinary arguments as commentary, or add message text
+to diagnostic logs. Only complete protocol-valid messages on recognized tool
+requests with a valid authorization context emit committed `Progress` events,
+before any required user approval or execution. These messages express intent,
+not approval or successful completion. Existing tool calls without a message stay
+valid. Keep preview text separate from the last committed update in each owning
+session; rejection restores that update, and streamed/final answer text replaces
+it. Ignore late callbacks. Save committed updates as activity only on successful
+turns, include them in bounded future context/compaction as progress rather than
+completed work, and never create separate ordinary chat messages. Preserve legacy
+saved progress records. The CLI sends committed updates to stderr.
 
 Save sanitized, bounded runtime status and tool activity from successful turns in
 the separate sidecar; failed overall turns save neither. Never persist screenshot pixels, image data,

@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+pub(crate) const TOOL_MESSAGE_LIMIT: usize = 1_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentOutput {
     Final {
@@ -7,6 +9,7 @@ pub enum AgentOutput {
     },
     ToolCall {
         tool: String,
+        message: Option<String>,
         args: serde_json::Value,
     },
 }
@@ -59,6 +62,7 @@ enum RawAgentOutput {
     #[serde(rename = "tool_call")]
     ToolCall {
         tool: String,
+        message: Option<String>,
         #[serde(default)]
         args: serde_json::Value,
     },
@@ -68,11 +72,29 @@ impl RawAgentOutput {
     fn into_agent_output(self) -> Result<AgentOutput, String> {
         match self {
             Self::Final { content } => Ok(AgentOutput::Final { content }),
-            Self::ToolCall { tool, args } => {
+            Self::ToolCall {
+                tool,
+                args,
+                message,
+            } => {
                 if tool.trim().is_empty() {
                     Err("tool_call needs tool".to_string())
                 } else {
-                    Ok(AgentOutput::ToolCall { tool, args })
+                    let message = match message {
+                        Some(message) => {
+                            let message = message.trim();
+                            if message.is_empty() || message.chars().count() > TOOL_MESSAGE_LIMIT {
+                                return Err(format!("tool_call message must contain 1 to {TOOL_MESSAGE_LIMIT} characters"));
+                            }
+                            Some(message.to_string())
+                        }
+                        None => None,
+                    };
+                    Ok(AgentOutput::ToolCall {
+                        tool,
+                        args,
+                        message,
+                    })
                 }
             }
         }

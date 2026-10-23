@@ -111,7 +111,6 @@ Built-in tools:
 
 | Purpose | Tools |
 | --- | --- |
-| Explain ongoing work | `update_progress` |
 | Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
 | Manage files | `create_file`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
 | Open and execute | `open_file`, `open_application`, `exec_command` |
@@ -139,21 +138,23 @@ or use the CLI command above. **Send always sends ordinary chat text**, includin
 literal `/compact`; selecting the task runs compaction. Recent exchanges remain
 intact. Deleted conversations move to local trash for manual recovery.
 
-For tasks with multiple steps, Atlas can call `update_progress` to explain its
-next concrete action and its purpose. The default agent and tool instructions
-ask for an update before multi-step work and when the next meaningful step changes,
-in the user's language. Simple direct answers need no update. This remains a model
-instruction, rather than a runtime guarantee. The desktop hides the automatic
-"Preparing answer" label and shows the latest update in the existing
-assistant bubble as the progress tool's message arrives, then replaces it with the
-final answer. The streamed text is a temporary preview: only the completed,
-validated call becomes a saved progress update. Interrupted or invalid previews
-are cleared. Other tool arguments are never streamed into the chat bubble.
-Successful turns keep validated updates in their activity JSONL and collapsed
-Activity details; later turns
-in the same chat receive them through the existing bounded activity context and
-compaction path. Updates describe plans or progress, not proof that work finished.
-The CLI writes progress to stderr and the final answer to stdout.
+For tasks with multiple steps, Atlas includes a brief user-facing message with
+its next tool request to explain the action and its purpose. This uses an optional
+top-level `message` on the ordinary `tool_call` response, without a separate
+progress tool or model round trip. The default agent asks for these updates before
+multi-step work and when the next meaningful step changes, in the user's language.
+Simple direct answers need no update; model compliance is not enforced.
+The desktop streams the message in the existing assistant bubble and the final
+answer replaces it. Invalid or interrupted previews are cleared. Ordinary tool
+arguments are never shown as commentary. Only complete, validated messages on
+valid tool requests become committed updates before tool approval or execution.
+A message describes intent, not proof that the tool succeeded or that the user
+approved execution.
+Successful turns save updates in activity JSONL and collapsed Activity details;
+later turns receive them through the existing bounded context and compaction
+path. Failed turns save neither chat messages nor activity. The automatic
+"Preparing answer" label stays hidden. The CLI writes committed updates to stderr
+and the final answer to stdout.
 
 When a chat response does not match Atlas's tool protocol, the runtime sends the
 validation error and invalid reply back to the model and keeps repairing within

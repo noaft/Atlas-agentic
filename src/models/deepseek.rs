@@ -753,6 +753,8 @@ mod tests {
         assert!(prompt.contains("type field must be the first field"));
         assert!(prompt.contains(r#"{"type":"final","content":"your answer"}"#));
         assert!(prompt.contains(r#"{"type":"tool_call","tool":"tool_name","args":{}}"#));
+        assert!(prompt.contains("optional top-level message"));
+        assert!(prompt.contains(r#""type":"tool_call","message":"I will inspect"#));
         assert!(prompt.contains("Use a tool name exactly as listed below"));
         assert!(prompt.contains("create_file"));
     }

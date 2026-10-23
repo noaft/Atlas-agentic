@@ -22,6 +22,8 @@ pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
     prompt.push_str("\n{\"type\":\"final\",\"content\":\"your answer\"}");
     prompt.push_str("\nIf a tool is needed, use only this format:");
     prompt.push_str("\n{\"type\":\"tool_call\",\"tool\":\"tool_name\",\"args\":{}}");
+    prompt.push_str("\nA tool_call may also include an optional top-level message for the user. Put message immediately after type so it can stream before tool and args. It must be a non-empty string of at most 1000 characters, describing the next action and its purpose. It is commentary, not a final answer, and does not execute a separate tool.");
+    prompt.push_str("\n{\"type\":\"tool_call\",\"message\":\"I will inspect the files first to understand the project.\",\"tool\":\"tool_name\",\"args\":{}}");
     prompt.push_str(
         "\nUse a tool name exactly as listed below. Put all tool parameters inside args.",
     );

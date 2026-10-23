@@ -10,7 +10,7 @@ use crate::{
         requires_confirmation, AuthorizationDecision, AuthorizationRequest, MissingAuthorizer,
         PermissionMode, RuntimeStatus, ToolAuthorizer, ToolEvent,
     },
-    tools::{ToolAttachment, ToolEffect, ToolRegistry},
+    tools::{ToolAttachment, ToolRegistry},
 };
 
 #[derive(Serialize)]
@@ -203,7 +203,7 @@ impl Runtime {
                 },
                 &mut |delta| {
                     final_stream.push(delta, on_delta);
-                    final_stream.preview_progress(&self.tools, on_tool_event);
+                    final_stream.preview_progress(on_tool_event);
                 },
             );
             // A preview is never a committed progress record. Clear it on every exit,
@@ -264,7 +264,11 @@ impl Runtime {
                     final_stream.finish(&content, on_delta)?;
                     return Ok(content);
                 }
-                AgentOutput::ToolCall { tool, args } => {
+                AgentOutput::ToolCall {
+                    tool,
+                    args,
+                    message,
+                } => {
                     if let Some(max_tool_calls) = max_tool_calls {
                         if tool_results.len() >= max_tool_calls {
                             return Err(format!(
@@ -301,6 +305,9 @@ impl Runtime {
                             continue;
                         }
                     };
+                    if let Some(message) = message {
+                        on_tool_event(&ToolEvent::Progress { message });
+                    }
                     let risk = authorization.risk();
                     if requires_confirmation(permission_mode, risk) {
                         let request = AuthorizationRequest::new(
@@ -339,6 +346,7 @@ impl Runtime {
                         tool: tool.clone(),
                     });
                     let tool_call = AgentOutput::ToolCall {
+                        message: None,
                         tool: tool.clone(),
                         args: args.clone(),
                     };
@@ -351,13 +359,6 @@ impl Runtime {
                     let result = self.tools.execute_authorized(&tool_call, &authorization);
                     let (success, output) = match result {
                         Ok(result) => {
-                            for effect in result.effects {
-                                match effect {
-                                    ToolEffect::Progress(message) => {
-                                        on_tool_event(&ToolEvent::Progress { message })
-                                    }
-                                }
-                            }
                             let images = result
                                 .attachments
                                 .into_iter()
@@ -498,8 +499,8 @@ impl FinalContentStream {
         }
     }
 
-    fn preview_progress(&mut self, tools: &ToolRegistry, events: &mut dyn FnMut(&ToolEvent)) {
-        let Some(message) = partial_progress_content(&self.response, tools) else {
+    fn preview_progress(&mut self, events: &mut dyn FnMut(&ToolEvent)) {
+        let Some(message) = partial_progress_content(&self.response) else {
             return;
         };
         if self.progress_preview.as_ref() != Some(&message) {
@@ -522,19 +523,21 @@ impl FinalContentStream {
     }
 }
 
-fn partial_progress_content(response: &str, tools: &ToolRegistry) -> Option<String> {
+fn partial_progress_content(response: &str) -> Option<String> {
     if first_top_level_key(response)?.decoded != "type" {
         return None;
     }
     let kind = find_top_level_string_field(response, "type")?;
-    let tool = find_top_level_string_field(response, "tool")?;
-    if !kind.complete || kind.decoded != "tool_call" || !tool.complete {
+    if !kind.complete || kind.decoded != "tool_call" {
         return None;
     }
-    let (field, limit) = tools.progress_preview_field(&tool.decoded)?;
-    let args = find_top_level_value(response, "args")?;
-    let message = find_top_level_string_field(args, field)?.decoded;
-    Some(message.chars().take(limit).collect())
+    let message = find_top_level_string_field(response, "message")?.decoded;
+    Some(
+        message
+            .chars()
+            .take(crate::agent_output::TOOL_MESSAGE_LIMIT)
+            .collect(),
+    )
 }
 
 fn partial_final_content(response: &str) -> Option<String> {

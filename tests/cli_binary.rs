@@ -475,6 +475,12 @@ fn cli_recovers_empty_deepseek_stream_after_a_command_without_running_it_twice()
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("Hello from Atlas"));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr)
+            .matches("Progress: I will run the command once.")
+            .count(),
+        1
+    );
     let content = std::fs::read_to_string(fixture.workspace.path().join("counter.txt")).unwrap();
     assert_eq!(content.lines().count(), 1);
     let _first = server.request();
@@ -517,6 +523,7 @@ fn cli_recovers_empty_deepseek_stream_after_a_command_without_running_it_twice()
     assert!(events
         .iter()
         .any(|e| e["event"] == "operation.succeeded" && e["fields"]["operation"] == "cli.command"));
+    assert!(!log.contains("I will run the command once."));
     assert!(!log.contains("counter.txt"));
     assert!(!log.contains("fake_key_for_test"));
 }
@@ -781,7 +788,7 @@ impl FakeDeepSeek {
                 let streamed_content = if last_user_content == "malformed streamed reply" {
                     r#"{"type":"final","content":"Discard me""#.to_string()
                 } else if last_user_content == "recover incomplete generation" {
-                    r#"{"type":"tool_call","tool":"exec_command","args":{"command":"echo marker >> counter.txt"}}"#.to_string()
+                    r#"{"type":"tool_call","message":"I will run the command once.","tool":"exec_command","args":{"command":"echo marker >> counter.txt"}}"#.to_string()
                 } else if last_user_content == "report workspace" {
                     r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
                 } else if last_user_content == "create approved file" {

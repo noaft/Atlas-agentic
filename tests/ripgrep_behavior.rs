@@ -293,6 +293,7 @@ fn rejects_a_root_retargeted_after_authorization() {
     let error = registry
         .execute_authorized(
             &AgentOutput::ToolCall {
+                message: None,
                 tool: "ripgrep".to_string(),
                 args,
             },
