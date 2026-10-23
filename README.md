@@ -155,6 +155,11 @@ later turns receive them through the existing bounded context and compaction
 path. Failed turns save neither chat messages nor activity. The automatic
 "Preparing answer" label stays hidden. The CLI writes committed updates to stderr
 and the final answer to stdout.
+During a request, the desktop shows only the latest requested tool in one compact
+row beneath the assistant message. The row updates as that call waits for approval,
+runs, completes, fails, or is denied; expand it to inspect that call's details.
+Each new call replaces the previous row. After completion, the live row disappears
+and the complete saved record remains in the collapsed Activity view.
 
 When a chat response does not match Atlas's tool protocol, the runtime sends the
 validation error and invalid reply back to the model and keeps repairing within

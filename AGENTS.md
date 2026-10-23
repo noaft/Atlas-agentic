@@ -248,6 +248,15 @@ turns, include them in bounded future context/compaction as progress rather than
 completed work, and never create separate ordinary chat messages. Preserve legacy
 saved progress records. The CLI sends committed updates to stderr.
 
+During desktop requests, show one current tool row below the pending assistant
+message, using the newest requested tool rather than the most recently received
+event. Older call results must not replace it. Keep status and expandable details
+on that row, preserve its expansion across updates to the same session/call, and
+collapse details when the call changes. Runtime statuses do not create tool rows.
+Do not duplicate live activity in notices or render a growing live timeline. Keep
+all session activity and saved records intact; the final answer replaces the live
+row and retains the complete collapsed Activity disclosure.
+
 Save sanitized, bounded runtime status and tool activity from successful turns in
 the separate sidecar; failed overall turns save neither. Never persist screenshot pixels, image data,
 or tool attachments. New activity batches also store elapsed runtime/model work

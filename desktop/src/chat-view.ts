@@ -105,17 +105,41 @@ function renderActivity(
   return details;
 }
 
-function renderLiveActivity(records: ToolActivity[]): HTMLDetailsElement {
-  const details = renderActivity(
-    records.map((record) => ({
-      summary: record.summary,
-      arguments: record.arguments,
-      details: record.details,
-      outcome: record.status === "status" ? null : record.status,
-    })),
-  );
-  details.dataset.liveTurnActivity = "";
-  details.setAttribute("aria-label", "Current Atlas activity");
+function renderCurrentTool(
+  records: ToolActivity[],
+  sessionId: string,
+  previous: HTMLDetailsElement | null,
+): HTMLDetailsElement | null {
+  let current: ToolActivity | undefined;
+  for (let index = records.length - 1; index >= 0; index--) {
+    if (records[index].kind === "tool") {
+      current = records[index];
+      break;
+    }
+  }
+  if (!current) return null;
+  const details = renderActivity([{
+    summary: current.summary, arguments: current.arguments,
+    details: current.details, outcome: current.status,
+  }]);
+  delete details.dataset.activity;
+  details.classList.add("current-tool");
+  details.dataset.currentTool = current.id;
+  details.dataset.sessionId = sessionId;
+  details.dataset.toolStatus = current.status;
+  details.setAttribute("aria-label", "Current tool call");
+  const labels: Record<ToolActivity["status"], string> = {
+    requested: "Waiting to run", waiting: "Waiting for approval", running: "Running",
+    succeeded: "Completed", failed: "Failed", denied: "Denied", status: "Waiting to run",
+  };
+  const name = document.createElement("code");
+  name.textContent = current.tool;
+  const status = document.createElement("span");
+  status.setAttribute("role", "status");
+  status.textContent = labels[current.status];
+  details.querySelector("summary")!.replaceChildren(name, " · ", status);
+  details.open = previous?.dataset.sessionId === sessionId &&
+    previous.dataset.currentTool === current.id && previous.open;
   return details;
 }
 
@@ -386,6 +410,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const focusedPickerLabel = document.activeElement?.closest(".composer-picker")
       ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
     const oldMemoryDisclosure = messages.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]");
+    const oldCurrentTool = messages.querySelector<HTMLDetailsElement>("[data-current-tool]");
     const focusedMemoryElement = oldMemoryDisclosure?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
@@ -579,19 +604,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       notices.append(status);
 
     }
-    if (state.toolActivity.length) {
-      const tools = document.createElement("div");
-      tools.className = "tool-activity";
-      tools.setAttribute("role", "status");
-      tools.dataset.liveActivity = "";
-      for (const activity of state.toolActivity) {
-        const row = document.createElement("span");
-        row.dataset.toolStatus = activity.status;
-        row.textContent = activity.summary;
-        tools.append(row);
-      }
-      notices.append(tools);
-    }
 
     messages.replaceChildren();
     if (state.messages.length === 0) {
@@ -627,9 +639,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
           message.role === "assistant" &&
           state.toolActivity.length
         ) {
-          rendered
-            .querySelector(".message-content")
-            ?.before(renderLiveActivity(state.toolActivity));
+          const current = renderCurrentTool(state.toolActivity, state.activeSessionId, oldCurrentTool);
+          if (current) rendered.append(current);
         }
         messages.append(rendered);
       });
@@ -807,27 +818,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       else content.textContent = message.progressPreview || message.progressMessage || "Thinking…";
     }
     if (previous.toolActivity !== state.toolActivity) {
-      const oldDisclosure = article.querySelector<HTMLDetailsElement>("[data-live-turn-activity]");
-      if (state.toolActivity.length) {
-        const disclosure = renderLiveActivity(state.toolActivity);
-        disclosure.open = oldDisclosure?.open ?? false;
-        if (oldDisclosure) oldDisclosure.replaceWith(disclosure);
-        else content.before(disclosure);
-      } else oldDisclosure?.remove();
-      notices.querySelector("[data-live-activity]")?.remove();
-      if (state.toolActivity.length) {
-        const activity = document.createElement("div");
-        activity.className = "tool-activity";
-        activity.dataset.liveActivity = "";
-        activity.setAttribute("role", "status");
-        for (const record of state.toolActivity) {
-          const row = document.createElement("span");
-          row.dataset.toolStatus = record.status;
-          row.textContent = record.summary;
-          activity.append(row);
-        }
-        notices.append(activity);
-      }
+      const oldCurrent = article.querySelector<HTMLDetailsElement>("[data-current-tool]");
+      const current = renderCurrentTool(state.toolActivity, state.activeSessionId, oldCurrent);
+      if (current) {
+        if (oldCurrent) oldCurrent.replaceWith(current);
+        else content.after(current);
+      } else oldCurrent?.remove();
     }
     if (followBottom) messages.scrollTop = messages.scrollHeight;
     return true;

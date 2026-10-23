@@ -5,6 +5,7 @@ import type { AtlasApi } from "./atlas-api";
 import { ChatStore } from "./chat-state";
 import { mountChat } from "./chat-view";
 import type {
+  ActivityRecord,
   ModelInfo,
   Conversation,
   ConversationAskResult,
@@ -355,7 +356,7 @@ test("saved assistant activity renders as an accessible expandable timeline", as
   expect(disclosure.getAttribute("aria-label")).toBe("Atlas activity");
 });
 
-test("live activity has a status region while approvals stay prominent", async () => {
+test("current tool has a status region while approvals stay prominent", async () => {
   const api = new ViewApi();
   const pending = deferred<ConversationAskResult>();
   api.askImpl = async () => pending.promise;
@@ -384,11 +385,10 @@ test("live activity has a status region while approvals stay prominent", async (
     },
   });
 
-  expect(root.querySelector("[data-live-activity][role='status']")?.textContent).toContain(
-    "Thinking",
-  );
+  expect(root.querySelector("[data-current-tool] [role='status']")?.textContent).toBe("Waiting for approval");
+  expect(root.querySelector("[data-live-activity]")).toBeNull();
   const waitingDisclosure = root.querySelector<HTMLElement>(
-    "[data-live-turn-activity]",
+    "[data-current-tool]",
   );
   expect(waitingDisclosure?.textContent).toContain("Waiting");
   expect(waitingDisclosure?.querySelector("pre")?.textContent).toContain(
@@ -413,9 +413,9 @@ test("live activity has a status region while approvals stay prominent", async (
   });
   await flushStreaming();
   const finishedDisclosure = root.querySelector<HTMLElement>(
-    "[data-live-turn-activity]",
+    "[data-current-tool]",
   );
-  expect(finishedDisclosure?.textContent).toContain("Succeeded");
+  expect(finishedDisclosure?.querySelector("summary")?.textContent).toContain("Completed");
   expect(finishedDisclosure?.textContent).toContain("Found 3 matches");
   pending.resolve({ answer: "done", metadata, created: true, activities: [] });
   await sending;
@@ -1937,4 +1937,57 @@ test("streamed progress previews update the bubble and can be discarded before f
   api.eventSink!({event: "progressPreview", data: {message: "stale"}});
   expect(store.getState().messages.at(-1)?.progressPreview).toBeUndefined();
   expect(content().textContent?.trim()).toBe("Done");
+});
+
+
+test("long tool runs show one current call and retain complete collapsed saved history", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const {root, store} = setup(api);
+  await store.initialize();
+  store.setDraft("many tools"); const sending = store.send();
+  api.eventSink!({event: "runtimeStatus", data: {status: "thinking"}});
+  await flushStreaming();
+  expect(root.querySelector("[data-current-tool]")).toBeNull();
+  for (let sequence = 0; sequence < 200; sequence++) {
+    api.eventSink!({event: "toolRequested", data: {sequence, tool: `tool_${sequence}`, arguments: "{}"}});
+  }
+  api.eventSink!({event: "toolStarted", data: {sequence: 199, tool: "tool_199"}});
+  await flushStreaming();
+  const current = () => root.querySelector<HTMLDetailsElement>("[data-current-tool]")!;
+  expect(root.querySelectorAll("[data-current-tool]")).toHaveLength(1);
+  expect(root.querySelector("[data-live-activity]")).toBeNull();
+  expect(current().querySelector("summary")?.textContent).toContain("tool_199");
+  expect(current().querySelector("summary")?.textContent).toContain("Running");
+  expect(current().querySelectorAll(".activity-row")).toHaveLength(1);
+  expect(current().textContent).not.toContain("tool_198");
+  expect(current().open).toBe(false);
+  const content = root.querySelector(".message-assistant .message-content")!;
+  expect([...content.parentElement!.children].indexOf(current())).toBeGreaterThan([...content.parentElement!.children].indexOf(content));
+  current().open = true;
+  api.eventSink!({event: "toolFinished", data: {sequence: 198, tool: "tool_198", success: true, summary: "Old completed", details: "old output"}});
+  await flushStreaming();
+  expect(current().querySelector("summary")?.textContent).toContain("tool_199");
+  expect(current().open).toBe(true);
+  store.setDraft("keep my draft");
+  expect(current().open).toBe(true);
+  api.eventSink!({event: "toolFinished", data: {sequence: 199, tool: "tool_199", success: false, summary: "Current failed", details: "current error"}});
+  await flushStreaming();
+  expect(current().querySelector("summary")?.textContent).toContain("Failed");
+  expect(current().textContent).toContain("current error");
+  expect(current().open).toBe(true);
+  api.eventSink!({event: "toolRequested", data: {sequence: 200, tool: "next_tool", arguments: "{}"}});
+  await flushStreaming();
+  expect(current().querySelector("summary")?.textContent).toContain("next_tool");
+  expect(current().open).toBe(false);
+  const activities: ActivityRecord[] = Array.from({length: 201}, (_, sequence) => ({
+    sequence, kind: "toolResult", tool: `tool_${sequence}`, arguments: "{}", outcome: "succeeded", summary: `Saved call ${sequence}`, details: null, createdAt: metadata.updatedAt,
+  }));
+  pending.resolve({answer: "Done", metadata, created: true, activities}); await sending;
+  expect(root.querySelector("[data-current-tool]")).toBeNull();
+  const history = root.querySelector<HTMLDetailsElement>(".message-assistant [data-activity]")!;
+  expect(history.open).toBe(false);
+  expect(history.querySelectorAll(".activity-row")).toHaveLength(201);
+  expect(store.getState().messages.at(-1)?.activity).toHaveLength(201);
 });

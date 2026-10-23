@@ -221,9 +221,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .approval-card p { margin: 0; color: var(--muted); }
 .approval-card code { padding: 7px 9px; overflow-wrap: anywhere; border-radius: 7px; background: rgba(255,255,255,.7); font-size: 11px; }
 .approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.tool-activity { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px clamp(18px, 4vw, 64px) 0; color: var(--muted); font-size: 11px; }
-.tool-activity span { padding: 4px 7px; border-radius: 999px; background: var(--sky); }
-.tool-activity [data-tool-status="failed"] { background: var(--rose); color: #8d4358; }
 
 .messages { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 36px clamp(18px, 4vw, 64px); scroll-behavior: smooth; }
 
@@ -283,6 +280,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .activity-disclosure { max-width: 100%; min-width: 0; margin: 0 0 10px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .activity-disclosure summary { padding: 0; cursor: pointer; color: #5e5870; font-weight: 700; }
+.current-tool { width: fit-content; max-width: 100%; margin: 12px 0 0; padding: 7px 10px; border: 1px solid #ded8e7; border-radius: 9px; background: var(--sky); }
+.current-tool summary { overflow-wrap: anywhere; font-size: 11px; }
+.current-tool summary code { color: var(--ink); }
+.current-tool summary [role="status"] { font-weight: 500; }
+.current-tool[data-tool-status="failed"], .current-tool[data-tool-status="denied"] { background: var(--rose); border-color: #ebbdc9; }
+.current-tool .activity-timeline { max-height: 240px; overflow: auto; }
 .activity-timeline { display: grid; gap: 8px; padding: 8px 0 0; }
 .activity-row { min-width: 0; padding: 8px; border-left: 3px solid #b8a8d5; border-radius: 6px; background: rgba(255, 255, 255, .58); }
 .activity-row[data-activity-outcome="succeeded"] { border-left-color: #63957d; }
