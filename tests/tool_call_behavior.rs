@@ -1827,3 +1827,144 @@ fn incomplete_response_repair_respects_limits_and_never_retries_authentication_e
         );
     }
 }
+
+#[test]
+fn progress_message_is_previewed_in_chunks_before_validation_and_cleared_on_invalid_calls() {
+    use atlas_agentic::tools::UpdateProgressTool;
+    let model = ToolProtocolStreamingModel::new([
+        vec![
+            r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Checking "#,
+            r#"files \uD83D"#,
+            r#"\uDE80"}}"#,
+        ],
+        vec![
+            r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Discard"#,
+            r#" this","extra":true}}"#,
+        ],
+        vec![r#"{"type":"final","content":"Done"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+    let mut events = Vec::new();
+    let mut answer_chunks = String::new();
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "work",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |delta| answer_chunks.push_str(delta),
+            &mut |event| events.push(serde_json::to_value(event).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(answer, "Done");
+    assert_eq!(answer_chunks, "Done");
+    let previews: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "progressPreview")
+        .map(|e| e["data"]["message"].clone())
+        .collect();
+    assert_eq!(
+        previews,
+        vec![
+            serde_json::json!("Checking "),
+            serde_json::json!("Checking files 🚀"),
+            serde_json::Value::Null,
+            serde_json::json!("Discard"),
+            serde_json::json!("Discard this"),
+            serde_json::Value::Null
+        ]
+    );
+    let first_preview = events
+        .iter()
+        .position(|e| e["event"] == "progressPreview")
+        .unwrap();
+    let first_execution = events.iter().position(|e| e["event"] == "started").unwrap();
+    assert!(first_preview < first_execution);
+    let committed: Vec<_> = events.iter().filter(|e| e["event"] == "progress").collect();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0]["data"]["message"], "Checking files 🚀");
+}
+
+#[test]
+fn progress_previews_are_bounded_opt_in_and_cleared_on_provider_errors() {
+    use atlas_agentic::tools::UpdateProgressTool;
+    for error in ["generation interrupted", "HTTP 401"] {
+        let model = IncompleteResponseModel {
+            responses: RefCell::new(VecDeque::from([
+                (
+                    r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Discard preview"#,
+                    Some(error),
+                ),
+                (r#"{"type":"final","content":"Recovered"}"#, None),
+            ])),
+            requests: Rc::new(RefCell::new(Vec::new())),
+        };
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition(),
+            Box::new(model),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![Box::new(UpdateProgressTool::new())]));
+        let mut events = Vec::new();
+        let result = runtime.ask_stream_with_history_and_authorization(
+            "work",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        );
+        assert_eq!(result.is_ok(), error == "generation interrupted");
+        let previews: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ToolEvent::ProgressPreview { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(previews, vec![Some("Discard preview".into()), None]);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, ToolEvent::Progress { .. } | ToolEvent::Started { .. })));
+    }
+    let oversized = format!(
+        r#"{{"type":"tool_call","tool":"update_progress","args":{{"message":"{}"}}}}"#,
+        "🦀".repeat(1001)
+    );
+    let model = QueueModel::new([
+        r#"{"type":"tool_call","tool":"pwd","args":{"message":"hidden"}}"#.into(),
+        r#"{"type":"tool_call","tool":"unknown","args":{"message":"hidden"}}"#.into(),
+        oversized,
+        r#"{"type":"final","content":"Done"}"#.into(),
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![
+        Box::new(UpdateProgressTool::new()),
+        Box::new(PwdTool::new(".")),
+    ]));
+    let mut previews = Vec::new();
+    runtime
+        .ask_stream_with_history_and_authorization(
+            "work",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| {
+                if let ToolEvent::ProgressPreview {
+                    message: Some(message),
+                } = event
+                {
+                    previews.push(message.clone());
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(previews, vec!["🦀".repeat(1000)]);
+}

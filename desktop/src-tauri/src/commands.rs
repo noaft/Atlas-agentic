@@ -425,6 +425,9 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
+    ProgressPreview {
+        message: Option<String>,
+    },
     Progress {
         message: String,
     },
@@ -1173,6 +1176,9 @@ pub async fn ask(
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
+                    ToolEvent::ProgressPreview { message } => ChatEvent::ProgressPreview {
+                        message: message.clone(),
+                    },
                     ToolEvent::Progress { message } => ChatEvent::Progress {
                         message: message.clone(),
                     },
@@ -1376,6 +1382,19 @@ mod tests {
             .unwrap(),
             serde_json::json!({"event":"progress", "data":{"message":"Inspecting files"}})
         );
+    }
+
+    #[test]
+    fn progress_preview_event_has_the_frontend_contract() {
+        for message in [Some("Inspecting".to_string()), None] {
+            assert_eq!(
+                serde_json::to_value(ChatEvent::ProgressPreview {
+                    message: message.clone()
+                })
+                .unwrap(),
+                serde_json::json!({"event":"progressPreview", "data":{"message":message}})
+            );
+        }
     }
 
     #[test]

@@ -1105,6 +1105,9 @@ fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
         &store,
         vec![
             Response::success(vec![
+                r#"{"type":"tool_call","tool":"update_progress","args":{"message":"Unvalidated preview"#,
+            ]),
+            Response::success(vec![
                 r#"{"type":"tool_call","tool":"update_progress","args":{"message":"I will inspect the files."}}"#,
             ]),
             Response::success(vec![
@@ -1139,6 +1142,7 @@ fn progress_is_saved_as_activity_and_returned_to_later_model_context() {
             .join(format!("{}.jsonl", result.metadata.id)),
     )
     .unwrap();
+    assert!(!json.contains("Unvalidated preview"));
     assert!(json.contains("I will inspect the files."));
     service
         .ask("continue", Some(&result.metadata.id), &mut |_| {})

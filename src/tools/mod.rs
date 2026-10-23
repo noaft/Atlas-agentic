@@ -107,6 +107,11 @@ impl ToolResult {
 pub trait Tool {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
+    /// Opt in to display-only streaming of a string argument, bounded in characters.
+    /// This never authorizes execution or persists unvalidated text.
+    fn progress_preview_field(&self) -> Option<(&str, usize)> {
+        None
+    }
     fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
         Ok(ToolRisk::ReadOnly)
     }
@@ -262,6 +267,10 @@ impl ToolRegistry {
             arguments: tool.summarize(args),
             context,
         })
+    }
+
+    pub fn progress_preview_field(&self, name: &str) -> Option<(&str, usize)> {
+        self.tools.get(name)?.progress_preview_field()
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

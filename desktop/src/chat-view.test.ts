@@ -1908,3 +1908,33 @@ test("agent progress replaces the live message and final answer replaces progres
   expect(content().textContent?.trim()).toBe("Verified answer");
   expect(root.querySelectorAll(".message-assistant")).toHaveLength(1);
 });
+
+
+test("streamed progress previews update the bubble and can be discarded before final", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const {root, store} = setup(api);
+  await store.initialize();
+  store.setDraft("work"); const sending = store.send();
+  const content = () => root.querySelector(".message-assistant .message-content")!;
+  api.eventSink!({event: "progress", data: {message: "Previous update"}});
+  api.eventSink!({event: "progressPreview", data: {message: "I will inspect"}});
+  await flushStreaming();
+  expect(content().textContent).toBe("I will inspect");
+  api.eventSink!({event: "progressPreview", data: {message: "I will inspect files. <img src=x>"}});
+  await flushStreaming();
+  expect(content().textContent).toBe("I will inspect files. <img src=x>");
+  expect(content().querySelector("img")).toBeNull();
+  api.eventSink!({event: "progressPreview", data: {message: null}});
+  await flushStreaming();
+  expect(content().textContent).toBe("Previous update");
+  api.eventSink!({event: "progressPreview", data: {message: "Another step"}});
+  api.eventSink!({event: "delta", data: {content: "Done"}});
+  await flushStreaming();
+  expect(content().textContent?.trim()).toBe("Done");
+  pending.resolve({answer: "Done", metadata, created: true}); await sending;
+  api.eventSink!({event: "progressPreview", data: {message: "stale"}});
+  expect(store.getState().messages.at(-1)?.progressPreview).toBeUndefined();
+  expect(content().textContent?.trim()).toBe("Done");
+});

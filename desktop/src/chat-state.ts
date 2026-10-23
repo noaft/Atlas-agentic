@@ -441,6 +441,7 @@ export class ChatStore {
           ...message,
           content: completedAssistant ? completed.answer : message.content,
           progressMessage: completedAssistant ? undefined : message.progressMessage,
+          progressPreview: completedAssistant ? undefined : message.progressPreview,
           delivery:
             message.delivery === "pending" ? ("saved" as const) : message.delivery,
           activity: completedAssistant
@@ -473,6 +474,7 @@ export class ChatStore {
         messages: chat.state.messages.map((message) => ({
           ...message,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
+          progressPreview: undefined,
           failureReason: message.delivery === "pending" && message.role === "assistant"
             ? errorMessage(error)
             : message.failureReason,
@@ -896,11 +898,20 @@ export class ChatStore {
       this.appendDelta(owner, event.data.content);
       return;
     }
+    if (event.event === "progressPreview") {
+      const messages = [...state.messages];
+      const last = messages.at(-1);
+      if (last?.role === "assistant" && last.delivery === "pending") {
+        messages[messages.length - 1] = { ...last, progressPreview: event.data.message ?? undefined };
+        this.updateSession(owner, { messages });
+      }
+      return;
+    }
     if (event.event === "progress") {
       const messages = [...state.messages];
       const last = messages.at(-1);
       if (last?.role === "assistant" && last.delivery === "pending") {
-        messages[messages.length - 1] = { ...last, content: "", progressMessage: event.data.message };
+        messages[messages.length - 1] = { ...last, content: "", progressMessage: event.data.message, progressPreview: undefined };
         this.updateSession(owner, { messages });
       }
       return;

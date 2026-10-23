@@ -24,6 +24,10 @@ impl Tool for UpdateProgressTool {
         "update_progress"
     }
 
+    fn progress_preview_field(&self) -> Option<(&str, usize)> {
+        Some(("message", MESSAGE_LIMIT))
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().into(),

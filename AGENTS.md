@@ -235,6 +235,13 @@ user/final-assistant pairs to ordinary message history.
 `progress` event, and continues the same tool loop. Show only the latest progress
 in the owning session's pending assistant bubble; streamed/final answer text takes
 its place. Keep progress separate from answer deltas and ignore late callbacks.
+Tools explicitly opt into bounded display-only string previews through
+`progress_preview_field`; only the progress tool currently opts in. Runtime
+emits cumulative `progressPreview` events while receiving that argument, then
+clears the preview on every model-call exit. Do not execute or persist previews;
+only validated tool execution emits committed `Progress`. Keep previews separate
+from the last committed update in the desktop so rejection restores that update.
+Never stream ordinary tool arguments or raw protocol JSON into the chat bubble.
 Save progress as activity records on successful turns and include it in existing
 bounded future-turn context/compaction, explicitly labeled as progress rather than
 completed work. Never turn progress into separate ordinary chat messages or add

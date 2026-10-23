@@ -113,6 +113,7 @@ export interface AuthorizationRequest {
 
 export type ChatEvent =
   | { event: "progress"; data: { message: string } }
+  | { event: "progressPreview"; data: { message: string | null } }
   | { event: "responseReset" }
   | { event: "compaction"; data: { progress: CompactionProgress } }
   | { event: "contextStatus"; data: { status: ContextStatus } }
@@ -168,6 +169,7 @@ export interface DisplayMessage {
   delivery: MessageDelivery;
   failureReason?: string;
   progressMessage?: string;
+  progressPreview?: string;
   activity?: ActivityRecord[];
   activityDurationMs?: number | null;
 }

@@ -203,8 +203,14 @@ impl Runtime {
                 },
                 &mut |delta| {
                     final_stream.push(delta, on_delta);
+                    final_stream.preview_progress(&self.tools, on_tool_event);
                 },
             );
+            // A preview is never a committed progress record. Clear it on every exit,
+            // including provider errors, repair limits, denied calls and validation errors.
+            if final_stream.progress_preview.is_some() {
+                on_tool_event(&ToolEvent::ProgressPreview { message: None });
+            }
             let (response, response_error) = match response_result {
                 Ok(response) => {
                     latest_usage = response.usage.clone();
@@ -448,6 +454,7 @@ struct FinalContentStream {
     emitted_content: String,
     allow_plain_final: bool,
     streaming_plain: bool,
+    progress_preview: Option<String>,
 }
 
 impl FinalContentStream {
@@ -457,6 +464,7 @@ impl FinalContentStream {
             emitted_content: String::new(),
             allow_plain_final,
             streaming_plain: false,
+            progress_preview: None,
         }
     }
 
@@ -490,6 +498,18 @@ impl FinalContentStream {
         }
     }
 
+    fn preview_progress(&mut self, tools: &ToolRegistry, events: &mut dyn FnMut(&ToolEvent)) {
+        let Some(message) = partial_progress_content(&self.response, tools) else {
+            return;
+        };
+        if self.progress_preview.as_ref() != Some(&message) {
+            events(&ToolEvent::ProgressPreview {
+                message: Some(message.clone()),
+            });
+            self.progress_preview = Some(message);
+        }
+    }
+
     fn finish(&mut self, content: &str, on_delta: &mut dyn FnMut(&str)) -> Result<(), String> {
         let remaining = content.strip_prefix(&self.emitted_content).ok_or_else(|| {
             "streamed final content did not match the completed response".to_string()
@@ -500,6 +520,21 @@ impl FinalContentStream {
         }
         Ok(())
     }
+}
+
+fn partial_progress_content(response: &str, tools: &ToolRegistry) -> Option<String> {
+    if first_top_level_key(response)?.decoded != "type" {
+        return None;
+    }
+    let kind = find_top_level_string_field(response, "type")?;
+    let tool = find_top_level_string_field(response, "tool")?;
+    if !kind.complete || kind.decoded != "tool_call" || !tool.complete {
+        return None;
+    }
+    let (field, limit) = tools.progress_preview_field(&tool.decoded)?;
+    let args = find_top_level_value(response, "args")?;
+    let message = find_top_level_string_field(args, field)?.decoded;
+    Some(message.chars().take(limit).collect())
 }
 
 fn partial_final_content(response: &str) -> Option<String> {
@@ -534,6 +569,14 @@ struct PartialJsonString {
 }
 
 fn find_top_level_string_field(input: &str, target: &str) -> Option<PartialJsonString> {
+    let value = decode_json_string(find_top_level_value(input, target)?, 0)?;
+    Some(PartialJsonString {
+        decoded: value.decoded,
+        complete: value.complete,
+    })
+}
+
+fn find_top_level_value<'a>(input: &'a str, target: &str) -> Option<&'a str> {
     let bytes = input.as_bytes();
     let mut cursor = skip_whitespace(bytes, 0);
     if bytes.get(cursor) != Some(&b'{') {
@@ -562,11 +605,7 @@ fn find_top_level_string_field(input: &str, target: &str) -> Option<PartialJsonS
         cursor = skip_whitespace(bytes, cursor + 1);
 
         if key.decoded == target {
-            let value = decode_json_string(input, cursor)?;
-            return Some(PartialJsonString {
-                decoded: value.decoded,
-                complete: value.complete,
-            });
+            return Some(&input[cursor..]);
         }
 
         cursor = skip_json_value(bytes, cursor)?;

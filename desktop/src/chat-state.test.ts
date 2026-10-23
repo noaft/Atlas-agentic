@@ -1585,10 +1585,16 @@ test("progress updates belong to their running session and cannot alter a saved 
   const owner = store.getState().activeSessionId;
   store.setDraft("do work"); const sending = store.send();
   await store.newChat(); store.setDraft("keep my new draft");
+  api.eventSinks[0]({event: "progressPreview", data: {message: "Inspecting"}});
   api.eventSinks[0]({event: "progress", data: {message: "Inspecting files"}});
   expect(store.getState().draftText).toBe("keep my new draft");
   expect(store.getState().messages).toHaveLength(0);
   await store.selectSession(owner);
+  expect(store.getState().messages.at(-1)?.progressPreview).toBeUndefined();
+  api.eventSinks[0]({event: "progressPreview", data: {message: "Next step"}});
+  expect(store.getState().messages.at(-1)?.progressPreview).toBe("Next step");
+  api.eventSinks[0]({event: "progressPreview", data: {message: null}});
+  expect(store.getState().messages.at(-1)?.progressPreview).toBeUndefined();
   expect(store.getState().messages.at(-1)?.progressMessage).toBe("Inspecting files");
   api.eventSinks[0]({event: "responseReset"});
   expect(store.getState().messages.at(-1)?.progressMessage).toBe("Inspecting files");

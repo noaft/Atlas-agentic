@@ -145,8 +145,12 @@ ask for an update before multi-step work and when the next meaningful step chang
 in the user's language. Simple direct answers need no update. This remains a model
 instruction, rather than a runtime guarantee. The desktop hides the automatic
 "Preparing answer" label and shows the latest update in the existing
-assistant bubble, then replaces it with the final answer. Successful turns keep
-all updates in their activity JSONL and collapsed Activity details; later turns
+assistant bubble as the progress tool's message arrives, then replaces it with the
+final answer. The streamed text is a temporary preview: only the completed,
+validated call becomes a saved progress update. Interrupted or invalid previews
+are cleared. Other tool arguments are never streamed into the chat bubble.
+Successful turns keep validated updates in their activity JSONL and collapsed
+Activity details; later turns
 in the same chat receive them through the existing bounded activity context and
 compaction path. Updates describe plans or progress, not proof that work finished.
 The CLI writes progress to stderr and the final answer to stdout.
