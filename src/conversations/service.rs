@@ -292,7 +292,8 @@ impl<'a> ConversationService<'a> {
                     summary,
                     details.as_deref().unwrap_or_default(),
                 ),
-                ToolEvent::ApprovalRequested { .. }
+                ToolEvent::ResponseReset
+                | ToolEvent::ApprovalRequested { .. }
                 | ToolEvent::Started { .. }
                 | ToolEvent::Compaction { .. }
                 | ToolEvent::ContextStatus { .. } => {}

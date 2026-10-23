@@ -138,6 +138,19 @@ or use the CLI command above. **Send always sends ordinary chat text**, includin
 literal `/compact`; selecting the task runs compaction. Recent exchanges remain
 intact. Deleted conversations move to local trash for manual recovery.
 
+When a chat response does not match Atlas's tool protocol, the runtime sends the
+validation error and invalid reply back to the model and keeps repairing within
+the same request. Completed tool results stay available and are not re-executed
+by the repair loop. Only the latest invalid reply is included; repair envelopes
+do not nest or accumulate. Each retry still goes through normal context budgeting.
+The desktop clears any discarded partial answer before retrying; the CLI marks
+where a partial answer was discarded and restarts the answer on a new line.
+Protocol repair has no Atlas-imposed limit by default. To cap consecutive repairs,
+set a positive `max_protocol_repairs` in the agent TOML (for example,
+`max_protocol_repairs = 3`); a valid response resets that count. Provider, connection,
+and context-budget failures still fail the request. Backend logs record each
+repair as `protocol.repair`, with a sanitized reason and attempt number.
+
 ## Backend logs
 
 The desktop app and CLI create a local backend log at startup, including when a

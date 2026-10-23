@@ -307,8 +307,17 @@ failure leaves `Untitled conversation`. Continuing and manual rename never
 regenerate the title. The default agent prompt guides workspace inspection,
 command execution, verification, preservation of unrelated changes, and honest
 reporting of results and blockers. `max_tool_calls` is an optional positive
-per-turn agent limit; omit it for no Atlas-imposed limit. Tool schemas and
-protocol remain runtime-injected.
+per-turn agent limit; omit it for no Atlas-imposed limit. Tool schemas and protocol remain runtime-injected.
+Malformed tool-protocol replies go back to the model with the validation error,
+latest invalid reply, and a stable pending request. Continue repair by default;
+optional positive `max_protocol_repairs` caps consecutive repairs and resets after
+a valid reply. Never nest repair envelopes, lose prior tool results, or replay
+executed tools during repair. Prepare/budget context for every retry. Provider or
+context failures still propagate normally. Keep invalid reply bodies out of
+backend logs and ordinary conversation history; log sanitized `protocol.repair`
+metadata instead. If a malformed response already emitted text, send a
+`responseReset` event before retrying: clear only that session's pending assistant
+text in the desktop and explicitly mark the restarted answer in CLI output.
 
 Format and test the repository:
 

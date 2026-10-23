@@ -423,6 +423,12 @@ conversation_title_prompt = "Write a short conversation title."
     .unwrap()
 }
 
+fn definition_with_protocol_repair_limit(limit: usize) -> LocalAgentDefinition {
+    let mut definition = definition();
+    definition.max_protocol_repairs = Some(limit);
+    definition
+}
+
 fn definition_with_tool_call_limit(max_tool_calls: usize) -> LocalAgentDefinition {
     LocalAgentDefinition::from_toml(&format!(
         r#"
@@ -1290,7 +1296,7 @@ fn runtime_stream_rejects_invalid_tool_protocol_without_emitting_it() {
     ] {
         let workspace = tempfile::tempdir().unwrap();
         let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-            definition(),
+            definition_with_protocol_repair_limit(1),
             Box::new(InvalidProtocolModel { response }),
         ))]))
         .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new(
@@ -1305,6 +1311,191 @@ fn runtime_stream_rejects_invalid_tool_protocol_without_emitting_it() {
         assert!(error.starts_with("invalid agent tool protocol:"), "{error}");
         assert!(deltas.is_empty(), "leaked protocol: {deltas:?}");
     }
+}
+
+#[test]
+fn malformed_streamed_final_is_reset_before_repaired_answer() {
+    let visible = Rc::new(RefCell::new(String::new()));
+    let resets = Cell::new(0);
+    let model = ToolProtocolStreamingModel::new([
+        vec![r#"{"type":"final","content":"Discard me""#],
+        vec![r#"{"type":"final","content":"Recovered"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "request",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |delta| visible.borrow_mut().push_str(delta),
+            &mut |event| {
+                if serde_json::to_value(event).unwrap()["event"] == "responseReset" {
+                    visible.borrow_mut().clear();
+                    resets.set(resets.get() + 1);
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(visible.borrow().as_str(), answer);
+    assert_eq!(answer, "Recovered");
+    assert_eq!(resets.get(), 1);
+}
+
+#[test]
+fn runtime_keeps_repairing_protocol_errors_with_feedback_until_valid() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec!["plain response"],
+            vec![r#"{"type":"final"}"#],
+            vec![r#"{"content":"wrong field order","type":"final"}"#],
+            vec![r#"{"type":"final","content":"Recovered answer"}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+    let mut deltas = Vec::new();
+    let answer = runtime
+        .ask_stream("original request", &mut |delta| {
+            deltas.push(delta.to_owned())
+        })
+        .unwrap();
+    assert_eq!(answer, "Recovered answer");
+    assert_eq!(deltas, ["Recovered answer"]);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 4);
+    for (index, previous) in [
+        "plain response",
+        r#"{"type":"final"}"#,
+        r#"{"content":"wrong field order","type":"final"}"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let repair: serde_json::Value =
+            serde_json::from_str(&requests[index + 1].user_prompt).unwrap();
+        assert_eq!(repair["type"], "protocol_repair");
+        assert_eq!(repair["pending_request"], "original request");
+        assert_eq!(repair["invalid_response"], previous);
+        assert_eq!(repair["attempt"], index + 1);
+        assert_eq!(
+            repair["validation_error"],
+            AgentOutput::parse_tool_protocol(previous).unwrap_err()
+        );
+    }
+}
+
+#[test]
+fn repeated_protocol_repairs_preserve_tool_results_without_reexecuting_tools() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let executions = Rc::new(Cell::new(0));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+            vec!["bad response"],
+            vec!["still bad"],
+            vec![r#"{"type":"final","content":"Used saved tool result"}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(CountingTool {
+        executions: Rc::clone(&executions),
+    })]));
+    assert_eq!(
+        ask(&runtime, "inspect folder").unwrap(),
+        "Used saved tool result"
+    );
+    assert_eq!(executions.get(), 1);
+    let requests = requests.borrow();
+    for index in [2, 3] {
+        let repair: serde_json::Value = serde_json::from_str(&requests[index].user_prompt).unwrap();
+        assert_eq!(repair["pending_request"], requests[1].user_prompt);
+        let continuation: serde_json::Value =
+            serde_json::from_str(repair["pending_request"].as_str().unwrap()).unwrap();
+        assert_eq!(continuation["tool_results"][0]["output"], "counted");
+    }
+}
+
+#[test]
+fn protocol_repairs_still_stop_when_context_preparation_fails() {
+    use atlas_agentic::runtime::context::{
+        ContextPreparationRequest, PreparedContext, RuntimeContext,
+    };
+    struct BudgetContext {
+        calls: usize,
+    }
+    impl RuntimeContext for BudgetContext {
+        fn prepare(
+            &mut self,
+            _: &dyn atlas_agentic::agents::Agent,
+            _: ContextPreparationRequest<'_>,
+            _: &mut dyn FnMut(&ToolEvent),
+        ) -> Result<PreparedContext, String> {
+            self.calls += 1;
+            if self.calls == 3 {
+                return Err("context budget exceeded".into());
+            }
+            Ok(PreparedContext {
+                memory_blocks: vec![],
+                history: vec![],
+                activity_context: String::new(),
+                max_output_tokens: None,
+            })
+        }
+    }
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(InvalidProtocolModel {
+            response: "invalid response",
+        }),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+    let mut context = BudgetContext { calls: 0 };
+    let result = runtime.ask_stream_with_managed_context(
+        "original request",
+        &mut context,
+        PermissionMode::FullAccess,
+        atlas_agentic::RuntimeAskCallbacks {
+            authorizer: &AllowAllAuthorizer,
+            on_delta: &mut |_| {},
+            on_tool_event: &mut |_| {},
+        },
+    );
+    assert_eq!(result.unwrap_err(), "context budget exceeded");
+    assert_eq!(context.calls, 3);
+}
+
+#[test]
+fn explicit_repair_limit_resets_after_a_valid_tool_call() {
+    let executions = Rc::new(Cell::new(0));
+    let model = ToolProtocolStreamingModel::new([
+        vec!["invalid"],
+        vec![r#"{"type":"tool_call","tool":"pwd","args":{}}"#],
+        vec!["invalid again"],
+        vec![r#"{"type":"final","content":"Recovered"}"#],
+    ]);
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition_with_protocol_repair_limit(1),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(CountingTool {
+        executions: Rc::clone(&executions),
+    })]));
+    assert_eq!(ask(&runtime, "original request").unwrap(), "Recovered");
+    assert_eq!(executions.get(), 1);
 }
 
 #[test]
@@ -1386,11 +1577,11 @@ fn runtime_retries_one_empty_tool_response_and_preserves_the_pending_request() {
 }
 
 #[test]
-fn runtime_reports_a_second_consecutive_empty_tool_response() {
+fn runtime_respects_an_explicit_protocol_repair_limit() {
     let workspace = tempfile::tempdir().unwrap();
     let model = ToolProtocolStreamingModel::new([vec![""], vec![""]]);
     let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
-        definition(),
+        definition_with_protocol_repair_limit(1),
         Box::new(model),
     ))]))
     .with_tools(ToolRegistry::new(vec![Box::new(ReadFileTool::new(

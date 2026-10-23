@@ -895,6 +895,15 @@ export class ChatStore {
       this.appendDelta(owner, event.data.content);
       return;
     }
+    if (event.event === "responseReset") {
+      const messages = [...state.messages];
+      const last = messages.at(-1);
+      if (last?.role === "assistant" && last.delivery === "pending") {
+        messages[messages.length - 1] = { ...last, content: "" };
+        this.updateSession(owner, { messages });
+      }
+      return;
+    }
     if (event.event === "runtimeStatus") {
       this.updateSession(owner, {
         toolActivity: [

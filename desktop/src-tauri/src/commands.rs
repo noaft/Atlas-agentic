@@ -425,6 +425,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
+    ResponseReset,
     Compaction {
         progress: atlas_agentic::conversations::CompactionProgress,
     },
@@ -1169,6 +1170,7 @@ pub async fn ask(
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
+                    ToolEvent::ResponseReset => ChatEvent::ResponseReset,
                     ToolEvent::Compaction { progress } => ChatEvent::Compaction {
                         progress: progress.clone(),
                     },
@@ -1348,6 +1350,14 @@ mod tests {
             })
             .unwrap()["event"],
             "toolStarted"
+        );
+    }
+
+    #[test]
+    fn response_reset_event_has_the_frontend_contract() {
+        assert_eq!(
+            serde_json::to_value(ChatEvent::ResponseReset).unwrap(),
+            serde_json::json!({"event": "responseReset"})
         );
     }
 

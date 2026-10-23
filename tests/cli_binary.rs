@@ -431,6 +431,37 @@ fn each_new_ask_saves_a_distinct_conversation_and_prints_metadata_after_answer()
 }
 
 #[test]
+fn cli_marks_restarted_streams_and_saves_only_the_repaired_answer() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let output = fixture
+        .ask_command(&server)
+        .args(["ask", "malformed streamed reply"])
+        .output()
+        .unwrap();
+    let stdout = successful_stdout(output);
+    assert!(
+        stdout.contains(
+            "Discard me\n[Atlas is correcting its response; previous partial answer discarded.]"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Hello from Atlas"));
+    assert!(!stdout.contains("Discard meHello from Atlas"));
+    let saved = fixture.store().list().unwrap();
+    let conversation = fixture.store().load(&saved[0].id).unwrap();
+    assert_eq!(
+        conversation.messages.last().unwrap().content,
+        "Hello from Atlas"
+    );
+    let log = std::fs::read_to_string(fixture.data.path().join("logs/atlas.jsonl")).unwrap();
+    assert!(log.contains("protocol.repair"));
+    assert!(!log.contains("Discard me"));
+    assert!(!log.contains("\"event\":\"operation.failed\""));
+}
+
+#[test]
 fn continuation_uses_supplied_id_and_configured_recent_history_without_retitle() {
     let fixture = CliFixture::new();
     fixture.install_agent();
@@ -687,7 +718,9 @@ impl FakeDeepSeek {
                     .and_then(|messages| messages.last())
                     .and_then(|message| message["content"].as_str())
                     .unwrap_or_default();
-                let streamed_content = if last_user_content == "report workspace" {
+                let streamed_content = if last_user_content == "malformed streamed reply" {
+                    r#"{"type":"final","content":"Discard me""#.to_string()
+                } else if last_user_content == "report workspace" {
                     r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
                 } else if last_user_content == "create approved file" {
                     r#"{"type":"tool_call","tool":"create_file","args":{"path":"approved.txt","content":"approved"}}"#.to_string()

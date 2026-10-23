@@ -112,6 +112,7 @@ export interface AuthorizationRequest {
 }
 
 export type ChatEvent =
+  | { event: "responseReset" }
   | { event: "compaction"; data: { progress: CompactionProgress } }
   | { event: "contextStatus"; data: { status: ContextStatus } }
   | { event: "usage"; data: { usage: ModelUsage | null } }

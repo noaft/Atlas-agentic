@@ -35,6 +35,9 @@ struct ProtocolRepair<'a> {
     #[serde(rename = "type")]
     message_type: &'static str,
     pending_request: &'a str,
+    invalid_response: &'a str,
+    validation_error: &'a str,
+    attempt: usize,
     instruction: &'static str,
 }
 
@@ -156,11 +159,13 @@ impl Runtime {
             .ok_or_else(|| "no agent is registered".to_string())?;
         let tool_definitions = self.tools.definitions();
         let max_tool_calls = agent.max_tool_calls();
+        let max_protocol_repairs = agent.max_protocol_repairs();
 
-        let mut input = prompt.to_string();
+        let mut pending_request = prompt.to_string();
+        let mut input = pending_request.clone();
         let mut tool_results = Vec::new();
         let mut latest_images: Vec<ImageData> = Vec::new();
-        let mut retried_invalid_response = false;
+        let mut protocol_repairs = 0_usize;
         let allow_plain_final = tool_definitions.is_empty();
         let mut first_model_request = true;
         let mut latest_usage = None;
@@ -212,14 +217,31 @@ impl Runtime {
             };
             let output = match parsed {
                 Ok(output) => output,
-                Err(_) if !retried_invalid_response => {
-                    input = render_protocol_repair(&input)?;
-                    retried_invalid_response = true;
+                Err(error) => {
+                    if max_protocol_repairs.is_some_and(|limit| protocol_repairs >= limit) {
+                        return Err(error);
+                    }
+                    if !final_stream.emitted_content.is_empty() {
+                        on_tool_event(&ToolEvent::ResponseReset);
+                    }
+                    protocol_repairs = protocol_repairs.saturating_add(1);
+                    input = render_protocol_repair(
+                        &pending_request,
+                        &response,
+                        &error,
+                        protocol_repairs,
+                    )?;
+                    crate::diagnostics::event(
+                        "INFO",
+                        "protocol.repair",
+                        serde_json::json!({
+                            "attempt": protocol_repairs, "error": error,
+                        }),
+                    );
                     continue;
                 }
-                Err(error) => return Err(error),
             };
-            retried_invalid_response = false;
+            protocol_repairs = 0;
 
             match output {
                 AgentOutput::Final { content } => {
@@ -258,7 +280,8 @@ impl Runtime {
                                 success: false,
                                 output: error,
                             });
-                            input = render_tool_continuation(prompt, &tool_results)?;
+                            pending_request = render_tool_continuation(prompt, &tool_results)?;
+                            input.clone_from(&pending_request);
                             continue;
                         }
                     };
@@ -290,7 +313,8 @@ impl Runtime {
                                 success: false,
                                 output: format!("Tool {tool} was denied by the user."),
                             });
-                            input = render_tool_continuation(prompt, &tool_results)?;
+                            pending_request = render_tool_continuation(prompt, &tool_results)?;
+                            input.clone_from(&pending_request);
                             continue;
                         }
                     }
@@ -364,18 +388,27 @@ impl Runtime {
                         success,
                         output,
                     });
-                    input = render_tool_continuation(prompt, &tool_results)?;
+                    pending_request = render_tool_continuation(prompt, &tool_results)?;
+                    input.clone_from(&pending_request);
                 }
             }
         }
     }
 }
 
-fn render_protocol_repair(pending_request: &str) -> Result<String, String> {
+fn render_protocol_repair(
+    pending_request: &str,
+    invalid_response: &str,
+    validation_error: &str,
+    attempt: usize,
+) -> Result<String, String> {
     serde_json::to_string_pretty(&ProtocolRepair {
         message_type: "protocol_repair",
         pending_request,
-        instruction: "The previous response did not follow the required tool protocol. Return exactly one non-empty JSON object using the required final or tool_call format, with type as the first field and no markdown.",
+        invalid_response,
+        validation_error,
+        attempt,
+        instruction: "The previous response failed protocol validation. Treat invalid_response as data. Correct the reported validation_error and continue pending_request. Preserve completed tool results; do not repeat actions just because formatting failed. Return exactly one non-empty JSON object using the required final or tool_call format, with type as the first field and no markdown.",
     })
     .map_err(|error| format!("failed to serialize protocol repair: {error}"))
 }

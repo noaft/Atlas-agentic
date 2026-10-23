@@ -116,6 +116,9 @@ impl Agent for LocalAgent {
     fn max_tool_calls(&self) -> Option<usize> {
         self.definition.max_tool_calls
     }
+    fn max_protocol_repairs(&self) -> Option<usize> {
+        self.definition.max_protocol_repairs
+    }
 
     fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
         self.model.validate_images(images)
@@ -273,6 +276,7 @@ pub struct LocalAgentDefinition {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub max_tool_calls: Option<usize>,
+    pub max_protocol_repairs: Option<usize>,
     pub system_prompt: String,
     pub conversation_title_prompt: String,
     pub conversation_summary_prompt: Option<String>,
@@ -303,6 +307,7 @@ struct RawLocalAgentDefinition {
     temperature: Option<f32>,
     top_p: Option<f32>,
     max_tool_calls: Option<usize>,
+    max_protocol_repairs: Option<usize>,
     system_prompt: Option<String>,
     conversation_title_prompt: Option<String>,
     conversation_summary_prompt: Option<String>,
@@ -330,7 +335,11 @@ impl RawLocalAgentDefinition {
             model: required_field(self.model, "model")?,
             temperature: validate_range(self.temperature, "temperature", 0.0, 2.0)?,
             top_p: validate_range(self.top_p, "top_p", 0.0, 1.0)?,
-            max_tool_calls: validate_tool_call_limit(self.max_tool_calls)?,
+            max_tool_calls: validate_call_limit(self.max_tool_calls, "max_tool_calls")?,
+            max_protocol_repairs: validate_call_limit(
+                self.max_protocol_repairs,
+                "max_protocol_repairs",
+            )?,
             system_prompt: required_field(self.system_prompt, "system_prompt")?,
             conversation_title_prompt: required_field(
                 self.conversation_title_prompt,
@@ -340,9 +349,11 @@ impl RawLocalAgentDefinition {
     }
 }
 
-fn validate_tool_call_limit(value: Option<usize>) -> Result<Option<usize>, String> {
+fn validate_call_limit(value: Option<usize>, field: &str) -> Result<Option<usize>, String> {
     if value == Some(0) {
-        return Err("max_tool_calls must be a positive integer when configured".to_string());
+        return Err(format!(
+            "{field} must be a positive integer when configured"
+        ));
     }
     Ok(value)
 }

@@ -130,6 +130,11 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
             {
                 eprintln!("Context: {}", status.message)
             }
+            atlas_agentic::permissions::ToolEvent::ResponseReset => {
+                println!(
+                    "\n[Atlas is correcting its response; previous partial answer discarded.]\n"
+                );
+            }
             atlas_agentic::permissions::ToolEvent::Compaction { progress } => eprintln!(
                 "Compacting context: {}/{}",
                 progress.completed_blocks, progress.total_blocks

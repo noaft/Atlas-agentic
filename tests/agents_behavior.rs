@@ -239,3 +239,23 @@ fn readme_documents_the_complete_default_toolset_and_permission_modes() {
         );
     }
 }
+
+#[test]
+fn protocol_repair_limit_is_optional_positive_and_available_to_runtime() {
+    let source = include_str!("../agents/atlas.toml");
+    let default = LocalAgentDefinition::from_toml(source).unwrap();
+    assert_eq!(default.max_protocol_repairs, None);
+    for limit in [1, 4] {
+        let definition =
+            LocalAgentDefinition::from_toml(&format!("max_protocol_repairs = {limit}\n{source}"))
+                .unwrap();
+        let agent = LocalAgent::new(definition, Box::new(EchoModel));
+        assert_eq!(agent.max_protocol_repairs(), Some(limit));
+    }
+    let error = LocalAgentDefinition::from_toml(&format!("max_protocol_repairs = 0\n{source}"))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "max_protocol_repairs must be a positive integer when configured"
+    );
+}

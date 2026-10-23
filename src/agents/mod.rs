@@ -68,6 +68,9 @@ pub trait Agent {
     fn max_tool_calls(&self) -> Option<usize> {
         None
     }
+    fn max_protocol_repairs(&self) -> Option<usize> {
+        None
+    }
     fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {
         if images.is_empty() {
             Ok(())

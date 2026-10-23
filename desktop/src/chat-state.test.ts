@@ -1547,3 +1547,31 @@ test("a stale cancellation failure cannot overwrite a newer request", async () =
   expect(store.getState().errorMessage).toBeNull();
   ask.resolve(result(first, "done", false)); await sending;
 });
+
+
+test("response resets clear only the owning chat's partial answer", async () => {
+  const api = new FakeApi();
+  const one = deferred<ConversationAskResult>();
+  const two = deferred<ConversationAskResult>();
+  api.asks.push(() => one.promise, () => two.promise);
+  const store = new ChatStore(api);
+  await store.initialize();
+  const owner = store.getState().activeSessionId;
+  store.setDraft("first request"); const sendingOne = store.send();
+  api.eventSinks[0]({event: "delta", data: {content: "Discard me"}});
+  await store.newChat();
+  store.setDraft("second request"); const sendingTwo = store.send();
+  api.eventSinks[1]({event: "delta", data: {content: "Keep me"}});
+  api.eventSinks[0]({event: "responseReset"});
+  expect(store.getState().messages.at(-1)?.content).toBe("Keep me");
+  await store.selectSession(owner);
+  expect(store.getState().messages.at(-1)?.content).toBe("");
+  expect(store.getState().status).toBe("streaming");
+  expect(store.getState().errorMessage).toBeNull();
+  api.eventSinks[0]({event: "delta", data: {content: "Recovered"}});
+  expect(store.getState().messages.at(-1)?.content).toBe("Recovered");
+  one.resolve(result(first, "Recovered", true)); await sendingOne;
+  api.eventSinks[0]({event: "responseReset"});
+  expect(store.getState().messages.at(-1)?.content).toBe("Recovered");
+  two.resolve(result(second, "Keep me", true)); await sendingTwo;
+});
