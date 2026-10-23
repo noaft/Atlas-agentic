@@ -324,8 +324,15 @@ Malformed tool-protocol replies go back to the model with the validation error,
 latest invalid reply, and a stable pending request. Continue repair by default;
 optional positive `max_protocol_repairs` caps consecutive repairs and resets after
 a valid reply. Never nest repair envelopes, lose prior tool results, or replay
-executed tools during repair. Prepare/budget context for every retry. Provider or
-context failures still propagate normally. Keep invalid reply bodies out of
+executed tools during repair. Prepare/budget context for every retry. Providers
+may explicitly classify incomplete generation outcomes as repairable through the
+provider/agent boundary; never match provider error strings in shared runtime
+logic. DeepSeek distinguishes empty/reasoning-only output, length truncation,
+missing completion markers, resource interruptions, aborted output, filtering,
+and unsupported finish reasons. Only known repairable generation outcomes enter
+the same repair loop and cap. Authentication, transport, filtering, unknown errors,
+and context failures still propagate normally. Log safe stream-completion metadata
+without answer/reasoning text or arbitrary finish-reason values. Keep invalid reply bodies out of
 backend logs and ordinary conversation history; log sanitized `protocol.repair`
 metadata instead. If a malformed response already emitted text, send a
 `responseReset` event before retrying: clear only that session's pending assistant

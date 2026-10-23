@@ -260,3 +260,65 @@ fn deepseek_partial_stream_without_a_terminal_event_is_not_successful() {
     requests.recv().unwrap();
     server.join().unwrap();
 }
+
+#[test]
+fn deepseek_stream_errors_distinguish_empty_truncated_interrupted_and_filtered() {
+    for (delta, finish, done, expected) in [
+        (
+            serde_json::json!({"content":""}),
+            Some("stop"),
+            true,
+            "empty answer",
+        ),
+        (
+            serde_json::json!({"reasoning_content":"private reasoning"}),
+            Some("stop"),
+            true,
+            "reasoning without answer text",
+        ),
+        (
+            serde_json::json!({"content":"private partial"}),
+            Some("length"),
+            true,
+            "output limit",
+        ),
+        (
+            serde_json::json!({"content":"private partial"}),
+            None,
+            false,
+            "before a completion marker",
+        ),
+        (
+            serde_json::json!({"content":""}),
+            Some("insufficient_system_resource"),
+            true,
+            "insufficient system resources",
+        ),
+        (
+            serde_json::json!({"content":""}),
+            Some("content_filter"),
+            true,
+            "filtered",
+        ),
+    ] {
+        let body = format!(
+            "data: {}\n\n{}",
+            serde_json::json!({"choices":[{"delta":delta,"finish_reason":finish}]}),
+            if done { "data: [DONE]\n\n" } else { "" }
+        );
+        let (provider, _requests, server) = provider(body);
+        let error = provider
+            .stream_with_usage(&request(), &mut |_| {})
+            .err()
+            .expect("incomplete reply must not succeed");
+        server.join().unwrap();
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("private"));
+        assert_eq!(
+            provider.is_response_repairable(&error),
+            finish != Some("content_filter")
+        );
+        assert!(!provider.is_response_repairable("DeepSeek returned HTTP 401"));
+        assert!(!provider.is_response_repairable("Provider stream could not be read"));
+    }
+}

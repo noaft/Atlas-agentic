@@ -15,6 +15,10 @@ pub struct AgentRequest<'a> {
     pub max_output_tokens: Option<u64>,
 }
 pub trait Agent {
+    fn is_response_repairable(&self, _error: &str) -> bool {
+        false
+    }
+
     fn memory_policy(&self) -> Option<&crate::conversations::ContextPolicy> {
         None
     }

@@ -58,6 +58,12 @@ pub struct SummaryResponse {
     pub finish_reason: String,
 }
 pub trait ModelProvider {
+    /// Opt in only for incomplete generation outcomes that a new model reply can repair.
+    /// Authentication, transport, refusal and unknown errors must remain non-repairable.
+    fn is_response_repairable(&self, _error: &str) -> bool {
+        false
+    }
+
     fn model_name(&self) -> Option<&str> {
         None
     }

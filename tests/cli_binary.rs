@@ -462,6 +462,66 @@ fn cli_marks_restarted_streams_and_saves_only_the_repaired_answer() {
 }
 
 #[test]
+fn cli_recovers_empty_deepseek_stream_after_a_command_without_running_it_twice() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    let server = FakeDeepSeek::new();
+    let mut command = fixture.ask_command(&server);
+    command.args(["ask", "recover incomplete generation"]);
+    let output = output_with_stdin(command, "y\n");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Hello from Atlas"));
+    let content = std::fs::read_to_string(fixture.workspace.path().join("counter.txt")).unwrap();
+    assert_eq!(content.lines().count(), 1);
+    let _first = server.request();
+    let continuation = server.request();
+    let repair_request = server.request();
+    let pending = continuation["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    let repair: Value = serde_json::from_str(
+        repair_request["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(repair["pending_request"], pending);
+    assert_eq!(
+        repair["validation_error"],
+        "DeepSeek returned an empty answer"
+    );
+    let log = std::fs::read_to_string(fixture.data.path().join("logs/atlas.jsonl")).unwrap();
+    let events: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["event"] == "tool.started" && e["fields"]["tool"] == "exec_command")
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|e| e["event"] == "model.stream_ended"
+        && e["fields"]["finishReason"] == "stop"
+        && e["fields"]["contentBytes"] == 0
+        && e["fields"]["doneReceived"] == true));
+    assert!(events
+        .iter()
+        .any(|e| e["event"] == "operation.succeeded" && e["fields"]["operation"] == "cli.command"));
+    assert!(!log.contains("counter.txt"));
+    assert!(!log.contains("fake_key_for_test"));
+}
+
+#[test]
 fn continuation_uses_supplied_id_and_configured_recent_history_without_retitle() {
     let fixture = CliFixture::new();
     fixture.install_agent();
@@ -720,17 +780,23 @@ impl FakeDeepSeek {
                     .unwrap_or_default();
                 let streamed_content = if last_user_content == "malformed streamed reply" {
                     r#"{"type":"final","content":"Discard me""#.to_string()
+                } else if last_user_content == "recover incomplete generation" {
+                    r#"{"type":"tool_call","tool":"exec_command","args":{"command":"echo marker >> counter.txt"}}"#.to_string()
                 } else if last_user_content == "report workspace" {
                     r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
                 } else if last_user_content == "create approved file" {
                     r#"{"type":"tool_call","tool":"create_file","args":{"path":"approved.txt","content":"approved"}}"#.to_string()
                 } else if last_user_content.contains("\"type\": \"tool_results\"") {
                     let continuation: Value = serde_json::from_str(last_user_content).unwrap();
-                    let workspace = continuation["tool_results"][0]["output"].as_str().unwrap();
-                    format!(
-                        r#"{{"type":"final","content":{}}}"#,
-                        serde_json::to_string(workspace).unwrap()
-                    )
+                    if continuation["original_user_request"] == "recover incomplete generation" {
+                        String::new()
+                    } else {
+                        let workspace = continuation["tool_results"][0]["output"].as_str().unwrap();
+                        format!(
+                            r#"{{"type":"final","content":{}}}"#,
+                            serde_json::to_string(workspace).unwrap()
+                        )
+                    }
                 } else {
                     r#"{"type":"final","content":"Hello from Atlas"}"#.to_string()
                 };

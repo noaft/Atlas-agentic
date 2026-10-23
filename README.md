@@ -156,9 +156,17 @@ The desktop clears any discarded partial answer before retrying; the CLI marks
 where a partial answer was discarded and restarts the answer on a new line.
 Protocol repair has no Atlas-imposed limit by default. To cap consecutive repairs,
 set a positive `max_protocol_repairs` in the agent TOML (for example,
-`max_protocol_repairs = 3`); a valid response resets that count. Provider, connection,
-and context-budget failures still fail the request. Backend logs record each
-repair as `protocol.repair`, with a sanitized reason and attempt number.
+`max_protocol_repairs = 3`); a valid response resets that count. The same loop
+also repairs DeepSeek generation outcomes explicitly classified by its adapter:
+empty or reasoning-only answers, output-limit truncation, missing completion
+markers, resource interruptions, aborted generation, or unsupported native tool
+call output. Partial output is never executed as a tool call or accepted as a
+finished answer. Authentication, connection, filtered responses, unknown provider
+failures, and context-budget failures still fail the request. Backend logs record
+each repair as `protocol.repair`, with a sanitized reason and attempt number.
+DeepSeek's `model.stream_ended` entries include a known finish reason, completion
+marker status, content byte count, and a reasoning-presence flag. They never
+include answer or reasoning text.
 
 ## Backend logs
 

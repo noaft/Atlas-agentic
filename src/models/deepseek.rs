@@ -10,6 +10,44 @@ use crate::media::ImageData;
 use super::prompt::render_model_instructions;
 use super::{ModelInfo, ModelProvider, ModelRequest, ModelResponse, ModelUsage};
 
+const EMPTY_ANSWER: &str = "DeepSeek returned an empty answer";
+const REASONING_ONLY: &str = "DeepSeek returned reasoning without answer text";
+const OUTPUT_LIMIT: &str = "DeepSeek answer reached the output limit before completion";
+const EARLY_END: &str = "DeepSeek stream ended before a completion marker";
+const RESOURCE_INTERRUPTION: &str =
+    "DeepSeek generation interrupted by insufficient system resources";
+const ABORTED: &str = "DeepSeek generation was aborted";
+const NATIVE_TOOL_CALLS: &str =
+    "DeepSeek returned native tool calls instead of the Atlas JSON protocol";
+
+fn completion_error(
+    finish: Option<&str>,
+    terminal: bool,
+    content: &str,
+    reasoning: bool,
+) -> Option<&'static str> {
+    match finish {
+        Some("length") => return Some(OUTPUT_LIMIT),
+        Some("content_filter") => return Some("DeepSeek answer was filtered by the provider"),
+        Some("insufficient_system_resource") => return Some(RESOURCE_INTERRUPTION),
+        Some("aborted") => return Some(ABORTED),
+        Some("tool_calls") => return Some(NATIVE_TOOL_CALLS),
+        Some("stop") | None => {}
+        Some(_) => return Some("DeepSeek stream returned an unsupported finish reason"),
+    }
+    if !terminal && finish != Some("stop") {
+        return Some(EARLY_END);
+    }
+    if content.trim().is_empty() {
+        return Some(if reasoning {
+            REASONING_ONLY
+        } else {
+            EMPTY_ANSWER
+        });
+    }
+    None
+}
+
 pub struct DeepSeekConfig {
     pub api_key: String,
     pub base_url: String,
@@ -33,6 +71,19 @@ impl DeepSeekProvider {
 }
 
 impl ModelProvider for DeepSeekProvider {
+    fn is_response_repairable(&self, error: &str) -> bool {
+        [
+            EMPTY_ANSWER,
+            REASONING_ONLY,
+            OUTPUT_LIMIT,
+            EARLY_END,
+            RESOURCE_INTERRUPTION,
+            ABORTED,
+            NATIVE_TOOL_CALLS,
+        ]
+        .contains(&error)
+    }
+
     fn model_name(&self) -> Option<&str> {
         Some(&self.config.model)
     }
@@ -191,7 +242,8 @@ impl ModelProvider for DeepSeekProvider {
         let mut usage = None;
         let mut terminal = false;
         let mut finish = None;
-        super::sse::read_sse(&mut BufReader::new(response), &mut |event| {
+        let mut reasoning_received = false;
+        let stream_result = super::sse::read_sse(&mut BufReader::new(response), &mut |event| {
             if event.data == "[DONE]" {
                 terminal = true;
                 return Ok(false);
@@ -210,18 +262,47 @@ impl ModelProvider for DeepSeekProvider {
                 if let Some(reason) = choice.finish_reason {
                     finish = Some(reason);
                 }
+                reasoning_received |= choice
+                    .delta
+                    .reasoning_content
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty());
                 if let Some(delta) = choice.delta.content {
                     on_delta(&delta);
                     content.push_str(&delta);
                 }
             }
             Ok(true)
-        })?;
-        if (!terminal && finish.as_deref() != Some("stop"))
-            || finish.as_deref().is_some_and(|r| r != "stop")
-            || content.trim().is_empty()
-        {
-            return Err("DeepSeek stream ended without a complete answer".into());
+        });
+        let error = stream_result
+            .as_ref()
+            .err()
+            .map(String::as_str)
+            .or_else(|| {
+                completion_error(finish.as_deref(), terminal, &content, reasoning_received)
+            });
+        // Keep only known control values, never arbitrary provider-supplied text.
+        let safe_finish = finish.as_deref().map(|reason| match reason {
+            "stop"
+            | "length"
+            | "content_filter"
+            | "insufficient_system_resource"
+            | "aborted"
+            | "tool_calls" => reason,
+            _ => "unknown",
+        });
+        crate::diagnostics::event(
+            if error.is_some() { "WARN" } else { "INFO" },
+            "model.stream_ended",
+            serde_json::json!({
+                "provider": "deepseek", "model": self.config.model,
+                "finishReason": safe_finish, "doneReceived": terminal,
+                "contentBytes": content.len(), "reasoningReceived": reasoning_received,
+                "streamReadOk": stream_result.is_ok(), "error": error,
+            }),
+        );
+        if let Some(error) = error {
+            return Err(error.to_string());
         }
         Ok(ModelResponse {
             content,
@@ -480,6 +561,7 @@ struct ChatStreamChoice {
 #[derive(Deserialize)]
 struct ChatStreamDelta {
     content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 #[cfg(test)]

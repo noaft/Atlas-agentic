@@ -42,6 +42,10 @@ impl LocalAgent {
 }
 
 impl Agent for LocalAgent {
+    fn is_response_repairable(&self, error: &str) -> bool {
+        self.model.is_response_repairable(error)
+    }
+
     fn memory_policy(&self) -> Option<&crate::conversations::ContextPolicy> {
         self.definition
             .memory

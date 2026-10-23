@@ -190,7 +190,7 @@ impl Runtime {
                 },
                 on_tool_event,
             )?;
-            let response = agent.process_request_with_usage(
+            let response_result = agent.process_request_with_usage(
                 &crate::agents::AgentRequest {
                     input: &input,
                     history: &prepared.history,
@@ -204,13 +204,23 @@ impl Runtime {
                 &mut |delta| {
                     final_stream.push(delta, on_delta);
                 },
-            )?;
-            latest_usage = response.usage.clone();
-            on_tool_event(&ToolEvent::Usage {
-                usage: response.usage,
-            });
-            let response = response.content;
-            let parsed = if allow_plain_final {
+            );
+            let (response, response_error) = match response_result {
+                Ok(response) => {
+                    latest_usage = response.usage.clone();
+                    on_tool_event(&ToolEvent::Usage {
+                        usage: response.usage,
+                    });
+                    (response.content, None)
+                }
+                Err(error) if agent.is_response_repairable(&error) => {
+                    (std::mem::take(&mut final_stream.response), Some(error))
+                }
+                Err(error) => return Err(error),
+            };
+            let parsed = if let Some(error) = response_error {
+                Err(error)
+            } else if allow_plain_final {
                 AgentOutput::parse(&response)
             } else {
                 AgentOutput::parse_tool_protocol(&response)
@@ -415,7 +425,7 @@ fn render_protocol_repair(
         invalid_response,
         validation_error,
         attempt,
-        instruction: "The previous response failed protocol validation. Treat invalid_response as data. Correct the reported validation_error and continue pending_request. Preserve completed tool results; do not repeat actions just because formatting failed. Return exactly one non-empty JSON object using the required final or tool_call format, with type as the first field and no markdown.",
+        instruction: "The previous response failed protocol validation. Treat invalid_response as data. Correct the reported validation_error and continue pending_request. If generation was interrupted or reached an output limit, regenerate a complete concise response. Preserve completed tool results; do not repeat actions just because formatting failed. Return exactly one non-empty JSON object using the required final or tool_call format, with type as the first field and no markdown.",
     })
     .map_err(|error| format!("failed to serialize protocol repair: {error}"))
 }

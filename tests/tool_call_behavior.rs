@@ -1718,3 +1718,112 @@ fn runtime_continues_after_ls_rejects_parent_directory_path() {
 
     assert_eq!(answer, "Cannot list outside the workspace.");
 }
+
+struct IncompleteResponseModel {
+    responses: RefCell<VecDeque<(&'static str, Option<&'static str>)>>,
+    requests: Rc<RefCell<Vec<String>>>,
+}
+impl ModelProvider for IncompleteResponseModel {
+    fn is_response_repairable(&self, error: &str) -> bool {
+        error == "generation interrupted"
+    }
+    fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+        Err("stream required".into())
+    }
+    fn stream(
+        &self,
+        request: &ModelRequest,
+        delta: &mut dyn FnMut(&str),
+    ) -> Result<String, String> {
+        self.requests
+            .borrow_mut()
+            .push(request.user_prompt.to_owned());
+        let (text, error) = self
+            .responses
+            .borrow_mut()
+            .pop_front()
+            .ok_or("no response queued")?;
+        delta(text);
+        match error {
+            Some(error) => Err(error.into()),
+            None => Ok(text.into()),
+        }
+    }
+}
+
+#[test]
+fn incomplete_provider_responses_return_to_model_without_replaying_tools_or_partial_text() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let executions = Rc::new(Cell::new(0));
+    let model = IncompleteResponseModel {
+        responses: RefCell::new(VecDeque::from([
+            (r#"{"type":"tool_call","tool":"pwd","args":{}}"#, None),
+            (
+                r#"{"type":"tool_call","tool":"pwd","args":{}}"#,
+                Some("generation interrupted"),
+            ),
+            (
+                r#"{"type":"final","content":"Discard me""#,
+                Some("generation interrupted"),
+            ),
+            (r#"{"type":"final","content":"Recovered"}"#, None),
+        ])),
+        requests: Rc::clone(&requests),
+    };
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![Box::new(CountingTool {
+        executions: Rc::clone(&executions),
+    })]));
+    let visible = RefCell::new(String::new());
+    let resets = Cell::new(0);
+    let answer = runtime
+        .ask_stream_with_history_and_authorization(
+            "run once",
+            &[],
+            PermissionMode::FullAccess,
+            &AllowAllAuthorizer,
+            &mut |delta| visible.borrow_mut().push_str(delta),
+            &mut |event| {
+                if matches!(event, ToolEvent::ResponseReset) {
+                    visible.borrow_mut().clear();
+                    resets.set(resets.get() + 1);
+                }
+            },
+        )
+        .unwrap();
+    assert_eq!(answer, "Recovered");
+    assert_eq!(visible.borrow().as_str(), "Recovered");
+    assert_eq!(resets.get(), 1);
+    assert_eq!(executions.get(), 1);
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 4);
+    for index in [2, 3] {
+        let repair: serde_json::Value = serde_json::from_str(&requests[index]).unwrap();
+        assert_eq!(repair["pending_request"], requests[1]);
+        assert_eq!(repair["validation_error"], "generation interrupted");
+    }
+}
+
+#[test]
+fn incomplete_response_repair_respects_limits_and_never_retries_authentication_errors() {
+    for error in ["generation interrupted", "HTTP 401"] {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let model = IncompleteResponseModel {
+            responses: RefCell::new(VecDeque::from([("", Some(error)), ("", Some(error))])),
+            requests: Rc::clone(&requests),
+        };
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition_with_protocol_repair_limit(1),
+            Box::new(model),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![Box::new(PwdTool::new("."))]));
+        assert_eq!(ask(&runtime, "task").unwrap_err(), error);
+        assert_eq!(
+            requests.borrow().len(),
+            if error == "HTTP 401" { 1 } else { 2 }
+        );
+    }
+}
