@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { SkillsApi, SkillCatalog, SkillDocument, SkillPreview, SkillInfo, LocalSkillPreview } from "./skills-types";
+import type { SkillsApi, SkillCatalog, SkillDocument, SkillPreview, SkillInfo, LocalSkillPreview, SkillInstallResult, SkillSearchResult } from "./skills-types";
 
 import type {
   McpConnectionStatus,
@@ -58,6 +58,8 @@ export interface AtlasApi extends SkillsApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    installSkills: (sources, scope, context) => invoke<SkillInstallResult[]>("install_skills", {sources, scope, context}),
+    searchSkills: (query, scope, context) => invoke<SkillSearchResult[]>("search_skills", {query, scope, context}),
     createSkill: (input, scope, context) => invoke<SkillInfo>("create_skill", {input, scope, context}),
     updateSkillDocument: (id, content, fingerprint, context) => invoke<SkillInfo>("update_skill_document", {id, content, fingerprint, context}),
     chooseSkillImport: async (kind) => {

@@ -156,6 +156,72 @@ mod tests {
     }
 
     #[test]
+    fn batch_installs_verify_disk_and_runtime_and_keep_independent_failures() {
+        let server = Server::fixture(tree());
+        let t = tempfile::tempdir().unwrap();
+        let store =
+            crate::skills::SkillStore::new(t.path().join("personal"), t.path().join("workspace"));
+        let mut missing = source();
+        missing.path = "skills/missing".into();
+        let results = server
+            .github
+            .install_many(
+                &[source(), missing],
+                &store,
+                crate::skills::SkillScope::Personal,
+            )
+            .unwrap();
+        assert!(results[0].skill.is_some());
+        assert!(results[0].error.is_none());
+        assert!(results[1].skill.is_none());
+        assert!(results[1].error.is_some());
+        assert_eq!(
+            store
+                .read("personal:sample", Some("references/guide.md"))
+                .unwrap()
+                .content,
+            "Supporting guide"
+        );
+        let fresh =
+            crate::skills::SkillStore::new(t.path().join("personal"), t.path().join("workspace"));
+        let tool = crate::tools::LoadSkillTool::new(&fresh).unwrap().unwrap();
+        use crate::tools::Tool;
+        assert!(tool
+            .execute(&json!({"id":"personal:sample"}))
+            .unwrap()
+            .message
+            .contains(SKILL));
+        assert_eq!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| p.contains("trees/"))
+                .count(),
+            1
+        );
+        assert!(server
+            .github
+            .install_many(
+                &[source(), source()],
+                &store,
+                crate::skills::SkillScope::Personal
+            )
+            .is_err());
+        let repeated = server
+            .github
+            .install_many(&[source()], &store, crate::skills::SkillScope::Personal)
+            .unwrap();
+        assert!(repeated[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("already installed"));
+        assert_eq!(fresh.list().unwrap().skills.len(), 1);
+    }
+
+    #[test]
     fn folder_and_skill_file_urls_select_one_skill() {
         for url in [
             "https://github.com/o/r/tree/main/skills/a",
@@ -972,7 +1038,15 @@ impl Github {
             return Err("Pinned skill commit was not found; preview the GitHub link again.".into());
         }
         let tree = self.tree(source)?;
-        let entries = self.package_entries(source, &tree)?;
+        self.download_from_tree(source, &tree)
+    }
+
+    fn download_from_tree(
+        &self,
+        source: &SkillSource,
+        tree: &[Entry],
+    ) -> Result<SkillPackage, String> {
+        let entries = self.package_entries(source, tree)?;
         let mut files = BTreeMap::new();
         let mut total = 0usize;
         for (entry, path) in entries {
@@ -995,6 +1069,58 @@ impl Github {
             files,
         })
     }
+    fn install_many(
+        &self,
+        sources: &[SkillSource],
+        store: &super::SkillStore,
+        scope: super::SkillScope,
+    ) -> Result<Vec<super::SkillInstallResult>, String> {
+        if sources.is_empty() || sources.len() > MAX_PREVIEWS {
+            return Err("Select between 1 and 64 skills to install.".into());
+        }
+        let mut selected = BTreeSet::new();
+        for source in sources {
+            validate_source(source)?;
+            if !selected.insert((&source.repository, &source.revision, &source.path)) {
+                return Err("Duplicate skills in installation request.".into());
+            }
+        }
+        let mut trees: BTreeMap<(String, String), Result<Vec<Entry>, String>> = BTreeMap::new();
+        let mut results = Vec::new();
+        for source in sources {
+            let tree = trees
+                .entry((source.repository.clone(), source.revision.clone()))
+                .or_insert_with(|| {
+                    if self
+                        .commit(&source.repository, &source.revision)?
+                        .as_deref()
+                        != Some(source.revision.as_str())
+                    {
+                        return Err(
+                            "Pinned skill commit was not found; preview the GitHub link again."
+                                .into(),
+                        );
+                    }
+                    self.tree(source)
+                });
+            let result = match tree {
+                Ok(tree) => self
+                    .download_from_tree(source, tree)
+                    .and_then(|package| store.install(package, scope, false)),
+                Err(error) => Err(error.clone()),
+            };
+            let (skill, error) = match result {
+                Ok(skill) => (Some(skill), None),
+                Err(error) => (None, Some(error)),
+            };
+            results.push(super::SkillInstallResult {
+                source: source.clone(),
+                skill,
+                error,
+            });
+        }
+        Ok(results)
+    }
 }
 
 /// Resolve a public GitHub source to an immutable preview before installation.
@@ -1007,4 +1133,13 @@ pub fn preview(url: &str) -> Result<Vec<SkillPreview>, String> {
 pub fn download(source: &SkillSource) -> Result<SkillPackage, String> {
     validate_source(source)?;
     Github::new()?.download(source)
+}
+
+/// Install reviewed pinned sources independently. Successful packages remain if another fails.
+pub fn install_many(
+    sources: &[SkillSource],
+    store: &super::SkillStore,
+    scope: super::SkillScope,
+) -> Result<Vec<super::SkillInstallResult>, String> {
+    Github::new()?.install_many(sources, store, scope)
 }

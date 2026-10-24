@@ -382,7 +382,7 @@ fn publish(
     };
     let manifest = Manifest {
         enabled,
-        source: package.source,
+        source: package.source.clone(),
     };
     let staging = format!(".install-{}", uuid::Uuid::new_v4());
     private_dir(root, &staging)?;
@@ -401,6 +401,13 @@ fn publish(
             MANIFEST,
             &serde_json::to_vec(&manifest).map_err(err)?,
         )?;
+        let (stored, files) = load_directory(&stage, &metadata.name, scope)?;
+        if files != package.files
+            || stored.source != manifest.source
+            || stored.enabled != manifest.enabled
+        {
+            return Err("skill storage verification failed".into());
+        }
         Ok::<_, String>(())
     })();
     if let Err(error) = prepared {
@@ -421,10 +428,30 @@ fn publish(
         let _ = root.remove_dir_all(&staging);
         return Err(err(error));
     }
-    if exists {
-        let _ = root.remove_dir_all(&backup);
+    let verified = load(root, &metadata.name, scope).and_then(|(stored, files)| {
+        if files != package.files
+            || stored.source != manifest.source
+            || stored.enabled != manifest.enabled
+        {
+            return Err("installed skill verification failed".into());
+        }
+        Ok(stored)
+    });
+    match verified {
+        Ok(stored) => {
+            if exists {
+                let _ = root.remove_dir_all(&backup);
+            }
+            Ok(stored)
+        }
+        Err(error) => {
+            let _ = root.remove_dir_all(&metadata.name);
+            if exists {
+                let _ = root.rename(&backup, root, &metadata.name);
+            }
+            Err(error)
+        }
     }
-    Ok(info(metadata, scope, manifest))
 }
 
 // Editor tokens bind the package to the selected storage root. A newly installed

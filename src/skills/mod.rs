@@ -1,6 +1,7 @@
 //! Local, bounded skill packages. Instructions are loaded only on request.
 pub mod github;
 pub mod local;
+mod search;
 mod store;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -307,4 +308,18 @@ impl SkillDraftInput {
             files,
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInstallResult {
+    pub source: SkillSource,
+    pub skill: Option<SkillInfo>,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSearchResult {
+    pub skill: SkillInfo,
+    pub score: f64,
 }

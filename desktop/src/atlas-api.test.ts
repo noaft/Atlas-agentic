@@ -324,3 +324,17 @@ test("local skill creation, editing and import retain explicit scope and ownersh
     {command:"install_local_skill",payload:{path:"/imports/review",fingerprint:"fingerprint",scope:"project",context}},
   ]);
 });
+
+test("skill batch installation and BM25 search use native commands with captured context", async () => {
+  const calls: Array<{command: string; payload: unknown}> = [];
+  mockIPC((command, payload) => { calls.push({command, payload}); return []; });
+  const api = createTauriAtlasApi();
+  const context = {conversationId: null, workspacePath: "/project"};
+  const sources = [{repository: "owner/repo", reference: "main", revision: "a".repeat(40), path: "skills/review"}];
+  await api.installSkills(sources, "project", context);
+  await api.searchSkills("rust review", "personal", context);
+  expect(calls).toEqual([
+    {command: "install_skills", payload: {sources, scope: "project", context}},
+    {command: "search_skills", payload: {query: "rust review", scope: "personal", context}},
+  ]);
+});

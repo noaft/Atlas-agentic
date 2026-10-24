@@ -9,6 +9,8 @@ const preview: SkillPreview = { ...skill, source, content: "# Review\n<script>ba
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function fixture(overrides: Partial<SkillsApi> = {}) {
   const api: SkillsApi = {
+    installSkills: vi.fn(async () => [{source, skill, error: null}]),
+    searchSkills: vi.fn(async () => [{skill, score: 1}]),
     createSkill: vi.fn(async () => skill),
     updateSkillDocument: vi.fn(async () => ({...skill, source: null})),
     chooseSkillImport: vi.fn(async () => "/chosen/review"),
@@ -266,4 +268,85 @@ test("GitHub installation invalidates only the installed skill's read-only cache
   expect(root.querySelector(".skill-installed .skill-instructions")).not.toBeNull();
   setUrl(); click("Preview"); await flush(); click("Install in Personal"); await flush();
   expect(root.querySelector(".skill-installed .skill-instructions")).toBeNull();
+});
+
+test("installed instructions close and reopen without another read", async () => {
+  const {api, panel, root, click} = fixture(); panel.updateContext(context, "a", true); await flush();
+  click("View instructions"); await flush();
+  click("Close instructions");
+  expect(root.querySelector(".skill-installed .skill-instructions")).toBeNull();
+  click("View instructions"); await flush();
+  expect(root.querySelector(".skill-installed .skill-instructions")).not.toBeNull();
+  expect(api.readSkill).toHaveBeenCalledTimes(1);
+});
+
+test("only the selected preview installs and other candidates remain available", async () => {
+  let finish!: (value: SkillInfo) => void;
+  const second = {...preview, name: "second", title: "Second", source: {...source, path: "skills/second"}};
+  const {api, panel, root, click, setUrl} = fixture({
+    previewSkillImport: async () => [preview, second],
+    installSkill: vi.fn(() => new Promise<SkillInfo>(resolve => {finish = resolve;})),
+    listSkills: vi.fn().mockResolvedValueOnce({skills: [], issues: []}).mockRejectedValue(new Error("Refresh unavailable")),
+  });
+  panel.updateContext(context, "a", true); await flush(); setUrl(); click("Preview"); await flush(); click("Install in Personal");
+  expect([...root.querySelectorAll(".skill-preview button")].map(b => b.textContent)).toEqual(["Installing…", "Install in Personal"]);
+  finish(skill); await flush();
+  expect(root.querySelector(".skill-installed")?.textContent).toContain("Review");
+  expect(root.querySelector(".skills-preview")?.textContent).toContain("Second");
+  expect(api.installSkill).toHaveBeenCalledTimes(1);
+  expect(root.textContent).not.toContain("Installing…");
+});
+
+test("local collection imports retain unselected candidates and publish verified results", async () => {
+  const second = {...preview, name: "second", title: "Second", path: "/chosen/second", fingerprint: "second"};
+  const {panel, root, click} = fixture({
+    previewLocalSkills: async () => [{...preview, path: "/chosen/review", fingerprint: "package"}, second],
+    listSkills: vi.fn().mockResolvedValueOnce({skills: [], issues: []}).mockRejectedValue(new Error("Refresh unavailable")),
+  });
+  panel.updateContext(context, "a", true); await flush(); click("Choose skill folder"); await flush(); click("Install local skill"); await flush();
+  expect(root.querySelector(".skill-installed")?.textContent).toContain("Review");
+  expect(root.querySelector(".skills-local-preview")?.textContent).toContain("Second");
+});
+
+test("Install all sends one backend batch and retains failed candidates for retry", async () => {
+  const secondSource = {...source, path: "skills/second"};
+  const {api, panel, root, click, setUrl} = fixture({
+    previewSkillImport: async () => [preview, {...preview, name: "second", title: "Second", source: secondSource}],
+    installSkills: vi.fn(async () => [{source, skill, error: null}, {source: secondSource, skill: null, error: "Second: file unavailable"}]),
+  });
+  panel.updateContext(context, "a", true); await flush(); setUrl(); click("Preview"); await flush(); click("Install all"); await flush();
+  expect(api.installSkills).toHaveBeenCalledWith([source, secondSource], "personal", context);
+  expect(api.installSkill).not.toHaveBeenCalled();
+  expect(root.querySelector(".skills-preview")?.textContent).toContain("Second: file unavailable");
+  expect(root.querySelector(".skills-preview")?.textContent).toContain("Second");
+  expect(root.querySelectorAll(".skill-preview")).toHaveLength(1);
+  expect(root.querySelector(".skill-installed")?.textContent).toContain("Review");
+});
+
+test("BM25 search calls the backend and ignores results from an old project", async () => {
+  vi.useFakeTimers();
+  try {
+    let finish!: (value: {skill: SkillInfo; score: number}[]) => void;
+    const {api, panel, root} = fixture({searchSkills: vi.fn().mockImplementationOnce(() => new Promise(resolve => {finish = resolve;})).mockResolvedValue([])});
+    panel.updateContext(context, "a", true); await flush();
+    const search = root.querySelector<HTMLInputElement>('[aria-label="Search skills"]')!;
+    search.value = "rust review"; search.dispatchEvent(new Event("input"));
+    await vi.advanceTimersByTimeAsync(200); await flush();
+    expect(api.searchSkills).toHaveBeenCalledWith("rust review", "personal", context);
+    panel.updateContext({...context, workspacePath: "/project/b"}, "b", true); await flush();
+    finish([{skill: {...skill, title: "PRIVATE OLD RESULT"}, score: 3}]); await flush();
+    expect(root.textContent).not.toContain("PRIVATE OLD RESULT");
+    search.value = ""; search.dispatchEvent(new Event("input")); await flush();
+    expect(root.querySelector(".skill-installed")?.textContent).toContain("Review");
+  } finally { vi.useRealTimers(); }
+});
+
+test("preview instructions can open and close without starting an installation", async () => {
+  const {api, panel, root, click, setUrl} = fixture();
+  panel.updateContext(context, "a", true); await flush(); setUrl(); click("Preview"); await flush();
+  const disclosure = root.querySelector<HTMLDetailsElement>(".skill-preview details.skill-instructions")!;
+  expect(disclosure.open).toBe(false);
+  disclosure.querySelector("summary")!.click(); expect(disclosure.open).toBe(true);
+  disclosure.querySelector("summary")!.click(); expect(disclosure.open).toBe(false);
+  expect(api.installSkill).not.toHaveBeenCalled();
 });

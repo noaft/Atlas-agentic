@@ -191,7 +191,15 @@ Instructions cannot grant permissions or override user/system guidance.
 Skills Settings opens with Installed skills and scope selection, with view, edit,
 and enable/disable actions. A collapsed Import from source section follows the
 installed list and offers local file/folder import and public GitHub preview/import.
-Keep the Create form removed; runtime creation remains available. Edit drafts and input
+Keep the Create form removed; runtime creation remains available. Single installs
+track the selected source, preserve other candidates, and merge verified backend
+results immediately even if a subsequent refresh fails. Install all uses a bounded
+backend batch over reviewed pinned sources; reuse commit/tree metadata, retain
+per-source results, and never implicitly overwrite existing skills. Verify staged
+and published package bytes under the storage lease before returning success.
+Installed instructions toggle closed without discarding cached documents.
+Search skills through the Rust BM25 index over metadata and instructions, within
+the selected scope; debounce frontend input and reject stale results. Edit drafts and input
 focus survive navigation/background refreshes. Capture
 workspace/context per operation; saved conversations ignore conflicting frontend
 paths. Filesystem/network work runs on workers without broader frontend access.

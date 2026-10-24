@@ -181,6 +181,8 @@ export class ChatStore {
     conversationId: this.state.activeConversationId,
     workspacePath: this.state.activeWorkspace?.path ?? null,
   });
+  installSkills = (sources: SkillSource[], scope: SkillScope, context = this.skillContext()) => this.api.installSkills(sources, scope, context);
+  searchSkills = (query: string, scope: SkillScope, context = this.skillContext()) => this.api.searchSkills(query, scope, context);
   listSkills = (context = this.skillContext()) => this.api.listSkills(context);
   createSkill = (input: SkillDraftInput, scope: SkillScope, context = this.skillContext()) => this.api.createSkill(input, scope, context);
   updateSkillDocument = (id: string, content: string, fingerprint: string, context = this.skillContext()) =>

@@ -130,7 +130,11 @@ assets. It needs no GitHub account or remote source metadata. **Settings → Ski
 opens with installed skills. Choose **Personal** or **Project** to view, edit, or
 enable/disable them. Expand **Import from source** below the list to import a local
 `SKILL.md` file or folder, or preview and install from a public GitHub URL. Review
-the instructions before installing into the selected scope. The Create form stays
+the instructions before installing into the selected scope. **Install all** submits
+the previewed GitHub selections as one backend batch and reports each failure
+without undoing successful installs or overwriting existing skills. Installing one
+skill keeps the other candidates available; only the selected card shows progress.
+The backend verifies the saved package before reporting success. The Create form stays
 removed; ask Atlas to save a skill instead.
 
 To create a skill, ask Atlas: “Save this workflow as a Personal skill named
@@ -139,6 +143,11 @@ overwrites an existing skill. Personal creation asks for approval in Ask and
 Workspace modes; Project creation follows ordinary workspace-write permissions.
 Newly created skills become available to the model on the next request.
 
+Use **Search skills** to rank installed skills locally with BM25 across their
+names, titles, summaries, and instructions. Search stays within the selected scope
+and includes disabled skills. No search content is sent to a remote service.
+
+**View instructions** opens the document; **Close instructions** hides it.
 Use **Edit skill** to edit the full document. Saving preserves supporting files
 and enabled state, rejects renames, and detects changes since the document was
 opened. **Reload skill from disk** recovers from a conflict. Editing a GitHub

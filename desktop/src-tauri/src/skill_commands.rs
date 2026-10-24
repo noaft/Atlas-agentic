@@ -166,3 +166,40 @@ pub async fn set_skill_enabled(
     })
     .await
 }
+
+#[tauri::command]
+pub async fn install_skills(
+    sources: Vec<SkillSource>,
+    scope: SkillScope,
+    context: SkillWorkspaceContext,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<skills::SkillInstallResult>, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.install_skills", move || {
+        let store = state.skills_store(
+            context.conversation_id.as_ref(),
+            context.workspace_path.as_deref(),
+        )?;
+        skills::github::install_many(&sources, &store, scope)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn search_skills(
+    query: String,
+    scope: SkillScope,
+    context: SkillWorkspaceContext,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<skills::SkillSearchResult>, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.search_skills", move || {
+        state
+            .skills_store(
+                context.conversation_id.as_ref(),
+                context.workspace_path.as_deref(),
+            )?
+            .search(&query, scope)
+    })
+    .await
+}

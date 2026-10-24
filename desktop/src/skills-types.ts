@@ -62,6 +62,8 @@ export interface SkillWorkspaceContext {
 }
 
 export interface SkillsApi {
+  installSkills(sources: SkillSource[], scope: SkillScope, context: SkillWorkspaceContext): Promise<SkillInstallResult[]>;
+  searchSkills(query: string, scope: SkillScope, context: SkillWorkspaceContext): Promise<SkillSearchResult[]>;
   createSkill(input: SkillDraftInput, scope: SkillScope, context: SkillWorkspaceContext): Promise<SkillInfo>;
   updateSkillDocument(id: string, content: string, fingerprint: string, context: SkillWorkspaceContext): Promise<SkillInfo>;
   chooseSkillImport(kind: "file" | "folder"): Promise<string | null>;
@@ -72,4 +74,14 @@ export interface SkillsApi {
   previewSkillImport(url: string): Promise<SkillPreview[]>;
   installSkill(source: SkillSource, scope: SkillScope, replace: boolean, context: SkillWorkspaceContext): Promise<SkillInfo>;
   setSkillEnabled(id: string, enabled: boolean, context: SkillWorkspaceContext): Promise<SkillInfo>;
+}
+
+export interface SkillInstallResult {
+  source: SkillSource;
+  skill: SkillInfo | null;
+  error: string | null;
+}
+export interface SkillSearchResult {
+  skill: SkillInfo;
+  score: number;
 }
