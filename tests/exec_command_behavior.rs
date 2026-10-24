@@ -156,7 +156,8 @@ fn exec_command_times_out_despite_continuous_output() {
 
     assert_eq!(result["timed_out"], true);
     assert!(result["exit_code"].is_null());
-    assert_eq!(result["stdout_truncated"], true);
+    // A busy runner may reach the deadline before `yes` produces enough output to truncate.
+    // Output limits and capture yielding are checked separately without this scheduling race.
     assert!(started.elapsed() < Duration::from_millis(500));
 }
 

@@ -337,3 +337,35 @@ fn terminate_child(child: &mut std::process::Child, process_group: i32) -> Resul
         (Err(group_error), Err(child_error)) => Err(format!("{group_error}; {child_error}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CapturedStream;
+    use std::io::{self, Read};
+
+    struct AlwaysReadyOutput {
+        reads: usize,
+    }
+
+    impl Read for AlwaysReadyOutput {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            // Fail rather than hanging if capture ever drains a continuous stream without yielding.
+            assert!(self.reads < 1_000, "capture must yield to deadline checks");
+            buffer.fill(b'x');
+            Ok(buffer.len())
+        }
+    }
+
+    #[test]
+    fn capture_poll_yields_and_truncates_continuously_ready_output() {
+        let mut stream = CapturedStream::new(AlwaysReadyOutput { reads: 0 }, 1024);
+
+        stream.poll().unwrap();
+
+        assert!(stream.reader.reads > 0);
+        assert_eq!(stream.bytes, vec![b'x'; 1024]);
+        assert!(stream.truncated);
+        assert!(!stream.eof);
+    }
+}
