@@ -80,7 +80,7 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
   localCard.append(node("h2", "Import local"), node("p", "Choose a SKILL.md file or a skill folder with supporting files. Review before installing. Scripts are never run.", "settings-hint"), chooseFile, chooseFolder, localArea);
   const otherSources = node("details", undefined, "skills-other-sources");
   otherSources.append(node("summary", "Other sources"), node("p", "Use another installer for GitLab, Git URLs, or local paths. Atlas reads standard skill folders.", "settings-hint"), node("code", "npx skills add <source> --agent universal --copy"), node("p", "Add --global for Personal skills.", "settings-hint"), importCard);
-  element.append(scopeInput, hint, createCard, localCard, node("h2", "Installed skills"), list, otherSources);
+  element.append(scopeInput, hint, localCard, node("h2", "Installed skills"), list, otherSources, createCard);
   // Inputs live inside the outer model Settings form; Enter must not submit it.
   createCard.addEventListener("keydown", event => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); });
 
