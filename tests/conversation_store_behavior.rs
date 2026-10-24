@@ -688,7 +688,7 @@ fn concurrent_appends_write_complete_non_interleaved_lines() {
     let loaded = store.load(&metadata.id).unwrap();
     assert_eq!(loaded.messages.len(), 26);
     assert_eq!(loaded.metadata.message_count, 26);
-    for pair in loaded.messages[2..].chunks_exact(2) {
+    for pair in loaded.messages[2..].as_chunks::<2>().0 {
         assert_eq!(pair[0].role, MessageRole::User);
         assert_eq!(pair[1].role, MessageRole::Assistant);
         assert_eq!(
