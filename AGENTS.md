@@ -177,7 +177,12 @@ selection, then the agent supplies a fallback. Provider prefixes `DEEPSEEK`,
 Only compatible endpoints can opt into keyless requests. API keys must not appear
 in settings views, Debug output, provider errors, or conversation artifacts.
 
-Desktop Settings preserves per-provider drafts until Save/Cancel and supports
+Desktop Settings uses separate Models & providers, MCP connections, Workspace,
+and Permissions pages. Category navigation and Back to chat preserve per-provider
+drafts in memory; Save changes stays on the selected page and Discard resets all
+Settings edits. Preserve mounted fields, keyboard focus, category scroll positions,
+and the asynchronous MCP panel during navigation and background chat updates.
+Desktop Settings supports
 transient model discovery without persisting credentials or selecting a model.
 Manual model IDs remain usable after discovery errors. Provider catalog responses
 carry source identity per model and use generation tokens to reject stale results.

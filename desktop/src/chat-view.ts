@@ -5,7 +5,7 @@ import { createComposerPicker } from "./composer-picker";
 import { createChatComposer } from "./chat-composer";
 import type { ChatStore } from "./chat-state";
 import { renderMarkdown } from "./markdown";
-import { renderSettings } from "./settings-view";
+import { renderSettings, updateSettingsChrome, settingsSections } from "./settings-view";
 import type {
   ActivityRecord,
   ChatState,
@@ -277,8 +277,55 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
   const renderSidebar = (state: Readonly<ChatState>) => {
     const isBusy = chatIsBusy(state);
-    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
-    sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
+    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed && state.screen !== "settings");
+    shell.classList.toggle("settings-open", state.screen === "settings");
+    sidebar.className = state.screen === "settings" ? "sidebar settings-sidebar" : `sidebar${sidebarOpen ? " open" : ""}`;
+    if (state.screen === "settings") {
+      if (sidebar.querySelector("[data-settings-category]")) {
+        for (const item of sidebar.querySelectorAll<HTMLButtonElement>("[data-settings-category]")) {
+          if (item.dataset.settingsCategory === state.settingsSection) {
+            const changed = !item.hasAttribute("aria-current");
+            item.setAttribute("aria-current", "page");
+            if (changed) item.scrollIntoView?.({block: "nearest", inline: "nearest"});
+          } else item.removeAttribute("aria-current");
+        }
+        sidebar.querySelector<HTMLButtonElement>("[data-back-to-chat]")!.disabled = state.settingsStatus === "saving";
+        return;
+      }
+      sidebar.innerHTML = `<div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Your assistant, your way</small></span></div>`;
+      const back = button("← Back to chat", "settings-back");
+      back.dataset.backToChat = "";
+      back.disabled = state.settingsStatus === "saving";
+      back.addEventListener("click", () => { sidebarOpen = false; store.backToChat(); focusComposer(); });
+      const heading = document.createElement("h2");
+      heading.className = "settings-sidebar-heading";
+      heading.textContent = "Settings";
+      const nav = document.createElement("nav");
+      nav.className = "settings-category-nav";
+      nav.setAttribute("aria-label", "Settings categories");
+      for (const [id, section] of Object.entries(settingsSections)) {
+        const item = button(section.title, "settings-category-item");
+        const paths: Record<string, string> = {
+          models: '<rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8m-4-4v4"/>',
+          connections: '<path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
+          workspace: '<path d="M3 7V5h6l2 2h10v12H3Z"/>',
+          permissions: '<path d="m12 3 8 3v5c0 5-8 10-8 10S4 16 4 11V6Z"/><path d="m8 12 3 3 5-6"/>',
+        };
+        item.insertAdjacentHTML("afterbegin", `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[id]}</svg>`);
+        item.dataset.settingsCategory = id;
+        if (state.settingsSection === id) item.setAttribute("aria-current", "page");
+        item.addEventListener("click", () => {
+          store.selectSettingsSection(id as ChatState["settingsSection"]);
+          sidebar.querySelector<HTMLButtonElement>(`[data-settings-category="${id}"]`)?.focus({preventScroll: true});
+        });
+        nav.append(item);
+      }
+      const footer = document.createElement("p");
+      footer.className = "settings-sidebar-footer";
+      footer.textContent = "Make Atlas feel like yours.";
+      sidebar.append(back, heading, nav, footer);
+      return;
+    }
     sidebar.innerHTML = `
       <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
       <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
@@ -416,13 +463,15 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     const isStreaming = state.status === "streaming";
     const isBusy = chatIsBusy(state);
 
-    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
-    sidebar.className = `sidebar${sidebarOpen ? " open" : ""}`;
+    shell.classList.toggle("sidebar-collapsed", sidebarCollapsed && state.screen !== "settings");
+    shell.classList.toggle("settings-open", state.screen === "settings");
+    sidebar.className = state.screen === "settings" ? "sidebar settings-sidebar" : `sidebar${sidebarOpen ? " open" : ""}`;
     const sameSession = renderedState?.activeSessionId === state.activeSessionId;
     const previousScroll = messages.scrollTop;
     const followBottom = !sameSession || messages.scrollHeight - messages.clientHeight - messages.scrollTop < 48;
     if (!sameSession) composer.replaceDraft(state.draftText);
-    if (!renderedState || state.sessions !== renderedState.sessions ||
+    if (!renderedState || state.screen !== renderedState.screen || state.settingsSection !== renderedState.settingsSection ||
+        state.settingsStatus !== renderedState.settingsStatus || state.sessions !== renderedState.sessions ||
         state.conversations !== renderedState.conversations || state.activeSessionId !== renderedState.activeSessionId ||
         state.settings !== renderedState.settings || state.listStatus !== renderedState.listStatus ||
         state.listErrorMessage !== renderedState.listErrorMessage || state.settingsErrorMessage !== renderedState.settingsErrorMessage ||
@@ -432,6 +481,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
 
     if (state.screen === "settings") {
+      updateSettingsChrome(settingsScreen, state, store);
+      const breadcrumb = settingsScreen.querySelector<HTMLElement>("[data-settings-breadcrumb]");
+      if (breadcrumb) breadcrumb.textContent = settingsSections[state.settingsSection].title;
       const previous = renderedState;
       const editingInput = settingsScreen.contains(document.activeElement) && document.activeElement?.tagName === "INPUT";
       const draft = state.settingsDraft;
@@ -458,26 +510,24 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       settingsScreen.hidden = false;
       settingsScreen.style.display = "contents";
       main.className = "settings-main";
-      const scrollBefore = settingsScreen.querySelector<HTMLElement>(".settings-scroll")?.scrollTop ?? 0;
+      const scrollPositions = new Map([...settingsScreen.querySelectorAll<HTMLElement>("[data-settings-section]")].map(page => [page.dataset.settingsSection, page.scrollTop]));
       const openAdvanced = settingsScreen.querySelector<HTMLDetailsElement>(".settings-advanced")?.open ?? false;
       const active = document.activeElement instanceof HTMLInputElement ? document.activeElement : null;
       const fieldName = active?.dataset.settingsField;
+      const permissionMode = active?.hasAttribute("data-settings-permission-mode") ? active.value : null;
       const selection = active?.type === "text" || active?.type === "password" ? [active.selectionStart, active.selectionEnd] : null;
       settingsScreen.replaceChildren();
       const mobileHeader = document.createElement("header");
-      mobileHeader.className = "settings-mobile-header";
-      const toggle = button("☰", "sidebar-toggle");
-      toggle.dataset.sidebarToggle = "";
-      toggle.setAttribute("aria-label", sidebarExpanded() ? "Hide sidebar" : "Show sidebar");
-      toggle.setAttribute("aria-expanded", String(sidebarExpanded()));
-      toggle.addEventListener("click", toggleSidebar);
-      mobileHeader.append(toggle);
+      mobileHeader.className = "settings-topbar";
+      mobileHeader.innerHTML = `<span class="settings-breadcrumb">Settings <span aria-hidden="true">/</span> <strong data-settings-breadcrumb></strong></span>`;
+      mobileHeader.querySelector<HTMLElement>("[data-settings-breadcrumb]")!.textContent = settingsSections[state.settingsSection].title;
       const settingsHost = document.createElement("div");
       settingsHost.className = "settings-scroll";
       settingsScreen.append(mobileHeader, settingsHost);
       renderSettings(settingsHost, state, store);
-      settingsHost.scrollTop = scrollBefore;
+      for (const page of settingsHost.querySelectorAll<HTMLElement>("[data-settings-section]")) page.scrollTop = scrollPositions.get(page.dataset.settingsSection) ?? 0;
       const advanced = settingsHost.querySelector<HTMLDetailsElement>(".settings-advanced"); if (advanced) advanced.open = openAdvanced;
+      if (permissionMode) settingsHost.querySelector<HTMLInputElement>(`[data-settings-permission-mode][value="${permissionMode}"]`)?.focus({preventScroll: true});
       if (fieldName && previousDraft?.selectedProvider === draft?.selectedProvider) {
         const replacement = [...settingsHost.querySelectorAll<HTMLInputElement>("[data-settings-field]")].find(input => input.dataset.settingsField === fieldName);
         replacement?.focus({preventScroll: true});

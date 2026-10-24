@@ -506,3 +506,97 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .mcp-settings > button { justify-self: start; }
 .mcp-connection { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; overflow-wrap: anywhere; }
 .mcp-connection > button { justify-self: start; }
+
+/* Settings owns a separate navigation rail and independently scrolling pages. */
+.settings-open { background: #fdfbff; }
+.settings-sidebar { background: #f6f1fb; padding: 23px 18px; }
+.settings-back { display: flex; align-items: center; gap: 9px; width: 100%; margin: 3px 0 28px; padding: 10px 9px; border: 0; border-radius: 9px; background: transparent; color: #8c7a9d; text-align: left; font-size: 12px; }
+.settings-back:hover { background: #eee5f7; color: #70558b; }
+.settings-back svg, .settings-category-item svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.settings-sidebar-heading { margin: 0 11px 12px; color: #a393af; font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+.settings-category-nav { display: grid; gap: 5px; }
+.settings-category-item { display: flex; align-items: center; gap: 10px; padding: 12px 11px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #8c7b9b; font-size: 12px; text-align: left; }
+.settings-category-item:hover { background: #f0e8f8; }
+.settings-category-item[aria-current="page"] { background: #eae0f5; border-color: #e0d3ed; color: #72588d; font-weight: 650; }
+.settings-sidebar-footer { margin-top: auto; padding: 18px 11px 2px; border-top: 1px solid #e8deef; color: #a08faa; font-size: 11px; line-height: 1.7; }
+.settings-topbar { display: flex; align-items: center; gap: 12px; min-height: 62px; padding: 0 36px; border-bottom: 1px solid #eae2f1; background: #fffdfc; color: #9988a7; font-size: 11px; }
+.settings-topbar strong { color: #766382; font-weight: 550; }
+.settings-topbar .settings-breadcrumb { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.settings-scroll { overflow: hidden; }
+.settings-panel { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0; }
+.settings-heading { flex: 0 0 auto; width: min(760px, calc(100% - 72px)); margin: 0 auto; padding: 34px 0 0; }
+.settings-heading h1 { color: #695377; font-size: 27px; font-weight: 650; letter-spacing: -.035em; }
+.settings-heading p { margin: 8px 0 25px; color: #97859f; font-size: 12px; line-height: 1.7; }
+.settings-form { display: flex; flex: 1 1 auto; flex-direction: column; gap: 0; min-height: 0; }
+.settings-category-page { display: grid; align-content: start; gap: 20px; flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 max(36px, calc((100% - 760px) / 2)) 32px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.settings-category-page[hidden], .settings-actions[hidden] { display: none; }
+.settings-card { display: grid; gap: 18px; min-width: 0; padding: 24px; border: 1px solid #e6ddec; border-radius: 13px; background: #fffefd; }
+.settings-card h2 { margin: 0; color: #6f5d7e; font-size: 14px; font-weight: 650; }
+.settings-card > .settings-hint { margin: -9px 0 0; }
+.settings-field { min-width: 0; gap: 8px; }
+.settings-label { color: #786584; font-size: 11px; font-weight: 600; }
+.settings-field input, .settings-field select { min-width: 0; min-height: 40px; padding: 9px 12px; border-color: #e0d5e9; border-radius: 8px; background: #fff; color: #6d5e79; font-size: 12px; }
+.settings-field input::placeholder { color: #ab9ab6; }
+.settings-field input:disabled, .settings-field select:disabled { background: #f8f5fb; }
+.settings-hint { color: #94839f; font-size: 11px; line-height: 1.7; }
+.settings-check { align-items: flex-start; line-height: 1.6; }
+.settings-check input, .settings-permission-card input { accent-color: #8b6db6; }
+.settings-advanced { padding-top: 18px; border-top: 1px solid #eee7f3; color: #8d7a9b; font-size: 12px; }
+.settings-advanced summary { cursor: pointer; }
+.settings-advanced > .settings-field, .settings-advanced > .settings-check { margin-top: 17px; }
+.settings-panel .secondary-button, .settings-panel .primary-button { min-height: 36px; padding: 9px 14px; border: 1px solid #ded2e9; border-radius: 8px; box-shadow: none; background: #faf7fd; color: #826b95; font-size: 11px; font-weight: 550; }
+.settings-panel .secondary-button { justify-self: start; }
+.settings-panel .secondary-button:hover:not(:disabled) { background: #eee5f7; }
+.settings-panel .primary-button { border-color: #7e64a7; background: #846bb0; color: #fff; }
+.settings-panel .primary-button:hover:not(:disabled) { background: #765b9f; }
+.settings-actions { flex: 0 0 auto; margin: 0; padding: 17px max(36px, calc((100% - 760px) / 2)); border-top: 1px solid #e8dfef; background: #fffdfc; }
+.settings-draft-status { margin-right: auto; }
+.settings-actions .secondary-button { border-color: transparent; background: transparent; }
+.settings-workspace { padding: 17px; border-color: #e9e0f0; border-radius: 9px; background: #f8f4fc; }
+.settings-workspace-value { gap: 6px; }
+.settings-workspace-value strong { overflow-wrap: anywhere; color: #7c658d; font-size: 13px; }
+.settings-workspace-actions { flex-wrap: wrap; margin-top: 9px; }
+.settings-permission-group { display: grid; gap: 12px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.settings-permission-group legend { margin-bottom: 17px; color: #9a87a6; font-size: 11px; }
+.settings-permission-card { display: flex; align-items: flex-start; gap: 13px; padding: 20px; border: 1px solid #e6ddec; border-radius: 11px; background: #fffefd; cursor: pointer; }
+.settings-permission-card:has(input:checked) { border-color: #ccbbdf; background: #f6f0fc; }
+.settings-permission-card:has(input:disabled) { cursor: default; opacity: .65; }
+.settings-permission-card > input { margin: 3px 0 0; }
+.settings-permission-card > span { display: grid; gap: 7px; }
+.settings-permission-card strong { color: #7c648d; font-size: 12px; font-weight: 600; }
+.settings-category-page .mcp-settings { margin: 0; padding: 0; border: 0; }
+.settings-category-page .mcp-settings > h2 { display: none; }
+.settings-category-page .mcp-settings > .settings-hint { margin-bottom: 4px; }
+.settings-category-page .mcp-connection { padding: 21px 23px; gap: 10px; border-color: #e6ddec; border-radius: 13px; background: #fffefd; }
+.settings-category-page .mcp-connection > strong { color: #796088; font-size: 13px; }
+.settings-category-page .mcp-connection > [role="status"] { color: #9b8aa7; font-size: 11px; }
+
+@media (min-width: 821px) {
+  .atlas-shell.settings-open.sidebar-collapsed { grid-template-columns: clamp(220px, 22vw, 280px) minmax(0, 1fr); }
+  .settings-open.sidebar-collapsed .settings-sidebar { visibility: visible; padding-inline: 18px; border-right: 1px solid var(--border); pointer-events: auto; }
+}
+@media (max-width: 820px) {
+  .atlas-shell.settings-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-open .settings-sidebar { position: static; inset: auto; width: auto; min-height: 0; padding: 10px 14px 9px; transform: none; box-shadow: none; border-right: 0; border-bottom: 1px solid #e6ddec; }
+  .settings-sidebar .brand, .settings-sidebar-heading, .settings-sidebar-footer { display: none; }
+  .settings-back { width: auto; margin: 0 0 5px; padding: 5px 7px; font-size: 11px; }
+  .settings-category-nav { display: flex; gap: 5px; overflow-x: auto; }
+  .settings-category-item { flex: 0 0 auto; gap: 7px; padding: 9px 11px; font-size: 11px; white-space: nowrap; }
+  .settings-category-item svg { width: 14px; height: 14px; }
+  .settings-topbar { min-height: 45px; padding: 0 24px; }
+  .settings-heading { width: calc(100% - 48px); padding-top: 25px; }
+  .settings-category-page { padding: 0 24px 26px; }
+  .settings-actions { padding: 14px 24px; }
+}
+@media (max-width: 480px) {
+  .settings-topbar { padding-inline: 18px; }
+  .settings-heading { width: calc(100% - 36px); padding-top: 22px; }
+  .settings-heading h1 { font-size: 24px; }
+  .settings-heading p { margin-bottom: 20px; }
+  .settings-category-page { gap: 15px; padding-inline: 18px; }
+  .settings-card { gap: 17px; padding: 19px; }
+  .settings-actions { gap: 6px; padding: 12px 18px; flex-wrap: nowrap; }
+  .settings-actions .settings-draft-status { max-width: 100px; font-size: 10px; }
+  .settings-panel .primary-button, .settings-panel .secondary-button { padding: 9px 11px; }
+  .settings-permission-card { padding: 17px; }
+}

@@ -17,6 +17,7 @@ import type {
   PermissionMode,
   SettingsDraft,
   SettingsView,
+  SettingsSection,
   Workspace,
 } from "./types";
 
@@ -70,6 +71,7 @@ const initialState = (): ChatState => ({
   listStatus: "idle",
   listErrorMessage: null,
   screen: "chat",
+  settingsSection: "models",
   settings: null,
   settingsDraft: null,
   settingsStatus: "idle",
@@ -600,11 +602,16 @@ export class ChatStore {
     if (
       this.state.workspaceBusy ||
       this.state.modelListStatus === "saving" ||
+      this.state.settingsStatus === "saving" ||
       !this.state.settings
     )
       return;
     this.settingsToken += 1;
     this.settingsDiscoveryToken += 1;
+    if (this.state.settingsDraft) {
+      this.update({screen:"settings", ...(this.state.settingsModelsStatus === "loading" ? {settingsModelsStatus:"idle" as const} : {})});
+      return;
+    }
     this.update({
       screen: "settings",
       settingsDraft: draftFromSettings(this.state.settings),
@@ -634,6 +641,50 @@ export class ChatStore {
       settingsDraft: null,
       settingsStatus: "idle",
       settingsErrorMessage: null,
+    });
+  }
+
+  backToChat(): void {
+    if (this.state.settingsStatus === "saving") return;
+    this.settingsToken++;
+    this.settingsDiscoveryToken++;
+    this.update({screen:"chat", ...(this.state.settingsModelsStatus === "loading" ? {settingsModelsStatus:"idle" as const} : {})});
+  }
+
+  selectSettingsSection(section: SettingsSection): void {
+    if (this.state.screen !== "settings") return;
+    this.update({settingsSection:section});
+  }
+
+  discardSettingsChanges(): void {
+    if (!this.state.settings || this.state.settingsStatus === "saving") return;
+    this.settingsToken++;
+    this.settingsDiscoveryToken++;
+    this.update({settingsDraft:draftFromSettings(this.state.settings), settingsStatus:"idle", settingsErrorMessage:null,
+      settingsModels:[],settingsModelsStatus:"idle",settingsModelsError:null});
+  }
+
+  hasSettingsChanges(): boolean {
+    const settings = this.state.settings;
+    const draft = this.state.settingsDraft;
+    if (!settings || !draft) return false;
+    const baseline = draftFromSettings(settings);
+    if (draft.selectedProvider !== baseline.selectedProvider ||
+        draft.historyLimit !== baseline.historyLimit || draft.defaultPermissionMode !== baseline.defaultPermissionMode ||
+        draft.defaultWorkspace?.path !== baseline.defaultWorkspace?.path) return true;
+    const differs = (current:ProviderDraft, expected:ProviderDraft) => {
+      // Ignore discovery bookkeeping and cached, merely visited provider drafts.
+      const fields = (value:ProviderDraft) => ({apiKey:value.apiKey.trim(), clearApiKey:value.clearApiKey,
+        baseUrl:value.baseUrl,model:value.model,modelLimits:value.modelLimits ?? {},capabilities:value.capabilities,
+        allowKeyless:value.allowKeyless,requestOutputTokens:value.requestOutputTokens});
+      return JSON.stringify(fields(current)) !== JSON.stringify(fields(expected));
+    };
+    if (!settings.providers || !draft.selectedProvider) return differs(draft,baseline);
+    return settings.providers.some(profile => {
+      const current = profile.provider === draft.selectedProvider ? this.profileDraft(draft) : draft.profileDrafts?.[profile.provider];
+      if (!current) return false;
+      return differs(current,{apiKey:"",clearApiKey:false,baseUrl:profile.baseUrl,model:profile.model,
+        modelLimits:profile.modelLimits,capabilities:profile.capabilities,allowKeyless:profile.allowKeyless,requestOutputTokens:profile.requestOutputTokens});
     });
   }
 
@@ -706,7 +757,7 @@ export class ChatStore {
     }
   }
 
-  async saveSettings(): Promise<void> {
+  async saveSettings(options: {stayInSettings?:boolean} = {}): Promise<void> {
     const draft = this.state.settingsDraft;
     if (!draft || this.state.settingsStatus === "saving") {
       return;
@@ -745,9 +796,9 @@ export class ChatStore {
             ? nextDefault
             : activeWorkspaceBeforeSave;
       this.update({
-        screen: "chat",
+        screen: options.stayInSettings ? "settings" : "chat",
         settings,
-        settingsDraft: null,
+        settingsDraft: options.stayInSettings ? draftFromSettings(settings) : null,
         settingsStatus: "idle",
         settingsErrorMessage: null,
         activeWorkspace,
@@ -797,8 +848,23 @@ export class ChatStore {
     try {
       const updated = await this.api.setModel(model, settings.source);
       if (token !== this.modelListToken) return;
+      // Retained Settings drafts follow chat model choices unless that field was edited.
+      let settingsDraft = this.state.settingsDraft;
+      if (settingsDraft) {
+        const provider = settings.provider;
+        const previousModel = settings.providers?.find(profile => profile.provider === provider)?.model ?? settings.model;
+        const nextModel = updated.providers?.find(profile => profile.provider === provider)?.model ?? updated.model;
+        if (settingsDraft.selectedProvider === provider && settingsDraft.model === previousModel) {
+          settingsDraft = { ...settingsDraft, model: nextModel };
+        }
+        const cached = provider && settingsDraft.profileDrafts?.[provider];
+        if (provider && cached?.model === previousModel) {
+          settingsDraft = { ...settingsDraft, profileDrafts: { ...settingsDraft.profileDrafts, [provider]: { ...cached, model: nextModel } } };
+        }
+      }
       this.update({
         settings: updated,
+        settingsDraft,
         modelListStatus: "idle",
         modelListErrorMessage: null,
         modelListRetryAvailable: false,

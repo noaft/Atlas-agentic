@@ -187,6 +187,8 @@ export interface CompactionFailure {
   task: {id: string; arguments: Record<string, unknown>} | null;
 }
 
+export type SettingsSection = "models" | "connections" | "workspace" | "permissions";
+
 export interface ChatState {
   compactionFailure: CompactionFailure | null;
   tasks: TaskDescriptor[];
@@ -215,6 +217,7 @@ export interface ChatState {
   pendingApproval: AuthorizationRequest | null;
   toolActivity: ToolActivity[];
   screen: "chat" | "settings";
+  settingsSection: SettingsSection;
   settings: SettingsView | null;
   settingsDraft: SettingsDraft | null;
   settingsModels?: ModelInfo[];

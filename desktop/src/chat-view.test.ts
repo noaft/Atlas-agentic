@@ -655,7 +655,7 @@ test("Settings round trip preserves the live draft", async () => {
   const parent = input.parentElement;
 
   click(root, "[data-open-settings]");
-  root.querySelector<HTMLButtonElement>(".settings-actions .secondary-button")!.click();
+  click(root, "[data-back-to-chat]");
 
   expect(composer(root)).toBe(input);
   expect(input.parentElement).toBe(parent);
@@ -994,8 +994,48 @@ test("hidden settings resize cannot collapse the composer", async () => {
   expect(composer(root).style.height).toBe("28px");
 
   measuredHeight = 72;
-  root.querySelector<HTMLButtonElement>(".settings-actions .secondary-button")!.click();
+  click(root, "[data-back-to-chat]");
   expect(composer(root).style.height).toBe("72px");
+});
+
+test("Settings replaces chat navigation with category pages and returns to the same draft", async () => {
+  const {root,store} = setup();
+  await store.initialize();
+  const draft = inputComposer(root,"My draft stays here");
+  const owner = store.getState().activeSessionId;
+  click(root,"[data-open-settings]");
+  const sidebar = root.querySelector<HTMLElement>("[data-sidebar]")!;
+  expect(sidebar.querySelector("[data-conversation-list]")).toBeNull();
+  expect([...sidebar.querySelectorAll("[data-settings-category]")].map(button=>button.textContent?.trim())).toEqual([
+    "Models & providers","MCP connections","Workspace","Permissions",
+  ]);
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.value="private-unsaved-key";key.focus();key.dispatchEvent(new Event("input",{bubbles:true}));
+  click(root,'[data-settings-category="workspace"]');
+  expect(root.querySelector('[data-settings-section="workspace"]')?.hasAttribute("hidden")).toBe(false);
+  expect(root.querySelector('[data-settings-section="models"]')?.hasAttribute("hidden")).toBe(true);
+  click(root,'[data-settings-category="models"]');
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("private-unsaved-key");
+  click(root,"[data-back-to-chat]");
+  expect(store.getState().screen).toBe("chat");
+  expect(store.getState().activeSessionId).toBe(owner);
+  expect(composer(root)).toBe(draft);
+  expect(draft.value).toBe("My draft stays here");
+  click(root,"[data-open-settings]");
+  expect(root.querySelector<HTMLInputElement>("[data-settings-api-key]")?.value).toBe("private-unsaved-key");
+});
+
+test("Settings navigation remains available when the chat sidebar was collapsed", async () => {
+  const {root,store} = setup();
+  await store.initialize();
+  click(root,"[data-sidebar-toggle]");
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(true);
+  store.openSettings();
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(false);
+  expect(root.querySelector('[data-settings-category="connections"]')).not.toBeNull();
+  click(root,"[data-back-to-chat]");
+  expect(root.querySelector(".atlas-shell")?.classList.contains("sidebar-collapsed")).toBe(true);
 });
 
 test("composer recalculates its height when the window resizes", async () => {
@@ -1994,4 +2034,22 @@ test("long tool runs show one current call and retain complete collapsed saved h
   expect(history.open).toBe(false);
   expect(history.querySelectorAll(".activity-row")).toHaveLength(201);
   expect(store.getState().messages.at(-1)?.activity).toHaveLength(201);
+});
+
+test("Settings permission changes preserve keyboard focus", async () => {
+  const {root,store}=setup();await store.initialize();store.openSettings();store.selectSettingsSection("permissions");
+  const radio=root.querySelector<HTMLInputElement>('[data-settings-permission-mode][value="workspace"]')!;
+  radio.focus();radio.checked=true;radio.dispatchEvent(new Event("change",{bubbles:true}));
+  expect(document.activeElement).toBe(root.querySelector('[data-settings-permission-mode][value="workspace"]'));
+});
+
+test("Settings navigation keeps keyboard focus during background updates", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = async () => pending.promise;
+  const {root,store}=setup(api);await store.initialize();
+  store.setDraft("Background request");const sending=store.send();store.openSettings();
+  const nav=root.querySelector<HTMLButtonElement>('[data-settings-category="models"]')!;nav.focus();
+  pending.resolve({answer:"Done",metadata,created:true});await sending;
+  expect(document.activeElement).toBe(nav);
 });

@@ -1,8 +1,60 @@
 import type { ChatStore } from "./chat-state";
-import type { ChatState } from "./types";
+import type { ChatState, SettingsSection } from "./types";
 import { createMcpSettingsPanel } from "./mcp-settings";
 
 const mcpPanels = new WeakMap<ChatStore, HTMLElement>();
+
+export const settingsSections: Record<SettingsSection, { title: string; subtitle: string }> = {
+  models: { title: "Models & providers", subtitle: "Choose how Atlas connects to your models." },
+  connections: { title: "MCP connections", subtitle: "Manage the tools and services Atlas can connect to." },
+  workspace: { title: "Workspace", subtitle: "Choose where new chats start working." },
+  permissions: { title: "Permissions", subtitle: "Set how much Atlas asks before using tools in new chats." },
+};
+
+/** Switch pages without replacing input nodes or the asynchronous connections panel. */
+export function updateSettingsSection(container: HTMLElement, section: SettingsSection): void {
+  for (const panel of container.querySelectorAll<HTMLElement>("[data-settings-section]")) {
+    panel.hidden = panel.dataset.settingsSection !== section;
+  }
+  const title = container.querySelector<HTMLElement>("#settings-title");
+  const subtitle = container.querySelector<HTMLElement>("[data-settings-subtitle]");
+  if (title) title.textContent = settingsSections[section].title;
+  if (subtitle) subtitle.textContent = settingsSections[section].subtitle;
+  const footer = container.querySelector<HTMLElement>(".settings-actions");
+  if (footer) footer.hidden = section === "connections";
+}
+
+/** Refresh lightweight chrome while typed inputs and connection workers keep their identity. */
+export function updateSettingsChrome(container: HTMLElement, state: Readonly<ChatState>, store: ChatStore): void {
+  updateSettingsSection(container, state.settingsSection);
+  const saving = state.settingsStatus === "saving";
+  const changed = store.hasSettingsChanges();
+  const save = container.querySelector<HTMLButtonElement>('.settings-actions [type="submit"]');
+  if (save) {
+    save.disabled = saving || !changed;
+    save.textContent = saving ? "Saving…" : "Save changes";
+  }
+  const discard = container.querySelector<HTMLButtonElement>("[data-discard-settings]");
+  if (discard) discard.disabled = saving;
+  const status = container.querySelector<HTMLElement>(".settings-draft-status");
+  if (status) status.textContent = changed ? "Unsaved changes" : "No unsaved changes";
+}
+
+function settingsCard(title: string, description?: string): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "settings-card";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  card.append(heading);
+  if (description) {
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = description;
+    card.append(hint);
+  }
+  return card;
+}
+
 
 function field(
   labelText: string,
@@ -56,12 +108,26 @@ export function renderSettings(
   title.id = "settings-title";
   title.textContent = "Settings";
   const subtitle = document.createElement("p");
-  subtitle.textContent = "Model access and the starting folder Atlas uses for new chats.";
+  subtitle.dataset.settingsSubtitle = "";
   heading.append(title, subtitle);
 
   const form = document.createElement("form");
   form.className = "settings-form";
   form.dataset.settingsForm = "";
+  const modelSection = document.createElement("section");
+  modelSection.dataset.settingsSection = "models";
+  modelSection.className = "settings-category-page";
+  const connectionCard = settingsCard("Model connection", "Credentials and endpoint for the selected provider.");
+  const limitsCard = settingsCard("Model limits & memory", "Optional capacity overrides apply to this model and endpoint.");
+  const workspaceSection = document.createElement("section");
+  workspaceSection.dataset.settingsSection = "workspace";
+  workspaceSection.className = "settings-category-page";
+  const permissionsSection = document.createElement("section");
+  permissionsSection.dataset.settingsSection = "permissions";
+  permissionsSection.className = "settings-category-page";
+  const connectionsSection = document.createElement("section");
+  connectionsSection.dataset.settingsSection = "connections";
+  connectionsSection.className = "settings-category-page";
   const saving = state.settingsStatus === "saving";
   const profile = settings.providers?.find(p => p.provider === draft.selectedProvider);
   const overridden = new Set(profile?.environmentOverrides ?? settings.environmentOverrides);
@@ -79,7 +145,7 @@ export function renderSettings(
     select.addEventListener("change", () => store.selectSettingsProvider(select.value as import("./types").ProviderId));
     label.append(title, select);
     if (settings.environmentOverrides.includes("provider")) { const hint = document.createElement("span"); hint.className = "settings-hint"; hint.textContent = "Controlled by ATLAS_PROVIDER."; label.append(hint); }
-    form.append(label);
+    connectionCard.append(label);
   }
 
   const key = inputFor(
@@ -97,7 +163,7 @@ export function renderSettings(
       : credentialSource === "settings"
         ? "A key is saved locally. Leave this blank to keep it."
         : "No API key is configured.";
-  form.append(field(`${profile?.name ?? "DeepSeek"} API key`, key, keySource));
+  connectionCard.append(field(`${profile?.name ?? "DeepSeek"} API key`, key, keySource));
 
   const clearRow = document.createElement("label");
   clearRow.className = "settings-check";
@@ -111,14 +177,14 @@ export function renderSettings(
   const clearText = document.createElement("span");
   clearText.textContent = "Remove the locally saved API key";
   clearRow.append(clear, clearText);
-  form.append(clearRow);
+  connectionCard.append(clearRow);
 
   const baseUrl = inputFor(
     draft.baseUrl,
     (value) => store.updateSettingsDraft({ baseUrl: value }),
     saving || overridden.has("baseUrl"),
   );
-  form.append(
+  connectionCard.append(
     field(
       "Base URL",
       baseUrl,
@@ -130,19 +196,19 @@ export function renderSettings(
     const model = inputFor(draft.model, value => store.updateSettingsDraft({model: value}), saving || overridden.has("model"));
     model.dataset.settingsModel = "";
     model.placeholder = "Enter model ID or choose below";
-    form.append(field("Model", model, overridden.has("model") ? `Controlled by ${envPrefix}_MODEL.` : "Enter an exact model ID, or refresh the available models."));
+    connectionCard.append(field("Model", model, overridden.has("model") ? `Controlled by ${envPrefix}_MODEL.` : "Enter an exact model ID, or refresh the available models."));
     const refresh = document.createElement("button"); refresh.type = "button"; refresh.className = "secondary-button"; refresh.dataset.refreshSettingsModels = "";
     refresh.textContent = state.settingsModelsStatus === "loading" ? "Loading models…" : "Refresh models";
     refresh.disabled = saving || state.settingsModelsStatus === "loading";
-    refresh.addEventListener("click", () => void store.refreshSettingsModels()); form.append(refresh);
+    refresh.addEventListener("click", () => void store.refreshSettingsModels()); connectionCard.append(refresh);
     if (state.settingsModels?.length) {
       const select = document.createElement("select"); select.setAttribute("aria-label","Available models"); select.dataset.settingsModelList = "";
       const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "Choose a model"; select.append(placeholder);
       for (const item of state.settingsModels) { const option = document.createElement("option"); option.value = item.id; option.textContent = item.name; select.append(option); }
       select.value = draft.model; select.disabled = saving || overridden.has("model");
-      select.addEventListener("change", () => { if (select.value) store.updateSettingsDraft({model: select.value}); }); form.append(select);
+      select.addEventListener("change", () => { if (select.value) store.updateSettingsDraft({model: select.value}); }); connectionCard.append(select);
     }
-    if (state.settingsModelsError) { const error = document.createElement("p"); error.className = "settings-error"; error.setAttribute("role","alert"); error.textContent = state.settingsModelsError; form.append(error); }
+    if (state.settingsModelsError) { const error = document.createElement("p"); error.className = "settings-error"; error.setAttribute("role","alert"); error.textContent = state.settingsModelsError; connectionCard.append(error); }
     const advanced = document.createElement("details"); advanced.className = "settings-advanced";
     const summary = document.createElement("summary"); summary.textContent = "Advanced model options"; advanced.append(summary);
     for (const [name,labelText] of [["temperature","Temperature parameter"],["topP","Top-p parameter"],["jsonMode","JSON response mode"],["streamUsage","Request streamed usage"],["imageInput","Image input"]] as const) {
@@ -164,7 +230,7 @@ export function renderSettings(
       toggle.addEventListener("change", () => store.updateSettingsDraft({allowKeyless: toggle.checked}));
       label.append(toggle, document.createTextNode("This endpoint does not require an API key")); advanced.append(label);
     }
-    form.append(advanced);
+    connectionCard.append(advanced);
   } else {
   const modelSummary = document.createElement("div");
   modelSummary.className = "settings-model-summary";
@@ -179,52 +245,50 @@ export function renderSettings(
     ? "Controlled by DEEPSEEK_MODEL. Remove that environment setting to choose a model in chat."
     : "Choose the active model from the chat composer after saving settings.";
   modelSummary.append(modelLabel, modelValue, modelHint);
-  form.append(modelSummary);
+  connectionCard.append(modelSummary);
 
   }
 
-  const permission = document.createElement("select");
-  permission.dataset.settingsPermissionMode = "";
-  permission.disabled = saving;
-  permission.setAttribute("aria-label", "Default tool access");
-  for (const [value, label] of [
-    ["ask", "Ask before changes"],
-    ["workspace", "Allow workspace changes"],
-    ["fullAccess", "Full access"],
+  const permissionGroup = document.createElement("fieldset");
+  permissionGroup.className = "settings-permission-group";
+  const legend = document.createElement("legend");
+  legend.textContent = "Default tool access for new chats";
+  permissionGroup.append(legend);
+  for (const [value, labelText, description] of [
+    ["ask", "Ask", "Read workspace files freely. Ask before changes, commands, external tools, or desktop access."],
+    ["workspace", "Workspace", "Also allow non-destructive workspace changes. Ask before commands, deletion, external tools, or desktop access."],
+    ["fullAccess", "Full access", "Atlas can run tools without asking. Your OS account permissions still apply."],
   ] as const) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    permission.append(option);
+    const label = document.createElement("label");
+    label.className = "settings-permission-card";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "default-permission-mode";
+    radio.value = value;
+    radio.dataset.settingsPermissionMode = "";
+    radio.checked = draft.defaultPermissionMode === value;
+    radio.disabled = saving;
+    radio.addEventListener("change", () => {
+      if (radio.checked) store.updateSettingsDraft({ defaultPermissionMode: value });
+    });
+    const text = document.createElement("span");
+    const title = document.createElement("strong"); title.textContent = labelText;
+    const hint = document.createElement("span"); hint.className = "settings-hint"; hint.textContent = description;
+    text.append(title, hint); label.append(radio, text); permissionGroup.append(label);
   }
-  permission.value = draft.defaultPermissionMode;
-  permission.addEventListener("change", () =>
-    store.updateSettingsDraft({
-      defaultPermissionMode: permission.value as import("./types").PermissionMode,
-    }),
-  );
-  const permissionField = document.createElement("label");
-  permissionField.className = "settings-field";
-  const permissionTitle = document.createElement("span");
-  permissionTitle.className = "settings-label";
-  permissionTitle.textContent = "Default tool access for new chats";
-  const permissionHint = document.createElement("span");
+  const permissionHint = document.createElement("p");
   permissionHint.className = "settings-hint";
-  permissionHint.textContent =
-    draft.defaultPermissionMode === "fullAccess"
-      ? "Warning: Atlas can run tools without asking. Your OS account permissions still apply."
-      : "Each saved chat keeps its own selection.";
-  permissionField.append(permissionTitle, permission, permissionHint);
-  form.append(permissionField);
+  permissionHint.textContent = "This default applies to new chats. Each saved chat keeps its own selection.";
+  permissionsSection.append(permissionGroup, permissionHint);
 
   if (overridden.has("historyLimit")) {
     const history = inputFor(String(draft.historyLimit), () => {}, true);
-    form.append(field("Conversation history messages", history, "Legacy history mode: controlled by ATLAS_HISTORY_MESSAGES. Automatic memory is disabled."));
+    limitsCard.append(field("Conversation history messages", history, "Legacy history mode: controlled by ATLAS_HISTORY_MESSAGES. Automatic memory is disabled."));
   } else {
     const memoryHint = document.createElement("p");
     memoryHint.className = "settings-hint";
-    memoryHint.textContent = "Conversation memory sends all history until compaction. Auto-compact at 90%, preserve the latest 10 messages. Type /compact to compact manually.";
-    form.append(memoryHint);
+    memoryHint.textContent = "Conversation memory sends all history until compaction. Auto-compact at 90%, preserve the latest 10 messages. Choose /compact from the task menu to compact manually.";
+    limitsCard.append(memoryHint);
   }
   const limits = draft.modelLimits?.[limitModel];
   const setLimit = (key: "contextWindow" | "maxOutputTokens", value: string) => {
@@ -237,7 +301,7 @@ export function renderSettings(
   for (const [key, label] of [["contextWindow", "Model context limit (tokens)"], ["maxOutputTokens", "Model output limit (tokens)"]] as const) {
     const input = inputFor(limits?.[key] ? String(limits[key]) : "", (value) => setLimit(key, value), saving || !limitModel);
     input.type = "number"; input.min = "1"; input.step = "1";
-    form.append(field(label, input, "Optional combined context and output overrides for this model and endpoint. Set both, or leave both blank."));
+    limitsCard.append(field(label, input, "Optional combined context and output overrides for this model and endpoint. Set both, or leave both blank."));
   }
 
   const workspaceBlock = document.createElement("div");
@@ -288,7 +352,11 @@ export function renderSettings(
   workspaceActions.append(choose);
   if (!usingAutomaticWorkspace) workspaceActions.append(remove);
   workspaceBlock.append(workspaceLabel, workspaceValue, workspaceActions);
-  form.append(workspaceBlock);
+  const workspaceCard = settingsCard("Default starting folder", "New chats use this folder unless you choose another. Existing chats keep their starting folder.");
+  workspaceCard.append(workspaceBlock);
+  workspaceSection.append(workspaceCard);
+  modelSection.append(connectionCard, limitsCard);
+  form.append(modelSection, connectionsSection, workspaceSection, permissionsSection);
 
   if (state.settingsErrorMessage) {
     const error = document.createElement("div");
@@ -303,25 +371,38 @@ export function renderSettings(
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "secondary-button";
-  cancel.textContent = "Cancel";
+  cancel.textContent = "Discard";
+  cancel.dataset.discardSettings = "";
   cancel.disabled = saving;
-  cancel.addEventListener("click", () => store.cancelSettings());
+  cancel.addEventListener("click", () => store.discardSettingsChanges());
   const save = document.createElement("button");
   save.type = "submit";
   save.className = "primary-button";
-  save.textContent = saving ? "Saving…" : "Save settings";
-  save.disabled = saving;
-  actions.append(cancel, save);
+  save.textContent = saving ? "Saving…" : "Save changes";
+  save.disabled = saving || !store.hasSettingsChanges();
+  const draftStatus = document.createElement("span");
+  draftStatus.className = "settings-hint settings-draft-status";
+  draftStatus.textContent = store.hasSettingsChanges() ? "Unsaved changes" : "No unsaved changes";
+  actions.append(draftStatus, cancel, save);
   form.append(actions);
+  form.addEventListener("invalid", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLElement)) return;
+    const page = input.closest<HTMLElement>("[data-settings-section]");
+    if (page?.hidden) store.selectSettingsSection(page.dataset.settingsSection as SettingsSection);
+    const details = input.closest("details");
+    if (details) details.open = true;
+    input.focus();
+  }, true);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    void store.saveSettings();
+    if (!saving && store.hasSettingsChanges()) void store.saveSettings({ stayInSettings: true });
   });
 
   panel.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      store.cancelSettings();
+      store.backToChat();
     }
   });
   let mcpPanel = mcpPanels.get(store);
@@ -329,6 +410,8 @@ export function renderSettings(
     mcpPanel = createMcpSettingsPanel(store);
     mcpPanels.set(store, mcpPanel);
   }
-  panel.append(heading, form, mcpPanel);
+  connectionsSection.append(mcpPanel);
+  panel.append(heading, form);
   container.append(panel);
+  updateSettingsChrome(container, state, store);
 }

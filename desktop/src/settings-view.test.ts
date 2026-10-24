@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 
 import type { AtlasApi } from "./atlas-api";
 import { ChatStore } from "./chat-state";
-import { renderSettings } from "./settings-view";
+import { renderSettings, updateSettingsChrome, updateSettingsSection } from "./settings-view";
 import type { SaveSettingsInput, SettingsView } from "./types";
 
 const settings: SettingsView = {
@@ -106,12 +106,13 @@ test("settings directs model selection to the chat composer", async () => {
   ).toBe(false);
 });
 
-test("settings Enter saves null for a blank key and Escape cancels", async () => {
+test("settings Enter saves changes with a blank key and Escape preserves edits", async () => {
   const { root, saves, store } = fixture();
   await store.initialize();
   store.openSettings();
   renderSettings(root, store.getState(), store);
 
+  store.updateSettingsDraft({ defaultPermissionMode: "workspace" });
   root.querySelector<HTMLFormElement>("[data-settings-form]")!.dispatchEvent(
     new Event("submit", { bubbles: true, cancelable: true }),
   );
@@ -119,11 +120,14 @@ test("settings Enter saves null for a blank key and Escape cancels", async () =>
   expect(saves[0]?.apiKey).toBeNull();
 
   store.openSettings();
+  store.updateSettingsDraft({ baseUrl: "https://preserved.test" });
   renderSettings(root, store.getState(), store);
   root
     .querySelector<HTMLInputElement>("[data-settings-api-key]")!
     .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   expect(store.getState().screen).toBe("chat");
+  store.openSettings();
+  expect(store.getState().settingsDraft?.baseUrl).toBe("https://preserved.test");
 });
 
 test("automatic workspace is labeled with its effective path", async () => {
@@ -189,12 +193,14 @@ test("settings hydrates and saves the default permission mode with a full access
   store.openSettings();
   renderSettings(root, store.getState(), store);
 
-  const select = root.querySelector<HTMLSelectElement>(
-    "[data-settings-permission-mode]",
+  const selected = root.querySelector<HTMLInputElement>(
+    "[data-settings-permission-mode]:checked",
   )!;
-  expect(select.value).toBe("workspace");
-  select.value = "fullAccess";
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(selected.value).toBe("workspace");
+  const fullAccess = root.querySelector<HTMLInputElement>('[data-settings-permission-mode][value="fullAccess"]')!;
+  document.body.append(root);
+  fullAccess.click();
+  root.remove();
   renderSettings(root, store.getState(), store);
   expect(root.textContent).toContain("run tools without asking");
 
@@ -309,4 +315,90 @@ test("MCP status refresh preserves the mounted model settings draft and focus", 
   expect(key.value).toBe("private-draft"); expect(store.getState().settingsDraft?.apiKey).toBe("private-draft");
   expect(document.activeElement).toBe(key); expect(key.selectionStart).toBe(2); expect(root.scrollTop).toBe(100);
   root.remove();
+});
+
+
+test("settings categories show only their controls while retaining draft inputs and MCP panel", async () => {
+  const { root, store, api } = fixture(multiSettings);
+  let refreshes = 0;
+  api.listMcpConnections = async () => { refreshes++; return []; };
+  await store.initialize(); store.openSettings();
+  renderSettings(root, store.getState(), store);
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.value = "draft-secret"; key.dispatchEvent(new Event("input"));
+  const mcp = root.querySelector(".mcp-settings");
+  expect(root.querySelector<HTMLElement>('[data-settings-section="models"]')?.hidden).toBe(false);
+  expect(root.querySelector<HTMLElement>('[data-settings-section="workspace"]')?.hidden).toBe(true);
+  expect(root.querySelector('[data-settings-section="models"] [data-choose-default-workspace]')).toBeNull();
+  expect(root.querySelector('[data-settings-section="models"] [data-settings-permission-mode]')).toBeNull();
+  expect(root.querySelector('[data-settings-section="workspace"] [data-settings-api-key]')).toBeNull();
+  updateSettingsSection(root, "connections");
+  expect(root.querySelector<HTMLElement>('[data-settings-section="models"]')?.hidden).toBe(true);
+  expect(root.querySelector<HTMLElement>('[data-settings-section="connections"]')?.hidden).toBe(false);
+  expect(root.querySelector<HTMLElement>(".settings-actions")?.hidden).toBe(true);
+  updateSettingsSection(root, "workspace");
+  expect(root.querySelector<HTMLElement>('[data-settings-section="workspace"]')?.hidden).toBe(false);
+  expect(root.querySelector<HTMLElement>(".settings-actions")?.hidden).toBe(false);
+  updateSettingsSection(root, "models");
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("draft-secret");
+  expect(root.querySelector(".mcp-settings")).toBe(mcp);
+  expect(refreshes).toBe(1);
+});
+
+test("settings footer saves changes in place and discards without leaving Settings", async () => {
+  const { root, store, saves } = fixture();
+  await store.initialize(); store.openSettings();
+  renderSettings(root, store.getState(), store);
+  expect(root.querySelector<HTMLButtonElement>('[type="submit"]')?.disabled).toBe(true);
+  store.updateSettingsDraft({ defaultPermissionMode: "workspace" });
+  renderSettings(root, store.getState(), store);
+  root.querySelector<HTMLFormElement>("[data-settings-form]")!.dispatchEvent(new Event("submit", {cancelable: true}));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(saves).toHaveLength(1);
+  expect(store.getState().screen).toBe("settings");
+  store.updateSettingsDraft({ baseUrl: "https://draft.test" });
+  renderSettings(root, store.getState(), store);
+  root.querySelector<HTMLButtonElement>("[data-discard-settings]")!.click();
+  expect(store.getState().screen).toBe("settings");
+  expect(store.getState().settingsDraft?.baseUrl).toBe(settings.baseUrl);
+});
+
+
+test("settings chrome reflects edits without replacing focused inputs", async () => {
+  const {root, store} = fixture({...settings, apiKeySource: "missing", environmentOverrides: []});
+  await store.initialize(); store.openSettings();
+  renderSettings(root, store.getState(), store);
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.value = "draft-key"; key.dispatchEvent(new Event("input"));
+  updateSettingsChrome(root, store.getState(), store);
+  expect(root.querySelector<HTMLInputElement>("[data-settings-api-key]")).toBe(key);
+  expect(root.querySelector<HTMLButtonElement>('[type="submit"]')?.disabled).toBe(false);
+  expect(root.querySelector(".settings-draft-status")?.textContent).toBe("Unsaved changes");
+  store.discardSettingsChanges();
+  updateSettingsChrome(root, store.getState(), store);
+  expect(root.querySelector<HTMLButtonElement>('[type="submit"]')?.disabled).toBe(true);
+});
+
+
+test("Back and reopen reject late discovery while preserving the draft", async () => {
+  const {store,api}=fixture(multiSettings);await store.initialize();store.openSettings();
+  let resolve!: (models: import("./types").ModelInfo[]) => void;
+  api.listModels=async()=>new Promise(done=>{resolve=done;});
+  store.updateSettingsDraft({apiKey:"keep-private-draft"});
+  const pending=store.refreshSettingsModels();store.backToChat();store.openSettings();
+  resolve([{id:"late-model",name:"Late"}]);await pending;
+  expect(store.getState().settingsModels).toEqual([]);
+  expect(store.getState().settingsModelsStatus).toBe("idle");
+  expect(store.getState().settingsDraft?.apiKey).toBe("keep-private-draft");
+});
+
+test("invalid fields reveal their category before native validation", async () => {
+  const {root,store}=fixture(multiSettings);await store.initialize();store.openSettings();
+  renderSettings(root,store.getState(),store);
+  const invalid=root.querySelector<HTMLInputElement>('input[type="number"]')!;invalid.value="0";
+  store.selectSettingsSection("workspace");updateSettingsSection(root,"workspace");
+  invalid.dispatchEvent(new Event("invalid",{cancelable:true}));
+  expect(store.getState().settingsSection).toBe("models");
+  expect(invalid.closest<HTMLDetailsElement>("details")?.open).toBe(true);
 });

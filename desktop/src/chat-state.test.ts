@@ -985,6 +985,58 @@ test("settings cancel discards edits while failure keeps them and success uses m
   expect(store.getState().settingsDraft).toBeNull();
 });
 
+test("Back to chat preserves settings category, private drafts and the owning chat", async () => {
+  const api = new FakeApi();
+  const store = new ChatStore(api);
+  await store.initialize();
+  const owner = store.getState().activeSessionId;
+  store.setDraft("Keep this conversation draft");
+  store.openSettings();
+  expect(store.hasSettingsChanges()).toBe(false);
+  store.updateSettingsDraft({apiKey: "unsaved-private-key", baseUrl: "https://other.example/v1"});
+  store.selectSettingsSection("workspace");
+  expect(store.hasSettingsChanges()).toBe(true);
+  store.backToChat();
+  expect(store.getState().screen).toBe("chat");
+  expect(store.getState().activeSessionId).toBe(owner);
+  expect(store.getState().draftText).toBe("Keep this conversation draft");
+  expect(api.savedSettings).toEqual([]);
+  store.openSettings();
+  expect(store.getState().settingsSection).toBe("workspace");
+  expect(store.getState().settingsDraft?.apiKey).toBe("unsaved-private-key");
+  expect(store.getState().settingsDraft?.baseUrl).toBe("https://other.example/v1");
+});
+
+test("Discard explicitly resets Settings edits without leaving the selected page", async () => {
+  const api = new FakeApi();
+  const store = new ChatStore(api);
+  await store.initialize(); store.openSettings();
+  store.updateSettingsDraft({apiKey:"unsaved-private-key", defaultPermissionMode:"fullAccess"});
+  store.selectSettingsSection("permissions");
+  store.discardSettingsChanges();
+  expect(store.getState().screen).toBe("settings");
+  expect(store.getState().settingsSection).toBe("permissions");
+  expect(store.getState().settingsDraft?.apiKey).toBe("");
+  expect(store.getState().settingsDraft?.defaultPermissionMode).toBe("ask");
+  expect(store.hasSettingsChanges()).toBe(false);
+  expect(api.savedSettings).toEqual([]);
+});
+
+test("Settings page Save stays on that page and replaces private edits with the masked result", async () => {
+  const api = new FakeApi();
+  api.save = async input => ({...settings, model:input.model, activeModel:input.model, apiKeySource:"settings"});
+  const store = new ChatStore(api);
+  await store.initialize(); store.openSettings();
+  store.selectSettingsSection("permissions");
+  store.updateSettingsDraft({model:"manual-model",apiKey:"unsaved-private-key"});
+  await store.saveSettings({stayInSettings:true});
+  expect(store.getState().screen).toBe("settings");
+  expect(store.getState().settingsSection).toBe("permissions");
+  expect(store.getState().settingsDraft?.apiKey).toBe("");
+  expect(store.getState().settingsDraft?.model).toBe("manual-model");
+  expect(store.hasSettingsChanges()).toBe(false);
+});
+
 test("successful settings save loads available models for the chat picker", async () => {
   const api = new FakeApi();
   const store = new ChatStore(api);
@@ -1607,4 +1659,28 @@ test("progress updates belong to their running session and cannot alter a saved 
   api.eventSinks[0]({event: "progress", data: {message: "stale update"}});
   expect(store.getState().messages.at(-1)?.content).toBe("Done");
   expect(store.getState().messages.at(-1)?.progressMessage).toBeUndefined();
+});
+
+test.each([false, true])("chat model changes rebase untouched retained Settings models (profiles: %s)", async profiles => {
+  const api = new FakeApi();
+  const profile = {provider:"deepseek" as const,name:"DeepSeek",envPrefix:"DEEPSEEK",apiKeySource:"settings" as const,source:{provider:"deepseek" as const,sourceId:"test-source"},
+    baseUrl:settings.baseUrl,model:settings.model,activeModel:settings.activeModel,environmentOverrides:[],modelLimits:{},capabilities:{},allowKeyless:false,requestOutputTokens:4096};
+  api.settings = {...settings,apiKeySource:"settings",...(profiles ? {provider:"deepseek" as const,providers:[profile]} : {})};
+  api.setModel = async model => ({...api.settings,model,activeModel:model,...(profiles ? {providers:[{...profile,model,activeModel:model}]} : {})});
+  const store = new ChatStore(api);await store.initialize();store.openSettings();
+  store.updateSettingsDraft({apiKey:"unsaved-key"});store.backToChat();
+  await store.selectModel("deepseek-v4-pro");store.openSettings();
+  expect(store.getState().settingsDraft?.model).toBe("deepseek-v4-pro");
+  expect(store.getState().settingsDraft?.apiKey).toBe("unsaved-key");
+  await store.saveSettings({stayInSettings:true});
+  expect(api.savedSettings.at(-1)?.model).toBe("deepseek-v4-pro");
+  if (profiles) expect(api.savedSettings.at(-1)?.profilePatches?.[0].model).toBe("deepseek-v4-pro");
+});
+
+test("chat model changes preserve an explicitly edited Settings model", async () => {
+  const api = new FakeApi();api.settings={...settings,apiKeySource:"settings"};
+  const store=new ChatStore(api);await store.initialize();store.openSettings();
+  store.updateSettingsDraft({model:"manual-choice"});store.backToChat();
+  await store.selectModel("deepseek-v4-pro");store.openSettings();
+  expect(store.getState().settingsDraft?.model).toBe("manual-choice");
 });

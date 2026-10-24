@@ -58,8 +58,11 @@ an API key. The CLI uses your current directory as its starting folder.
 ## Settings and access
 
 Desktop Settings saves separate credentials, endpoint, model, and model limits for
-each provider. Switching providers preserves unsaved Settings drafts until Save
-or Cancel. Refresh models also works before selecting a model; discovery failure
+each provider. Its sidebar separates **Models & providers**, **MCP connections**,
+**Workspace**, and **Permissions**. Switching categories or choosing **Back to chat**
+keeps unsaved edits in memory. **Save changes** saves them and stays on the current
+page; **Discard** resets all Settings edits. These drafts do not survive an app
+restart. Refresh models also works before selecting a model; discovery failure
 does not prevent using a manually entered ID.
 
 `ATLAS_PROVIDER` overrides the saved provider; otherwise the agent's provider is
