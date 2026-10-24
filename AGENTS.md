@@ -188,13 +188,14 @@ skills stay out of the request catalog; valid others remain usable. Running
 requests keep their snapshots; newly saved skills are available next request.
 Instructions cannot grant permissions or override user/system guidance.
 
-Skills Settings leads with Create and Import local. Edit drafts and input focus
-survive navigation/background refreshes; unrelated installs do not erase edits.
-Native dialogs go through atlas-api.ts using existing dialog permission. Capture
+Skills Settings opens with Installed skills and scope selection, with view, edit,
+and enable/disable actions. Do not render creation or import controls. Runtime
+creation and backend import capabilities remain available. Edit drafts and input
+focus survive navigation/background refreshes. Capture
 workspace/context per operation; saved conversations ignore conflicting frontend
 paths. Filesystem/network work runs on workers without broader frontend access.
-Optional public GitHub imports remain under Other sources; folders installed by
-other tools using the shared locations require no Atlas-specific manifest.
+Folders installed by other tools using the shared locations require no
+Atlas-specific manifest.
 Never reuse development .env.local credentials for skill operations.
 
 ## Model providers

@@ -406,7 +406,7 @@ test("invalid fields reveal their category before native validation", async () =
 });
 
 
-test("Skills activates lazily, retains import input and hides model Save actions", async () => {
+test("Skills activates lazily, retains scope selection and hides model Save actions", async () => {
   const { root, store, api } = fixture();
   let loads = 0;
   api.listSkills = async () => { loads++; return {skills: [], issues: []}; };
@@ -418,12 +418,10 @@ test("Skills activates lazily, retains import input and hides model Save actions
   await Promise.resolve();
   expect(loads).toBe(1);
   expect(root.querySelector<HTMLElement>(".settings-actions")!.hidden).toBe(true);
-  const url = root.querySelector<HTMLInputElement>('[aria-label="GitHub skill URL"]')!;
-  url.value = "https://github.com/team/repo"; url.dispatchEvent(new Event("input"));
+  const skillScope = root.querySelector<HTMLSelectElement>('[aria-label="Skill scope"]')!;
   store.selectSettingsSection("models"); updateSettingsChrome(root, store.getState(), store);
   renderSettings(root, store.getState(), store);
-  expect(root.querySelector('[aria-label="GitHub skill URL"]')).toBe(url);
-  expect(url.value).toContain("team/repo");
+  expect(root.querySelector('[aria-label="Skill scope"]')).toBe(skillScope);
   store.selectSettingsSection("skills"); updateSettingsChrome(root, store.getState(), store);
   expect(loads).toBe(1);
 });
@@ -437,8 +435,7 @@ test("lightweight Settings updates change Project ownership without replacing mo
   await Promise.resolve();
   const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
   key.value = "draft key"; key.dispatchEvent(new Event("input"));
-  const url = root.querySelector<HTMLInputElement>('[aria-label="GitHub skill URL"]')!;
-  url.value = "https://github.com/team/repo"; url.dispatchEvent(new Event("input"));
+  const skillScope = root.querySelector<HTMLSelectElement>('[aria-label="Skill scope"]')!;
   const scope = root.querySelector<HTMLSelectElement>('[aria-label="Skill scope"]')!;
   scope.value = "project"; scope.dispatchEvent(new Event("change")); await Promise.resolve();
   api.chooseWorkspace = async () => "/private/new-project";
@@ -447,24 +444,23 @@ test("lightweight Settings updates change Project ownership without replacing mo
   updateSettingsChrome(root, store.getState(), store); await Promise.resolve();
   expect(contexts.at(-1)?.workspacePath).toBe("/private/new-project");
   expect(root.querySelector(".skills-settings")?.textContent).toContain("/private/new-project");
-  expect(root.querySelector('[aria-label="GitHub skill URL"]')).toBe(url);
-  expect(url.value).toBe("https://github.com/team/repo");
+  expect(root.querySelector('[aria-label="Skill scope"]')).toBe(skillScope);
+  expect(skillScope.value).toBe("project");
   expect(root.querySelector("[data-settings-api-key]")).toBe(key);
   expect(key.value).toBe("draft key");
   expect(store.getState().settingsDraft?.apiKey).toBe("draft key");
 });
 
-test("Skills creation textarea survives category navigation and Escape back to chat", async () => {
+test("Skills installed list survives category navigation and Escape back to chat", async () => {
   const {root, store} = fixture();
   await store.initialize(); store.openSettings(); store.selectSettingsSection("skills");
   renderSettings(root, store.getState(), store);
-  const textarea = root.querySelector<HTMLTextAreaElement>('[aria-label="Skill instructions"]')!;
-  textarea.value = "Keep this unfinished skill."; textarea.dispatchEvent(new Event("input"));
+  const list = root.querySelector(".skills-installed");
   store.selectSettingsSection("models"); updateSettingsChrome(root, store.getState(), store);
   store.selectSettingsSection("skills"); updateSettingsChrome(root, store.getState(), store);
-  expect(root.querySelector('[aria-label="Skill instructions"]')).toBe(textarea);
-  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+  expect(root.querySelector(".skills-installed")).toBe(list);
+  root.querySelector('[aria-label="Skill scope"]')!.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
   expect(store.getState().screen).toBe("chat");
   store.openSettings(); renderSettings(root, store.getState(), store);
-  expect(root.querySelector<HTMLTextAreaElement>('[aria-label="Skill instructions"]')!.value).toBe("Keep this unfinished skill.");
+  expect(root.querySelector(".skills-installed")).toBe(list);
 });

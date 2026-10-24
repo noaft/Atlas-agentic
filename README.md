@@ -126,21 +126,15 @@ Built-in tools:
 ## Skills
 
 A skill is a folder containing `SKILL.md` and optional references, scripts or
-assets. It needs no GitHub account or remote source metadata. Open **Settings →
-Skills**, choose **Personal** or **Project**, and use **Create a skill** to enter a
-name, optional title, summary, and instructions.
+assets. It needs no GitHub account or remote source metadata. **Settings → Skills**
+opens with installed skills. Choose **Personal** or **Project** to view, edit, or
+enable/disable them. Creation and import forms are not shown in Settings.
 
-You can also ask Atlas: “Save this workflow as a Personal skill named
+To create a skill, ask Atlas: “Save this workflow as a Personal skill named
 project-review.” The `create_skill` tool creates one folder per skill and never
 overwrites an existing skill. Personal creation asks for approval in Ask and
 Workspace modes; Project creation follows ordinary workspace-write permissions.
 Newly created skills become available to the model on the next request.
-
-**Import local** lets you select a `SKILL.md` file or skill folder. Preview its
-instructions and files, then install it into the selected scope. Selecting a
-single file imports only that file; selecting a folder preserves supporting
-resources. Changed files require a new preview before import. Collections can
-contain several skills, up to three folder levels deep.
 
 Use **Edit skill** to edit the full document. Saving preserves supporting files
 and enabled state, rejects renames, and detects changes since the document was
@@ -170,8 +164,8 @@ npx skills add <source> --agent universal --copy --global
 ```
 
 Atlas validates regular files and directories; use `--copy` with that installer.
-Atlas does not run this installer automatically. Optional public GitHub preview
-and commit-pinned import remain under **Other sources**.
+Atlas does not run this installer automatically. You can also copy a skill folder
+into one of the discovery locations above, then choose **Refresh skills**.
 
 A minimal skill uses the [Agent Skills format](https://agentskills.io/specification):
 
