@@ -75,6 +75,27 @@ The built-in runtime tools are:
 - `capture_screen`: capture the primary display as an in-memory PNG for model vision
 
 The displayed workspace is a starting directory, not a shell sandbox.
+User-local `mcp.toml` adds optional `mcp_list_servers`, `mcp_list_tools` and
+`mcp_call_tool` gateways, shared by CLI and desktop. `src/mcp/` owns validated
+stdio process configuration, JSON-RPC transport, negotiation, discovery and
+result conversion. `ATLAS_MCP_CONFIG` overrides the file; otherwise load it beside
+settings using `ATLAS_CONFIG_DIR` or the platform user configuration directory.
+Never discover configuration from the workspace or launch processes during
+runtime construction or authorization validation. Server discovery and calls
+start connections only during tool execution, after existing runtime approval.
+Ask and Workspace require confirmation for both; external calls use
+`ExternalTool` risk regardless of remote annotations. Full access preserves
+existing semantics. No frontend permissions are added.
+Servers inherit Atlas's environment and workspace. Preserve bounded requests,
+pagination and protocol framing; never automatically replay failed calls.
+Timeouts have unknown action outcomes. Keep arbitrary server stderr and protocol
+error bodies out of backend errors/logs. Only text and structured tool results
+are supported; reject non-text content without persisting image payloads.
+Connections belong to one runtime and close on transport failure/drop. Preserve
+valid tool-error details as failed results while keeping the session usable.
+Unix terminates owned process groups; Windows contains the server in a
+kill-on-close Job Object before resuming it, so descendants are cleaned up too.
+
 `ripgrep` is compiled into Atlas and does not require an `rg` executable on
 `PATH`. It defaults to the workspace, respects ignore files, skips hidden and
 binary files and symlinks, and accepts absolute roots. A canonical root outside

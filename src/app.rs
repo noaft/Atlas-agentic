@@ -54,7 +54,12 @@ pub fn build_runtime_with_settings(
     let definition = LocalAgentDefinition::from_file(agent_file)?;
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
-    let tools = build_default_tools(workspace_root);
+    let mut tools = build_default_tools(workspace_root);
+    crate::mcp::register_tools(
+        &mut tools,
+        crate::mcp::McpConfig::from_environment()?,
+        workspace_root,
+    );
 
     Ok(
         Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(

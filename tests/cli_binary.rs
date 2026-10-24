@@ -743,6 +743,58 @@ fn cli_denies_on_eof_without_executing_the_tool() {
     assert!(!fixture.workspace.path().join("approved.txt").exists());
 }
 
+#[test]
+fn cli_loads_user_mcp_configuration_and_lists_servers_without_launching() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    std::fs::write(
+        fixture.config.path().join("mcp.toml"),
+        "[servers.demo]\ncommand = '/does/not/exist'",
+    )
+    .unwrap();
+    let server = FakeDeepSeek::new();
+    let stdout = successful_stdout(
+        fixture
+            .ask_command(&server)
+            .args(["ask", "list MCP servers"])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains(r#"{"servers":["demo"]}"#), "{stdout}");
+}
+
+#[test]
+fn cli_mcp_config_override_wins_and_workspace_configuration_is_never_loaded() {
+    let fixture = CliFixture::new();
+    fixture.install_agent();
+    std::fs::write(
+        fixture.workspace.path().join("mcp.toml"),
+        "invalid workspace config",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.config.path().join("mcp.toml"),
+        "invalid default config",
+    )
+    .unwrap();
+    let override_path = fixture.config.path().join("custom.toml");
+    std::fs::write(
+        &override_path,
+        "[servers.override_server]\ncommand = '/does/not/exist'",
+    )
+    .unwrap();
+    let server = FakeDeepSeek::new();
+    let stdout = successful_stdout(
+        fixture
+            .ask_command(&server)
+            .env("ATLAS_MCP_CONFIG", &override_path)
+            .args(["ask", "list MCP servers"])
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.contains("override_server"), "{stdout}");
+}
+
 struct FakeDeepSeek {
     url: String,
     requests: Receiver<Value>,
@@ -789,6 +841,8 @@ impl FakeDeepSeek {
                     r#"{"type":"final","content":"Discard me""#.to_string()
                 } else if last_user_content == "recover incomplete generation" {
                     r#"{"type":"tool_call","message":"I will run the command once.","tool":"exec_command","args":{"command":"echo marker >> counter.txt"}}"#.to_string()
+                } else if last_user_content == "list MCP servers" {
+                    r#"{"type":"tool_call","tool":"mcp_list_servers","args":{}}"#.to_string()
                 } else if last_user_content == "report workspace" {
                     r#"{"type":"tool_call","tool":"pwd","args":{}}"#.to_string()
                 } else if last_user_content == "create approved file" {

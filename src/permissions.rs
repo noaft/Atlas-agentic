@@ -20,6 +20,7 @@ pub enum ToolRisk {
     ReadOutsideWorkspace,
     ComputerObserve,
     ComputerControl,
+    ExternalTool,
 }
 
 impl ToolRisk {
@@ -37,6 +38,7 @@ impl ToolRisk {
                 "reads potentially sensitive desktop information that may be sent to the configured model provider"
             }
             Self::ComputerControl => "sends mouse or keyboard input to the active application",
+            Self::ExternalTool => "calls an external MCP tool that may launch a process, access sensitive data, or change external state",
         }
     }
 }
@@ -53,6 +55,7 @@ pub fn requires_confirmation(mode: PermissionMode, risk: ToolRisk) -> bool {
                 | ToolRisk::ReadOutsideWorkspace
                 | ToolRisk::ComputerObserve
                 | ToolRisk::ComputerControl
+                | ToolRisk::ExternalTool
         ),
     }
 }

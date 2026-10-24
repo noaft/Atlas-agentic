@@ -117,6 +117,56 @@ Built-in tools:
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 
+## MCP connections
+
+Atlas can connect to local MCP servers over stdio from both CLI and desktop.
+Create `mcp.toml` beside your user-local `settings.json` (normally
+`~/.config/atlas/mcp.toml` on Linux), or set `ATLAS_MCP_CONFIG` to a configuration
+file. `ATLAS_CONFIG_DIR` also relocates the default MCP configuration directory.
+Atlas never automatically reads MCP configuration from a project folder.
+
+```toml
+[servers.my_tools]
+command = "/absolute/path/to/your-mcp-server"
+args = []
+timeout_ms = 30000
+```
+
+Use the executable and argument list specified by your MCP server. Commands run
+directly, without a shell; install the server separately. Relative arguments are
+resolved from the chat's starting directory. Servers inherit Atlas's environment,
+so provide required credentials there rather than putting secrets in command
+arguments. Only configure servers you trust to run with your OS-user permissions.
+The timeout applies to each protocol request and must be between 1 and 300000 ms.
+
+Then ask Atlas to “list my MCP servers,” “show the tools on my_tools,” or use one
+of the discovered tools. When configuration contains servers, Atlas gains:
+
+| Tool | Purpose |
+| --- | --- |
+| `mcp_list_servers` | List configured names without starting a process |
+| `mcp_list_tools` | Connect and discover a server's tools and input schemas |
+| `mcp_call_tool` | Call a server tool with an argument object |
+
+Ask and Workspace require approval for discovery and every external call, even
+when a server labels a tool read-only. Full access skips Atlas confirmations.
+Connections start lazily, are reused within a runtime request, and are closed
+when that runtime is dropped. A failed call is never automatically replayed;
+a timeout can leave the action's outcome unknown. Configuration changes apply
+to the next chat request; running requests keep their original configuration.
+
+This version implements the
+[MCP stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+with the 2025-11-25 initialization handshake and supports negotiated versions
+2025-06-18 and 2025-03-26. Tool catalogs are bounded to 256 tools, 16 pages and
+1 MiB total; individual protocol messages are limited to 1 MiB. Tool results
+support text and structured JSON. Non-text content returns an explicit error
+and is not passed through as an attachment or saved as screenshot data. Server
+stderr and protocol-error bodies are not forwarded into Atlas errors or logs.
+HTTP connections, OAuth, resources, prompts, sampling and elicitation are not
+implemented. Cleanup terminates owned server process groups on Unix and process
+trees through a kill-on-close Job Object on Windows.
+
 ## History and memory
 
 Conversations are stored locally outside the repository. Atlas keeps original

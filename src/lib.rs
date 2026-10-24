@@ -3,6 +3,7 @@ pub mod agents;
 pub mod app;
 pub mod conversations;
 pub mod diagnostics;
+pub mod mcp;
 pub mod media;
 pub mod models;
 pub mod permissions;
