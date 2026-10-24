@@ -202,10 +202,7 @@ impl DesktopState {
     ) -> Result<atlas_agentic::skills::SkillStore, String> {
         let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
         let workspace = self.resolve_workspace(conversation_id, requested, &effective)?;
-        Ok(atlas_agentic::skills::SkillStore::new(
-            self.settings_store.directory().join("skills"),
-            workspace,
-        ))
+        atlas_agentic::skills::SkillStore::for_settings(&self.settings_store, workspace)
     }
 
     fn resolve_workspace(
@@ -1855,6 +1852,47 @@ mod tests {
             .iter()
             .any(|activity| activity.summary == "Thinking"));
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn skill_creation_uses_saved_workspace_and_keeps_conversation_history_unchanged() {
+        let root = TempDir::new().unwrap();
+        let saved_workspace = root.path().join("saved");
+        let requested = root.path().join("requested");
+        std::fs::create_dir_all(&saved_workspace).unwrap();
+        std::fs::create_dir_all(&requested).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let saved = store
+            .create_turn_with_workspace("question", "answer", Some(&saved_workspace))
+            .unwrap();
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("config/settings.json")),
+            requested.clone(),
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let skills = state
+            .skills_store(Some(&saved.id), Some(&requested))
+            .unwrap();
+        let input = atlas_agentic::skills::SkillDraftInput {
+            name: "review".into(),
+            title: None,
+            description: "Review changes".into(),
+            instructions: "Inspect context first.".into(),
+            files: None,
+        };
+        let skill = skills
+            .create(input, atlas_agentic::skills::SkillScope::Project)
+            .unwrap();
+        assert_eq!(skill.id, "project:review");
+        assert!(skill.source.is_none());
+        assert!(saved_workspace
+            .join(".agents/skills/review/SKILL.md")
+            .is_file());
+        assert!(!requested.join(".agents").exists());
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(store.load(&saved.id).unwrap().messages.len(), 2);
     }
 
     #[test]

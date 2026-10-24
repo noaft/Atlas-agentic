@@ -1,5 +1,6 @@
 //! Local, bounded skill packages. Instructions are loaded only on request.
 pub mod github;
+pub mod local;
 mod store;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -51,6 +52,7 @@ pub struct SkillCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillDocument {
+    pub fingerprint: String,
     pub skill: SkillInfo,
     pub content: String,
     pub files: Vec<String>,
@@ -67,7 +69,7 @@ pub struct SkillPreview {
 }
 #[derive(Debug, Clone)]
 pub struct SkillPackage {
-    pub source: SkillSource,
+    pub source: Option<SkillSource>,
     pub files: BTreeMap<String, Vec<u8>>,
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -209,10 +211,52 @@ pub(crate) fn validate_source(source: &SkillSource) -> Result<(), String> {
     }
     Ok(())
 }
+/// Universal CLI's shared Personal skills location on every platform.
+pub fn shared_skills_root(xdg_config: Option<&std::path::Path>, home: &std::path::Path) -> PathBuf {
+    xdg_config
+        .filter(|p| p.is_absolute())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"))
+        .join("agents/skills")
+}
 pub fn personal_skills_root() -> Result<PathBuf, String> {
-    Ok(crate::settings::SettingsStore::from_user_config()?
-        .directory()
-        .join("skills"))
+    if let Some(path) = std::env::var_os("ATLAS_CONFIG_DIR") {
+        return Ok(PathBuf::from(path).join("skills"));
+    }
+    let home = directories::BaseDirs::new().ok_or("could not resolve user home")?;
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    Ok(shared_skills_root(xdg.as_deref(), home.home_dir()))
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillDraftInput {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub instructions: String,
+    pub files: Option<BTreeMap<String, String>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSkillPreview {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub content: String,
+    pub files: Vec<String>,
+    pub path: String,
+    pub fingerprint: String,
+}
+pub(crate) fn fingerprint(files: &BTreeMap<String, Vec<u8>>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for (path, bytes) in files {
+        hash.update((path.len() as u64).to_be_bytes());
+        hash.update(path.as_bytes());
+        hash.update((bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    format!("{:x}", hash.finalize())
 }
 
 fn unsafe_component(part: &str) -> bool {
@@ -230,4 +274,37 @@ fn unsafe_component(part: &str) -> bool {
 }
 pub(crate) fn model_metadata(skill: &SkillInfo) -> serde_json::Value {
     serde_json::json!({"id":skill.id,"name":skill.name,"title":skill.title,"description":skill.description})
+}
+
+impl SkillDraftInput {
+    pub fn validate(&self) -> Result<(), String> {
+        self.package().map(|_| ())
+    }
+    fn package(&self) -> Result<SkillPackage, String> {
+        validate_name(&self.name)?;
+        if self.instructions.trim().is_empty() {
+            return Err("skill instructions must not be empty".into());
+        }
+        let mut metadata = serde_json::json!({"name": self.name, "description": self.description});
+        if let Some(title) = &self.title {
+            metadata["title"] = title.clone().into();
+        }
+        let yaml =
+            serde_yaml::to_string(&metadata).map_err(|_| "could not encode skill metadata")?;
+        let content = format!("---\n{yaml}---\n{}\n", self.instructions);
+        parse_skill(&content)?;
+        let mut files = BTreeMap::new();
+        for (path, text) in self.files.iter().flatten() {
+            if path == "SKILL.md" {
+                return Err("supporting files cannot replace SKILL.md".into());
+            }
+            files.insert(path.clone(), text.as_bytes().to_vec());
+        }
+        files.insert("SKILL.md".into(), content.into_bytes());
+        store::validate_files(&files)?;
+        Ok(SkillPackage {
+            source: None,
+            files,
+        })
+    }
 }

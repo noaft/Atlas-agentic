@@ -102,6 +102,7 @@ fn permission_matrix_matches_the_three_modes() {
     for risk in [
         ToolRisk::ReadOnly,
         ToolRisk::ModifyWorkspace,
+        ToolRisk::ModifyOutsideWorkspace,
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
@@ -117,6 +118,7 @@ fn permission_matrix_matches_the_three_modes() {
     ));
     for risk in [
         ToolRisk::ModifyWorkspace,
+        ToolRisk::ModifyOutsideWorkspace,
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,
@@ -130,6 +132,7 @@ fn permission_matrix_matches_the_three_modes() {
         assert!(!requires_confirmation(PermissionMode::Workspace, risk));
     }
     for risk in [
+        ToolRisk::ModifyOutsideWorkspace,
         ToolRisk::Destructive,
         ToolRisk::Launch,
         ToolRisk::Command,

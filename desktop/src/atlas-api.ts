@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { SkillsApi, SkillCatalog, SkillDocument, SkillPreview, SkillInfo } from "./skills-types";
+import type { SkillsApi, SkillCatalog, SkillDocument, SkillPreview, SkillInfo, LocalSkillPreview } from "./skills-types";
 
 import type {
   McpConnectionStatus,
@@ -58,6 +58,15 @@ export interface AtlasApi extends SkillsApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    createSkill: (input, scope, context) => invoke<SkillInfo>("create_skill", {input, scope, context}),
+    updateSkillDocument: (id, content, fingerprint, context) => invoke<SkillInfo>("update_skill_document", {id, content, fingerprint, context}),
+    chooseSkillImport: async (kind) => {
+      const selected = await open({directory: kind === "folder", multiple: false,
+        ...(kind === "file" ? {filters: [{name: "Skill Markdown", extensions: ["md"]}]} : {})});
+      return typeof selected === "string" ? selected : null;
+    },
+    previewLocalSkills: (path) => invoke<LocalSkillPreview[]>("preview_local_skills", {path}),
+    installLocalSkill: (path, fingerprint, scope, context) => invoke<SkillInfo>("install_local_skill", {path, fingerprint, scope, context}),
     listSkills: (context) => invoke<SkillCatalog>("list_skills", {context}),
     readSkill: (id, context) => invoke<SkillDocument>("read_skill", {id, context}),
     previewSkillImport: (url) => invoke<SkillPreview[]>("preview_skill_import", {url}),

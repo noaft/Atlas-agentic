@@ -121,28 +121,59 @@ Built-in tools:
 | Open and execute | `open_file`, `open_application`, `exec_command` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
-| Load skill instructions | `load_skill` (when enabled skills are available) |
+| Save and load skills | `create_skill`, `load_skill` (when enabled skills are available) |
 
 ## Skills
 
-Open **Settings → Skills** to manage reusable instructions. Choose **Personal**
-for skills shared across projects or **Project** for skills in the current chat's
-starting folder. Paste a public GitHub repository, folder, or `SKILL.md` link and
-choose **Preview**. Select a skill, inspect its instructions and source revision,
-then choose **Install**. A repository can provide several skills.
+A skill is a folder containing `SKILL.md` and optional references, scripts or
+assets. It needs no GitHub account or remote source metadata. Open **Settings →
+Skills**, choose **Personal** or **Project**, and use **Create a skill** to enter a
+name, optional title, summary, and instructions.
 
-Installed skills support **View**, enable/disable, and an explicit **Update**
-preview for GitHub imports. These actions apply immediately, independently of
-model Settings Save/Discard. Updates preserve the enabled state. A running chat
-request keeps its original skill snapshot; subsequent requests use the new state.
+You can also ask Atlas: “Save this workflow as a Personal skill named
+project-review.” The `create_skill` tool creates one folder per skill and never
+overwrites an existing skill. Personal creation asks for approval in Ask and
+Workspace modes; Project creation follows ordinary workspace-write permissions.
+Newly created skills become available to the model on the next request.
 
-Both CLI and desktop discover these folders:
+**Import local** lets you select a `SKILL.md` file or skill folder. Preview its
+instructions and files, then install it into the selected scope. Selecting a
+single file imports only that file; selecting a folder preserves supporting
+resources. Changed files require a new preview before import. Collections can
+contain several skills, up to three folder levels deep.
 
-- Personal: `skills/` beside Atlas's user-local `settings.json` (normally
-  `~/.config/atlas/skills/` on Linux; `ATLAS_CONFIG_DIR` relocates it).
-- Project: `.agents/skills/` under the chat's starting folder.
+Use **Edit skill** to edit the full document. Saving preserves supporting files
+and enabled state, rejects renames, and detects changes since the document was
+opened. **Reload skill from disk** recovers from a conflict. Editing a GitHub
+import creates a local fork, removing its remote update association.
 
-Each skill is a directory matching its metadata name, containing `SKILL.md`:
+Both CLI and desktop discover:
+
+- Project: `<starting folder>/.agents/skills/<name>/SKILL.md`.
+- Personal creation: `$XDG_CONFIG_HOME/agents/skills/<name>/SKILL.md`, falling back
+  to `~/.config/agents/skills/` when XDG_CONFIG_HOME is absent or not absolute.
+- Additional Personal discovery: `~/.agents/skills/` (the skills CLI's canonical
+  global copy), then `skills/` beside Atlas's old user-local `settings.json`.
+  Duplicate Personal names prefer the primary shared folder, then those fallbacks.
+- Explicit `ATLAS_CONFIG_DIR`: isolates Personal storage/discovery to its `skills/`
+  folder. Existing files are never automatically moved or deleted.
+
+Atlas reads ordinary skill folders installed by other tools. For example, the
+[skills CLI](https://github.com/vercel-labs/skills/blob/HEAD/docs/commands.md)
+supports local directories, GitLab, and other Git sources:
+
+```bash
+# Run in your project; replace <source> with a local directory or supported source.
+npx skills add <source> --agent universal --copy
+# Personal/global install:
+npx skills add <source> --agent universal --copy --global
+```
+
+Atlas validates regular files and directories; use `--copy` with that installer.
+Atlas does not run this installer automatically. Optional public GitHub preview
+and commit-pinned import remain under **Other sources**.
+
+A minimal skill uses the [Agent Skills format](https://agentskills.io/specification):
 
 ```markdown
 ---
@@ -151,21 +182,19 @@ description: Review project changes and their relevant tests.
 metadata:
   title: Project review
 ---
-Read the project instructions and inspect the affected code before suggesting changes.
+Read project instructions and inspect affected code before suggesting changes.
 Verify findings with relevant tests or direct checks.
 ```
 
-Optional `references/`, `scripts/`, and `assets/` stay with the installed skill.
-Atlas sends enabled skill IDs, names, titles and descriptions to the model. The
-model requests full instructions through `load_skill`, including their folder
-and resource list, optionally specifying a relative UTF-8 supporting resource. Personal and Project IDs remain distinct,
-even when their names match. Invalid skills appear as issues in Settings and
-are excluded from the model catalog.
+The model initially sees enabled skill IDs, names, titles, and descriptions. It
+requests full instructions, their folder and resource list through `load_skill`,
+optionally loading a relative UTF-8 supporting file. Personal and Project IDs stay
+distinct, even when names match. A running request retains its original snapshot;
+subsequent requests discover changes. Invalid packages appear as issues in Settings.
 
-GitHub imports are pinned to the previewed commit. Importing and loading never
-run scripts or install dependencies; later commands still use normal Atlas
-permissions. V1 imports public GitHub sources; marketplace sites can supply the
-GitHub link. Skill definitions use the [Agent Skills format](https://agentskills.io/specification).
+Creation, import, and loading never execute scripts or install dependencies.
+Later commands still use normal Atlas permissions. Skill actions apply immediately,
+independently of model Settings Save/Discard.
 
 ## MCP connections
 

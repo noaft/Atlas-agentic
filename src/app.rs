@@ -55,12 +55,14 @@ pub fn build_runtime_with_settings(
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
     let mut tools = build_default_tools(workspace_root);
-    if let Ok(personal) = crate::skills::personal_skills_root() {
-        let store = crate::skills::SkillStore::new(personal, workspace_root.to_path_buf());
-        if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&store) {
-            tools.register(Box::new(tool));
-        }
+    let skill_store = crate::skills::SkillStore::for_settings(
+        &SettingsStore::from_user_config()?,
+        workspace_root.to_path_buf(),
+    )?;
+    if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&skill_store) {
+        tools.register(Box::new(tool));
     }
+    tools.register(Box::new(crate::tools::CreateSkillTool::new(skill_store)));
     crate::mcp::register_tools(
         &mut tools,
         crate::mcp::McpConfig::from_environment()?,
@@ -165,5 +167,20 @@ mod tests {
         expected.sort();
 
         assert_eq!(names, expected);
+    }
+    #[test]
+    fn runtime_exposes_creation_without_requiring_a_skill_catalog() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent_file = workspace.path().join("atlas.toml");
+        std::fs::write(&agent_file, include_str!("../agents/atlas.toml")).unwrap();
+        let mut saved = crate::settings::AtlasSettings::default();
+        saved.deepseek.api_key = Some("test-placeholder".into());
+        let settings = saved.resolve_with(|_| None).unwrap();
+        let runtime =
+            super::build_runtime_with_settings(workspace.path(), &agent_file, &settings).unwrap();
+        assert!(runtime
+            .tool_definitions()
+            .iter()
+            .any(|tool| tool.name == "create_skill"));
     }
 }

@@ -21,6 +21,7 @@ type SkillSnapshot = Vec<FrozenSkill>;
 pub struct SkillStore {
     personal: PathBuf,
     project: PathBuf,
+    fallbacks: Vec<PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
 struct Manifest {
@@ -39,8 +40,48 @@ impl SkillStore {
     pub fn new(personal_root: PathBuf, workspace: PathBuf) -> Self {
         Self {
             personal: personal_root,
+            fallbacks: Vec::new(),
             project: workspace.join(".agents/skills"),
         }
+    }
+    pub fn for_settings(
+        settings: &crate::settings::SettingsStore,
+        workspace: PathBuf,
+    ) -> Result<Self, String> {
+        let default = crate::settings::SettingsStore::from_user_config()?;
+        let isolated = std::env::var_os("ATLAS_CONFIG_DIR").is_some()
+            || settings.directory() != default.directory();
+        let mut store = Self::new(
+            if isolated {
+                settings.directory().join("skills")
+            } else {
+                personal_skills_root()?
+            },
+            workspace,
+        );
+        if !isolated {
+            let home = directories::BaseDirs::new().ok_or("could not resolve user home")?;
+            for fallback in [
+                home.home_dir().join(".agents/skills"),
+                settings.directory().join("skills"),
+            ] {
+                if fallback != store.personal && !store.fallbacks.contains(&fallback) {
+                    store.fallbacks.push(fallback);
+                }
+            }
+        }
+        Ok(store)
+    }
+    fn existing_path(&self, scope: SkillScope, name: &str) -> Result<&Path, String> {
+        let primary = self.path(scope);
+        if scope == SkillScope::Personal && !entry_exists(&primary.join(name))? {
+            for legacy in &self.fallbacks {
+                if entry_exists(&legacy.join(name))? {
+                    return Ok(legacy);
+                }
+            }
+        }
+        Ok(primary)
     }
     fn path(&self, scope: SkillScope) -> &Path {
         match scope {
@@ -54,8 +95,17 @@ impl SkillStore {
             issues: vec![],
         };
         let mut enabled_bytes = 0;
-        for scope in [SkillScope::Personal, SkillScope::Project] {
-            let path = self.path(scope);
+        for (scope, path) in std::iter::once((SkillScope::Personal, self.personal.as_path()))
+            .chain(
+                self.fallbacks
+                    .iter()
+                    .map(|p| (SkillScope::Personal, p.as_path())),
+            )
+            .chain(std::iter::once((
+                SkillScope::Project,
+                self.project.as_path(),
+            )))
+        {
             match path.try_exists() {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -97,6 +147,16 @@ impl SkillStore {
                         issue(&mut catalog, "skill catalog exceeds 512 entries".into());
                         break;
                     }
+                    if scope == SkillScope::Personal && self.existing_path(scope, name)? != path {
+                        continue;
+                    }
+                    if catalog
+                        .skills
+                        .iter()
+                        .any(|i| i.id == format!("{}:{name}", scope.label()))
+                    {
+                        continue;
+                    }
                     match load(&root, name, scope) {
                         Ok((info, files)) => {
                             if info.enabled {
@@ -134,7 +194,8 @@ impl SkillStore {
     }
     pub fn read(&self, id: &str, resource: Option<&str>) -> Result<SkillDocument, String> {
         let (scope, name) = parse_id(id)?;
-        let root = open_root(self.path(scope), false)?;
+        let selected_root = self.existing_path(scope, name)?;
+        let root = open_root(selected_root, false)?;
         let _lock = lock(&root)?;
         recover(&root, scope);
         let (skill, files) = load(&root, name, scope)?;
@@ -147,6 +208,7 @@ impl SkillStore {
         let content = String::from_utf8(bytes.clone())
             .map_err(|_| "skill resource must be UTF-8 text".to_string())?;
         Ok(SkillDocument {
+            fingerprint: document_fingerprint(selected_root, &files)?,
             skill,
             content,
             files: files.keys().cloned().collect(),
@@ -161,10 +223,11 @@ impl SkillStore {
         for info in self.list()?.skills.into_iter().filter(|i| i.enabled) {
             let loaded = (|| {
                 let (scope, name) = parse_id(&info.id)?;
-                let root = open_root(self.path(scope), false)?;
+                let selected_root = self.existing_path(scope, name)?;
+                let root = open_root(selected_root, false)?;
                 let _lock = lock(&root)?;
                 let (current, files) = load(&root, name, scope)?;
-                let directory = self.path(scope).join(name);
+                let directory = selected_root.join(name);
                 let directory = if directory.is_absolute() {
                     directory
                 } else {
@@ -210,7 +273,9 @@ impl SkillStore {
         scope: SkillScope,
         replace: bool,
     ) -> Result<SkillInfo, String> {
-        validate_source(&package.source)?;
+        if let Some(source) = &package.source {
+            validate_source(source)?;
+        }
         validate_files(&package.files)?;
         let metadata = parse_skill(
             std::str::from_utf8(
@@ -221,67 +286,62 @@ impl SkillStore {
             )
             .map_err(|_| "SKILL.md must be UTF-8")?,
         )?;
-        let root = open_root(self.path(scope), true)?;
+        let target = if replace {
+            self.existing_path(scope, &metadata.name)?
+        } else {
+            self.path(scope)
+        };
+        let root = open_root(target, true)?;
         let _lock = lock(&root)?;
         recover(&root, scope);
-        let exists = root.symlink_metadata(&metadata.name).is_ok();
-        if exists && !replace {
-            return Err("skill is already installed; use explicit Update".into());
-        }
-        let enabled = if exists {
-            load(&root, &metadata.name, scope)?.0.enabled
-        } else {
-            true
-        };
-        let manifest = Manifest {
-            enabled,
-            source: Some(package.source),
-        };
-        let staging = format!(".install-{}", uuid::Uuid::new_v4());
-        private_dir(&root, &staging)?;
-        let stage = root.open_dir(&staging).map_err(err)?;
-        let prepared = (|| {
-            for (path, bytes) in &package.files {
-                if let Some(parent) = Path::new(path).parent() {
-                    if !parent.as_os_str().is_empty() {
-                        create_subdirs(&stage, parent)?;
-                    }
+        if !replace && scope == SkillScope::Personal {
+            for legacy in &self.fallbacks {
+                if entry_exists(&legacy.join(&metadata.name))? {
+                    return Err("skill is already installed".into());
                 }
-                write_new(&stage, path, bytes)?;
-            }
-            write_new(
-                &stage,
-                MANIFEST,
-                &serde_json::to_vec(&manifest).map_err(err)?,
-            )?;
-            Ok::<_, String>(())
-        })();
-        if let Err(error) = prepared {
-            let _ = root.remove_dir_all(&staging);
-            return Err(error);
-        }
-        let backup = format!(".previous-{}", uuid::Uuid::new_v4());
-        if exists {
-            if let Err(error) = root.rename(&metadata.name, &root, &backup) {
-                let _ = root.remove_dir_all(&staging);
-                return Err(err(error));
             }
         }
-        if let Err(error) = root.rename(&staging, &root, &metadata.name) {
-            if exists {
-                let _ = root.rename(&backup, &root, &metadata.name);
-            }
-            let _ = root.remove_dir_all(&staging);
-            return Err(err(error));
+        publish(&root, package, metadata, scope, replace)
+    }
+    pub fn create(&self, input: SkillDraftInput, scope: SkillScope) -> Result<SkillInfo, String> {
+        self.install(input.package()?, scope, false)
+    }
+    pub fn update_document(
+        &self,
+        id: &str,
+        content: &str,
+        expected: &str,
+    ) -> Result<SkillInfo, String> {
+        let (scope, name) = parse_id(id)?;
+        let metadata = parse_skill(content)?;
+        if metadata.name != name {
+            return Err("editing cannot rename a skill".into());
         }
-        if exists {
-            let _ = root.remove_dir_all(&backup);
+        let selected_root = self.existing_path(scope, name)?;
+        let root = open_root(selected_root, false)?;
+        let _lock = lock(&root)?;
+        recover(&root, scope);
+        let (_, mut files) = load(&root, name, scope)?;
+        if document_fingerprint(selected_root, &files)? != expected {
+            return Err("skill changed since it was read; reload before saving".into());
         }
-        Ok(info(metadata, scope, manifest))
+        files.insert("SKILL.md".into(), content.as_bytes().to_vec());
+        validate_files(&files)?;
+        publish(
+            &root,
+            SkillPackage {
+                source: None,
+                files,
+            },
+            metadata,
+            scope,
+            true,
+        )
     }
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<SkillInfo, String> {
         let (scope, name) = parse_id(id)?;
-        let root = open_root(self.path(scope), false)?;
+        let selected_root = self.existing_path(scope, name)?;
+        let root = open_root(selected_root, false)?;
         let _lock = lock(&root)?;
         recover(&root, scope);
         let (mut info, _) = load(&root, name, scope)?;
@@ -304,6 +364,90 @@ impl SkillStore {
         Ok(info)
     }
 }
+fn publish(
+    root: &Dir,
+    package: SkillPackage,
+    metadata: SkillMetadata,
+    scope: SkillScope,
+    replace: bool,
+) -> Result<SkillInfo, String> {
+    let exists = root.symlink_metadata(&metadata.name).is_ok();
+    if exists && !replace {
+        return Err("skill is already installed; use explicit Update".into());
+    }
+    let enabled = if exists {
+        load(root, &metadata.name, scope)?.0.enabled
+    } else {
+        true
+    };
+    let manifest = Manifest {
+        enabled,
+        source: package.source,
+    };
+    let staging = format!(".install-{}", uuid::Uuid::new_v4());
+    private_dir(root, &staging)?;
+    let stage = root.open_dir(&staging).map_err(err)?;
+    let prepared = (|| {
+        for (path, bytes) in &package.files {
+            if let Some(parent) = Path::new(path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    create_subdirs(&stage, parent)?;
+                }
+            }
+            write_new(&stage, path, bytes)?;
+        }
+        write_new(
+            &stage,
+            MANIFEST,
+            &serde_json::to_vec(&manifest).map_err(err)?,
+        )?;
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = prepared {
+        let _ = root.remove_dir_all(&staging);
+        return Err(error);
+    }
+    let backup = format!(".previous-{}", uuid::Uuid::new_v4());
+    if exists {
+        if let Err(error) = root.rename(&metadata.name, root, &backup) {
+            let _ = root.remove_dir_all(&staging);
+            return Err(err(error));
+        }
+    }
+    if let Err(error) = root.rename(&staging, root, &metadata.name) {
+        if exists {
+            let _ = root.rename(&backup, root, &metadata.name);
+        }
+        let _ = root.remove_dir_all(&staging);
+        return Err(err(error));
+    }
+    if exists {
+        let _ = root.remove_dir_all(&backup);
+    }
+    Ok(info(metadata, scope, manifest))
+}
+
+// Editor tokens bind the package to the selected storage root. A newly installed
+// primary skill must not redirect a draft that was read from the legacy root.
+fn document_fingerprint(root: &Path, files: &SkillFiles) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let identity = std::fs::canonicalize(root).map_err(err)?;
+    let identity = identity.as_os_str().as_encoded_bytes();
+    let mut hash = Sha256::new();
+    hash.update((identity.len() as u64).to_be_bytes());
+    hash.update(identity);
+    hash.update(fingerprint(files).as_bytes());
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn entry_exists(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(err(error)),
+    }
+}
+
 fn issue(catalog: &mut SkillCatalog, message: String) {
     if catalog.issues.len() < 64 {
         catalog.issues.push(message.chars().take(300).collect());
@@ -368,7 +512,7 @@ fn load_directory(
     }
     Ok((info(metadata, scope, manifest), files))
 }
-fn validate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+pub(super) fn validate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
     if files.is_empty() || files.len() > MAX_FILES {
         return Err("skill exceeds 256 files".into());
     }
@@ -400,7 +544,7 @@ fn validate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
     }
     Ok(())
 }
-fn walk(
+pub(super) fn walk(
     dir: &Dir,
     prefix: &str,
     files: &mut BTreeMap<String, Vec<u8>>,
@@ -457,7 +601,7 @@ fn walk(
     }
     Ok(())
 }
-fn read_bytes(dir: &Dir, path: &str) -> Result<Vec<u8>, String> {
+pub(super) fn read_bytes(dir: &Dir, path: &str) -> Result<Vec<u8>, String> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -517,7 +661,7 @@ fn create_subdirs(dir: &Dir, path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn open_root(path: &Path, create: bool) -> Result<Dir, String> {
+pub(super) fn open_root(path: &Path, create: bool) -> Result<Dir, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -631,4 +775,144 @@ fn recover(root: &Dir, scope: SkillScope) -> Vec<String> {
         issues.push(error);
     }
     issues
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    fn package(description: &str) -> SkillDraftInput {
+        SkillDraftInput {
+            name: "demo".into(),
+            title: None,
+            description: description.into(),
+            instructions: "Instructions".into(),
+            files: None,
+        }
+    }
+    #[test]
+    fn canonical_cli_and_atlas_fallbacks_preserve_precedence_and_authority() {
+        let t = tempfile::tempdir().unwrap();
+        let workspace = t.path().join("workspace");
+        let cli = SkillStore::new(t.path().join("cli"), workspace.clone());
+        let atlas = SkillStore::new(t.path().join("atlas"), workspace.clone());
+        atlas
+            .create(package("Atlas fallback"), SkillScope::Personal)
+            .unwrap();
+        let mut store = SkillStore::new(t.path().join("primary"), workspace.clone());
+        store.fallbacks = vec![t.path().join("cli"), t.path().join("atlas")];
+        let old = store.read("personal:demo", None).unwrap();
+        cli.create(package("Atlas fallback"), SkillScope::Personal)
+            .unwrap();
+        assert!(store
+            .update_document("personal:demo", &old.content, &old.fingerprint)
+            .is_err());
+        assert!(store
+            .create(package("Duplicate"), SkillScope::Personal)
+            .is_err());
+        assert_eq!(store.list().unwrap().skills.len(), 1);
+        store.set_enabled("personal:demo", false).unwrap();
+        assert!(!cli.read("personal:demo", None).unwrap().skill.enabled);
+        assert!(atlas.read("personal:demo", None).unwrap().skill.enabled);
+        let doc = store.read("personal:demo", None).unwrap();
+        store
+            .update_document(
+                "personal:demo",
+                &doc.content.replace("Atlas fallback", "CLI edited"),
+                &doc.fingerprint,
+            )
+            .unwrap();
+        assert_eq!(
+            cli.read("personal:demo", None).unwrap().skill.description,
+            "CLI edited"
+        );
+        assert_eq!(
+            atlas.read("personal:demo", None).unwrap().skill.description,
+            "Atlas fallback"
+        );
+        store.set_enabled("personal:demo", true).unwrap();
+        assert_eq!(
+            store.snapshot().unwrap()[0].directory,
+            t.path().join("cli/demo")
+        );
+        let primary = SkillStore::new(t.path().join("primary"), workspace);
+        primary
+            .create(package("Primary"), SkillScope::Personal)
+            .unwrap();
+        assert_eq!(store.list().unwrap().skills.len(), 1);
+        assert_eq!(
+            store.read("personal:demo", None).unwrap().skill.description,
+            "Primary"
+        );
+    }
+    #[test]
+    fn editor_rejects_changed_personal_root_even_with_identical_content() {
+        let t = tempfile::tempdir().unwrap();
+        let legacy = t.path().join("legacy");
+        let old = SkillStore::new(legacy.clone(), t.path().join("workspace"));
+        old.create(package("Same bytes"), SkillScope::Personal)
+            .unwrap();
+        let mut current = SkillStore::new(t.path().join("shared"), t.path().join("workspace"));
+        current.fallbacks = vec![legacy];
+        let document = current.read("personal:demo", None).unwrap();
+        let primary = SkillStore::new(t.path().join("shared"), t.path().join("workspace"));
+        primary
+            .create(package("Same bytes"), SkillScope::Personal)
+            .unwrap();
+        assert!(current
+            .update_document(
+                "personal:demo",
+                &document.content.replace("Instructions", "Changed"),
+                &document.fingerprint
+            )
+            .is_err());
+        assert_eq!(
+            primary.read("personal:demo", None).unwrap().content,
+            document.content
+        );
+        assert_eq!(
+            old.read("personal:demo", None).unwrap().content,
+            document.content
+        );
+    }
+    #[test]
+    fn fallback_names_keep_authority_and_primary_wins_without_moving() {
+        let t = tempfile::tempdir().unwrap();
+        let legacy = t.path().join("legacy");
+        let old = SkillStore::new(legacy.clone(), t.path().join("workspace"));
+        old.create(package("Legacy"), SkillScope::Personal).unwrap();
+        let mut current = SkillStore::new(t.path().join("shared"), t.path().join("workspace"));
+        current.fallbacks = vec![legacy.clone()];
+        assert_eq!(current.list().unwrap().skills[0].description, "Legacy");
+        assert!(current
+            .create(package("duplicate"), SkillScope::Personal)
+            .is_err());
+        current.set_enabled("personal:demo", false).unwrap();
+        let doc = current.read("personal:demo", None).unwrap();
+        current
+            .update_document(
+                "personal:demo",
+                &doc.content.replace("Legacy", "Edited"),
+                &doc.fingerprint,
+            )
+            .unwrap();
+        assert_eq!(
+            old.read("personal:demo", None).unwrap().skill.description,
+            "Edited"
+        );
+        assert!(!old.read("personal:demo", None).unwrap().skill.enabled);
+        let primary = SkillStore::new(t.path().join("shared"), t.path().join("workspace"));
+        primary
+            .create(package("Primary"), SkillScope::Personal)
+            .unwrap();
+        assert_eq!(current.list().unwrap().skills.len(), 1);
+        assert_eq!(
+            current
+                .read("personal:demo", None)
+                .unwrap()
+                .skill
+                .description,
+            "Primary"
+        );
+        assert!(legacy.join("demo/SKILL.md").exists());
+    }
 }

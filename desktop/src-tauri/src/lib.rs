@@ -37,6 +37,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            skill_commands::create_skill,
+            skill_commands::update_skill_document,
+            skill_commands::preview_local_skills,
+            skill_commands::install_local_skill,
             skill_commands::list_skills,
             skill_commands::read_skill,
             skill_commands::preview_skill_import,

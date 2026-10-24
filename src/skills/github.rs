@@ -991,7 +991,7 @@ impl Github {
         .map_err(|_| "SKILL.md must contain UTF-8 text.")?;
         parse_skill(content)?;
         Ok(SkillPackage {
-            source: source.clone(),
+            source: Some(source.clone()),
             files,
         })
     }

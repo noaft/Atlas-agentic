@@ -2,6 +2,7 @@ mod computer;
 mod copy_file;
 mod create_directory;
 mod create_file;
+mod create_skill;
 mod current_time;
 mod delete_file;
 #[cfg(unix)]
@@ -31,6 +32,7 @@ pub use computer::{
 pub use copy_file::CopyFileTool;
 pub use create_directory::CreateDirectoryTool;
 pub use create_file::CreateFileTool;
+pub use create_skill::CreateSkillTool;
 pub use current_time::CurrentTimeTool;
 pub use delete_file::DeleteFileTool;
 #[cfg(unix)]

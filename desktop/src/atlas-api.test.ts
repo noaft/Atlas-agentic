@@ -304,3 +304,23 @@ test("skill commands preserve explicit workspace ownership and pinned sources", 
     {command:"set_skill_enabled",payload:{id:"personal:review",enabled:false,context}},
   ]);
 });
+
+test("local skill creation, editing and import retain explicit scope and ownership", async () => {
+  const calls: Array<{command:string,payload:unknown}>=[];
+  mockIPC((command,payload)=>{calls.push({command,payload});return command === "plugin:dialog|open" ? "/imports/review" : null;});
+  const api=createTauriAtlasApi();
+  const context={conversationId:metadata.id,workspacePath:"/work/draft"};
+  const input={name:"review",description:"Review changes",instructions:"Inspect first."};
+  await api.createSkill(input,"personal",context);
+  await api.updateSkillDocument("project:review","new content","fingerprint",context);
+  expect(await api.chooseSkillImport("folder")).toBe("/imports/review");
+  await api.previewLocalSkills("/imports/review");
+  await api.installLocalSkill("/imports/review","fingerprint","project",context);
+  expect(calls).toEqual([
+    {command:"create_skill",payload:{input,scope:"personal",context}},
+    {command:"update_skill_document",payload:{id:"project:review",content:"new content",fingerprint:"fingerprint",context}},
+    {command:"plugin:dialog|open",payload:{options:{directory:true,multiple:false}}},
+    {command:"preview_local_skills",payload:{path:"/imports/review"}},
+    {command:"install_local_skill",payload:{path:"/imports/review",fingerprint:"fingerprint",scope:"project",context}},
+  ]);
+});

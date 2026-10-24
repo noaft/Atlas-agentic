@@ -54,6 +54,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 
 The built-in runtime tools are:
 
+- `create_skill`: save an explicitly requested new Personal or Project skill without overwriting
 - `load_skill`: lazily read enabled skill instructions or a registered UTF-8 supporting resource
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
@@ -158,29 +159,43 @@ Secret Service session.
 
 ## Skills
 
-Skills use standard YAML-frontmatter `SKILL.md` folders. Personal skills live in
-`skills/` under the Atlas config directory; Project skills live in the validated
-starting workspace's `.agents/skills/`. Keep `personal:name` and `project:name`
-identities distinct. Invalid packages produce bounded catalog issues while valid
-skills remain usable. Disabled skills never enter a new request's tool catalog.
+Skills are source-independent YAML-frontmatter `SKILL.md` folders. Project skills
+live under the validated workspace's `.agents/skills/`. New Personal skills use
+absolute XDG_CONFIG_HOME/agents/skills or ~/.config/agents/skills on all platforms,
+matching the Universal layout. Also discover ~/.agents/skills (canonical global
+CLI installs), then the legacy Atlas config skills folder. Primary wins duplicate
+names; operations on an existing fallback skill resolve its actual root. Explicit
+ATLAS_CONFIG_DIR and custom SettingsStore instances remain isolated. Never move
+or delete existing skills automatically.
 
-The `load_skill` runtime tool exposes only enabled IDs/names/titles/descriptions,
-loads full instructions or a relative UTF-8 resource on demand, and preserves a
-bounded immutable snapshot for the running request. Skill guidance cannot grant
-permissions or override user/system instructions. Provider payloads stay generic.
+Keep personal:name/project:name identities distinct. No remote source is required.
+Create validates name/title/summary/instructions and supporting UTF-8 file maps,
+never overwrites, and produces one folder per skill. `create_skill` is available
+even when the catalog is empty; only save when the user explicitly asks. Project
+creation is ModifyWorkspace; Personal is ModifyOutsideWorkspace and requires
+approval in Ask and Workspace modes. No implicit script/dependency execution.
 
-GitHub preview resolves public HTTPS repository/folder/file URLs to a pinned
-commit. Install revalidates and downloads the selected whole package at that
-revision; updates are explicit and preserve enabled state. Keep package paths,
-symlinks, special files, metadata, file counts, and byte limits validated. Never
-execute imported scripts, hooks, or dependency installers automatically. Do not
-reuse model credentials or GitHub tokens from development environment files.
+Local imports accept a single SKILL.md (only that file) or whole skill folders /
+bounded collections. Preview full instructions/resources, then bind installation
+to a whole-package fingerprint. Edits preserve resources/enabled state, reject
+renames, and bind their token to both content and the selected storage root so a
+new primary copy cannot redirect a legacy editor. Editing a remote skill clears
+remote provenance. Retain safe staging, leases, recovery, and existing bounds.
 
-Settings Skills actions are independent of model Save/Discard. Capture native
-workspace authority for each operation; saved conversations ignore conflicting
-frontend paths. Run blocking filesystem/network operations on workers, keep all
-frontend invokes in atlas-api.ts, and reject stale UI results after project,
-scope, or preview changes. No broader frontend permissions are needed.
+The `load_skill` tool exposes enabled metadata first, then frozen full instructions,
+base folder, relative file list, and UTF-8 resources on demand. Invalid/disabled
+skills stay out of the request catalog; valid others remain usable. Running
+requests keep their snapshots; newly saved skills are available next request.
+Instructions cannot grant permissions or override user/system guidance.
+
+Skills Settings leads with Create and Import local. Edit drafts and input focus
+survive navigation/background refreshes; unrelated installs do not erase edits.
+Native dialogs go through atlas-api.ts using existing dialog permission. Capture
+workspace/context per operation; saved conversations ignore conflicting frontend
+paths. Filesystem/network work runs on workers without broader frontend access.
+Optional public GitHub imports remain under Other sources; folders installed by
+other tools using the shared locations require no Atlas-specific manifest.
+Never reuse development .env.local credentials for skill operations.
 
 ## Model providers
 

@@ -453,3 +453,18 @@ test("lightweight Settings updates change Project ownership without replacing mo
   expect(key.value).toBe("draft key");
   expect(store.getState().settingsDraft?.apiKey).toBe("draft key");
 });
+
+test("Skills creation textarea survives category navigation and Escape back to chat", async () => {
+  const {root, store} = fixture();
+  await store.initialize(); store.openSettings(); store.selectSettingsSection("skills");
+  renderSettings(root, store.getState(), store);
+  const textarea = root.querySelector<HTMLTextAreaElement>('[aria-label="Skill instructions"]')!;
+  textarea.value = "Keep this unfinished skill."; textarea.dispatchEvent(new Event("input"));
+  store.selectSettingsSection("models"); updateSettingsChrome(root, store.getState(), store);
+  store.selectSettingsSection("skills"); updateSettingsChrome(root, store.getState(), store);
+  expect(root.querySelector('[aria-label="Skill instructions"]')).toBe(textarea);
+  textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+  expect(store.getState().screen).toBe("chat");
+  store.openSettings(); renderSettings(root, store.getState(), store);
+  expect(root.querySelector<HTMLTextAreaElement>('[aria-label="Skill instructions"]')!.value).toBe("Keep this unfinished skill.");
+});

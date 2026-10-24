@@ -26,6 +26,25 @@ export interface SkillDocument {
   skill: SkillInfo;
   content: string;
   files: string[];
+  fingerprint: string;
+}
+
+export interface SkillDraftInput {
+  name: string;
+  title?: string;
+  description: string;
+  instructions: string;
+  files?: Record<string, string>;
+}
+
+export interface LocalSkillPreview {
+  name: string;
+  title: string;
+  description: string;
+  content: string;
+  files: string[];
+  path: string;
+  fingerprint: string;
 }
 
 export interface SkillPreview {
@@ -43,6 +62,11 @@ export interface SkillWorkspaceContext {
 }
 
 export interface SkillsApi {
+  createSkill(input: SkillDraftInput, scope: SkillScope, context: SkillWorkspaceContext): Promise<SkillInfo>;
+  updateSkillDocument(id: string, content: string, fingerprint: string, context: SkillWorkspaceContext): Promise<SkillInfo>;
+  chooseSkillImport(kind: "file" | "folder"): Promise<string | null>;
+  previewLocalSkills(path: string): Promise<LocalSkillPreview[]>;
+  installLocalSkill(path: string, fingerprint: string, scope: SkillScope, context: SkillWorkspaceContext): Promise<SkillInfo>;
   listSkills(context: SkillWorkspaceContext): Promise<SkillCatalog>;
   readSkill(id: string, context: SkillWorkspaceContext): Promise<SkillDocument>;
   previewSkillImport(url: string): Promise<SkillPreview[]>;

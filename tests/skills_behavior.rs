@@ -13,7 +13,7 @@ fn source() -> SkillSource {
 }
 fn package(body: &str) -> SkillPackage {
     SkillPackage {
-        source: source(),
+        source: Some(source()),
         files: BTreeMap::from([
             (
                 "SKILL.md".into(),
@@ -116,7 +116,7 @@ fn unsafe_or_invalid_packages_never_replace_existing_skill() {
         assert!(s.install(p, SkillScope::Personal, true).is_err(), "{path}");
     }
     let mut p = package("bad");
-    p.source.revision = "main".into();
+    p.source.as_mut().unwrap().revision = "main".into();
     assert!(s.install(p, SkillScope::Personal, true).is_err());
     let mut p = package("bad");
     p.files.insert("refs/huge".into(), vec![0; 256 * 1024 + 1]);
@@ -299,4 +299,38 @@ fn loaded_instructions_include_frozen_folder_and_all_relative_files_without_io()
             .message,
         "Supporting text"
     );
+}
+
+#[test]
+fn editing_imported_skill_creates_local_fork_and_preserves_binary_assets() {
+    let t = tempfile::tempdir().unwrap();
+    let s = store(&t);
+    let mut imported = package("Imported instructions");
+    imported
+        .files
+        .insert("assets/icon.bin".into(), vec![0, 255, 12]);
+    s.install(imported, SkillScope::Personal, false).unwrap();
+    let document = s.read("personal:demo", None).unwrap();
+    assert!(document.skill.source.is_some());
+    let saved = s
+        .update_document(
+            "personal:demo",
+            &document.content.replace("Imported", "Local"),
+            &document.fingerprint,
+        )
+        .unwrap();
+    assert!(saved.source.is_none());
+    assert!(s
+        .read("personal:demo", None)
+        .unwrap()
+        .skill
+        .source
+        .is_none());
+    assert_eq!(
+        std::fs::read(t.path().join("personal/demo/assets/icon.bin")).unwrap(),
+        vec![0, 255, 12]
+    );
+    assert!(s
+        .update_document("personal:demo", &document.content, &document.fingerprint)
+        .is_err());
 }

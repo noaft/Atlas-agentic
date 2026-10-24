@@ -14,6 +14,7 @@ pub enum PermissionMode {
 pub enum ToolRisk {
     ReadOnly,
     ModifyWorkspace,
+    ModifyOutsideWorkspace,
     Destructive,
     Launch,
     Command,
@@ -28,6 +29,7 @@ impl ToolRisk {
         match self {
             Self::ReadOnly => "reads information without changing the system",
             Self::ModifyWorkspace => "changes files inside the workspace",
+            Self::ModifyOutsideWorkspace => "changes files outside the selected workspace",
             Self::Destructive => "deletes or overwrites data",
             Self::Launch => "opens a file or application on the computer",
             Self::Command => "executes a shell command with the Atlas process permissions",
@@ -49,7 +51,8 @@ pub fn requires_confirmation(mode: PermissionMode, risk: ToolRisk) -> bool {
         PermissionMode::Ask => risk != ToolRisk::ReadOnly,
         PermissionMode::Workspace => matches!(
             risk,
-            ToolRisk::Destructive
+            ToolRisk::ModifyOutsideWorkspace
+                | ToolRisk::Destructive
                 | ToolRisk::Launch
                 | ToolRisk::Command
                 | ToolRisk::ReadOutsideWorkspace

@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use atlas_agentic::{
     conversations::ConversationId,
-    skills::{self, SkillCatalog, SkillDocument, SkillInfo, SkillPreview, SkillScope, SkillSource},
+    skills::{
+        self, LocalSkillPreview, SkillCatalog, SkillDocument, SkillDraftInput, SkillInfo,
+        SkillPreview, SkillScope, SkillSource,
+    },
 };
 use serde::Deserialize;
 use tauri::State;
@@ -14,6 +17,72 @@ use crate::commands::{run_blocking, DesktopState};
 pub struct SkillWorkspaceContext {
     conversation_id: Option<ConversationId>,
     workspace_path: Option<PathBuf>,
+}
+
+#[tauri::command]
+pub async fn create_skill(
+    input: SkillDraftInput,
+    scope: SkillScope,
+    context: SkillWorkspaceContext,
+    state: State<'_, DesktopState>,
+) -> Result<SkillInfo, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.create_skill", move || {
+        state
+            .skills_store(
+                context.conversation_id.as_ref(),
+                context.workspace_path.as_deref(),
+            )?
+            .create(input, scope)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn update_skill_document(
+    id: String,
+    content: String,
+    fingerprint: String,
+    context: SkillWorkspaceContext,
+    state: State<'_, DesktopState>,
+) -> Result<SkillInfo, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.update_skill_document", move || {
+        state
+            .skills_store(
+                context.conversation_id.as_ref(),
+                context.workspace_path.as_deref(),
+            )?
+            .update_document(&id, &content, &fingerprint)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn preview_local_skills(path: PathBuf) -> Result<Vec<LocalSkillPreview>, String> {
+    run_blocking("desktop.preview_local_skills", move || {
+        skills::local::preview(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn install_local_skill(
+    path: PathBuf,
+    fingerprint: String,
+    scope: SkillScope,
+    context: SkillWorkspaceContext,
+    state: State<'_, DesktopState>,
+) -> Result<SkillInfo, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.install_local_skill", move || {
+        let store = state.skills_store(
+            context.conversation_id.as_ref(),
+            context.workspace_path.as_deref(),
+        )?;
+        store.install(skills::local::download(&path, &fingerprint)?, scope, false)
+    })
+    .await
 }
 
 #[tauri::command]

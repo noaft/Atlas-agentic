@@ -1,6 +1,6 @@
 import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
-import type { SkillScope, SkillSource, SkillWorkspaceContext } from "./skills-types";
+import type { SkillScope, SkillSource, SkillWorkspaceContext, SkillDraftInput } from "./skills-types";
 import type {
   TaskDescriptor,
   TaskResult,
@@ -182,6 +182,13 @@ export class ChatStore {
     workspacePath: this.state.activeWorkspace?.path ?? null,
   });
   listSkills = (context = this.skillContext()) => this.api.listSkills(context);
+  createSkill = (input: SkillDraftInput, scope: SkillScope, context = this.skillContext()) => this.api.createSkill(input, scope, context);
+  updateSkillDocument = (id: string, content: string, fingerprint: string, context = this.skillContext()) =>
+    this.api.updateSkillDocument(id, content, fingerprint, context);
+  chooseSkillImport = (kind: "file" | "folder") => this.api.chooseSkillImport(kind);
+  previewLocalSkills = (path: string) => this.api.previewLocalSkills(path);
+  installLocalSkill = (path: string, fingerprint: string, scope: SkillScope, context = this.skillContext()) =>
+    this.api.installLocalSkill(path, fingerprint, scope, context);
   readSkill = (id: string, context = this.skillContext()) => this.api.readSkill(id, context);
   previewSkillImport = (url: string) => this.api.previewSkillImport(url);
   installSkill = (source: SkillSource, scope: SkillScope, replace = false, context = this.skillContext()) =>
