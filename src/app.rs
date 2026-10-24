@@ -55,6 +55,12 @@ pub fn build_runtime_with_settings(
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
     let mut tools = build_default_tools(workspace_root);
+    if let Ok(personal) = crate::skills::personal_skills_root() {
+        let store = crate::skills::SkillStore::new(personal, workspace_root.to_path_buf());
+        if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&store) {
+            tools.register(Box::new(tool));
+        }
+    }
     crate::mcp::register_tools(
         &mut tools,
         crate::mcp::McpConfig::from_environment()?,

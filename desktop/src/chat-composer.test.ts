@@ -1,3 +1,4 @@
+import { EmptySkillsApi } from "./skills-api.test-support";
 import { taskFixtures } from "./task-fixtures.test-support";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -28,7 +29,7 @@ const settings: SettingsView = {
   environmentOverrides: [],
 };
 
-class ComposerApi implements AtlasApi {
+class ComposerApi extends EmptySkillsApi implements AtlasApi {
   listMcpConnections = async () => [];
   connectMcpServer = async (_server: string) => {};
   disconnectMcpServer = async (_server: string) => {};

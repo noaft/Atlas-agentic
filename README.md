@@ -58,7 +58,7 @@ an API key. The CLI uses your current directory as its starting folder.
 ## Settings and access
 
 Desktop Settings saves separate credentials, endpoint, model, and model limits for
-each provider. Its sidebar separates **Models & providers**, **MCP connections**,
+each provider. Its sidebar separates **Models & providers**, **MCP connections**, **Skills**,
 **Workspace**, and **Permissions**. Switching categories or choosing **Back to chat**
 keeps unsaved edits in memory. **Save changes** saves them and stays on the current
 page; **Discard** resets all Settings edits. These drafts do not survive an app
@@ -121,6 +121,51 @@ Built-in tools:
 | Open and execute | `open_file`, `open_application`, `exec_command` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
+| Load skill instructions | `load_skill` (when enabled skills are available) |
+
+## Skills
+
+Open **Settings → Skills** to manage reusable instructions. Choose **Personal**
+for skills shared across projects or **Project** for skills in the current chat's
+starting folder. Paste a public GitHub repository, folder, or `SKILL.md` link and
+choose **Preview**. Select a skill, inspect its instructions and source revision,
+then choose **Install**. A repository can provide several skills.
+
+Installed skills support **View**, enable/disable, and an explicit **Update**
+preview for GitHub imports. These actions apply immediately, independently of
+model Settings Save/Discard. Updates preserve the enabled state. A running chat
+request keeps its original skill snapshot; subsequent requests use the new state.
+
+Both CLI and desktop discover these folders:
+
+- Personal: `skills/` beside Atlas's user-local `settings.json` (normally
+  `~/.config/atlas/skills/` on Linux; `ATLAS_CONFIG_DIR` relocates it).
+- Project: `.agents/skills/` under the chat's starting folder.
+
+Each skill is a directory matching its metadata name, containing `SKILL.md`:
+
+```markdown
+---
+name: project-review
+description: Review project changes and their relevant tests.
+metadata:
+  title: Project review
+---
+Read the project instructions and inspect the affected code before suggesting changes.
+Verify findings with relevant tests or direct checks.
+```
+
+Optional `references/`, `scripts/`, and `assets/` stay with the installed skill.
+Atlas sends enabled skill IDs, names, titles and descriptions to the model. The
+model requests full instructions through `load_skill`, including their folder
+and resource list, optionally specifying a relative UTF-8 supporting resource. Personal and Project IDs remain distinct,
+even when their names match. Invalid skills appear as issues in Settings and
+are excluded from the model catalog.
+
+GitHub imports are pinned to the previewed commit. Importing and loading never
+run scripts or install dependencies; later commands still use normal Atlas
+permissions. V1 imports public GitHub sources; marketplace sites can supply the
+GitHub link. Skill definitions use the [Agent Skills format](https://agentskills.io/specification).
 
 ## MCP connections
 

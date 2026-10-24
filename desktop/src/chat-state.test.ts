@@ -1,3 +1,4 @@
+import { EmptySkillsApi } from "./skills-api.test-support";
 import { taskFixtures } from "./task-fixtures.test-support";
 import { expect, test } from "vitest";
 
@@ -76,7 +77,7 @@ const thinkingActivity: ActivityRecord = {
   createdAt: "2026-10-04T10:00:00Z",
 };
 
-class FakeApi implements AtlasApi {
+class FakeApi extends EmptySkillsApi implements AtlasApi {
   listMcpConnections = async () => [];
   connectMcpServer = async (_server: string) => {};
   disconnectMcpServer = async (_server: string) => {};

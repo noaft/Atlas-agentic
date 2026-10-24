@@ -34,6 +34,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   ├── store.rs        Locked message/activity JSONL and atomic metadata updates
 │   │   ├── service.rs      Ask, activity capture, workspace persistence, and titles
 │   │   └── title.rs        Title sanitization
+│   ├── skills/            Scoped skill catalog, safe storage, and GitHub imports
 │   ├── tasks/             Authoritative built-in task catalog and validated dispatch
 │   ├── diagnostics.rs      Private rotating backend logs and request correlation
 │   ├── settings.rs         Versioned private settings and environment precedence
@@ -53,6 +54,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 
 The built-in runtime tools are:
 
+- `load_skill`: lazily read enabled skill instructions or a registered UTF-8 supporting resource
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
@@ -154,6 +156,32 @@ Building the OAuth credential-store integration also requires `libdbus-1-dev`
 and `pkg-config` on Debian/Ubuntu; runtime sign-in requires an unlocked desktop
 Secret Service session.
 
+## Skills
+
+Skills use standard YAML-frontmatter `SKILL.md` folders. Personal skills live in
+`skills/` under the Atlas config directory; Project skills live in the validated
+starting workspace's `.agents/skills/`. Keep `personal:name` and `project:name`
+identities distinct. Invalid packages produce bounded catalog issues while valid
+skills remain usable. Disabled skills never enter a new request's tool catalog.
+
+The `load_skill` runtime tool exposes only enabled IDs/names/titles/descriptions,
+loads full instructions or a relative UTF-8 resource on demand, and preserves a
+bounded immutable snapshot for the running request. Skill guidance cannot grant
+permissions or override user/system instructions. Provider payloads stay generic.
+
+GitHub preview resolves public HTTPS repository/folder/file URLs to a pinned
+commit. Install revalidates and downloads the selected whole package at that
+revision; updates are explicit and preserve enabled state. Keep package paths,
+symlinks, special files, metadata, file counts, and byte limits validated. Never
+execute imported scripts, hooks, or dependency installers automatically. Do not
+reuse model credentials or GitHub tokens from development environment files.
+
+Settings Skills actions are independent of model Save/Discard. Capture native
+workspace authority for each operation; saved conversations ignore conflicting
+frontend paths. Run blocking filesystem/network operations on workers, keep all
+frontend invokes in atlas-api.ts, and reject stale UI results after project,
+scope, or preview changes. No broader frontend permissions are needed.
+
 ## Model providers
 
 Atlas supports provider IDs `deepseek`, `openai`, `anthropic`, `gemini`, and
@@ -177,11 +205,11 @@ selection, then the agent supplies a fallback. Provider prefixes `DEEPSEEK`,
 Only compatible endpoints can opt into keyless requests. API keys must not appear
 in settings views, Debug output, provider errors, or conversation artifacts.
 
-Desktop Settings uses separate Models & providers, MCP connections, Workspace,
+Desktop Settings uses separate Models & providers, MCP connections, Skills, Workspace,
 and Permissions pages. Category navigation and Back to chat preserve per-provider
 drafts in memory; Save changes stays on the selected page and Discard resets all
 Settings edits. Preserve mounted fields, keyboard focus, category scroll positions,
-and the asynchronous MCP panel during navigation and background chat updates.
+and the asynchronous MCP and Skills panels during navigation and background chat updates.
 Desktop Settings supports
 transient model discovery without persisting credentials or selecting a model.
 Manual model IDs remain usable after discovery errors. Provider catalog responses

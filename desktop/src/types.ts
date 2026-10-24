@@ -187,7 +187,7 @@ export interface CompactionFailure {
   task: {id: string; arguments: Record<string, unknown>} | null;
 }
 
-export type SettingsSection = "models" | "connections" | "workspace" | "permissions";
+export type SettingsSection = "models" | "connections" | "skills" | "workspace" | "permissions";
 
 export interface ChatState {
   compactionFailure: CompactionFailure | null;

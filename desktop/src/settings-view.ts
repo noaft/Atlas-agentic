@@ -1,12 +1,15 @@
 import type { ChatStore } from "./chat-state";
 import type { ChatState, SettingsSection } from "./types";
 import { createMcpSettingsPanel } from "./mcp-settings";
+import { createSkillsSettingsPanel, type SkillsSettingsPanel } from "./skills-settings";
 
 const mcpPanels = new WeakMap<ChatStore, HTMLElement>();
+const skillsPanels = new WeakMap<ChatStore, SkillsSettingsPanel>();
 
 export const settingsSections: Record<SettingsSection, { title: string; subtitle: string }> = {
   models: { title: "Models & providers", subtitle: "Choose how Atlas connects to your models." },
   connections: { title: "MCP connections", subtitle: "Manage the tools and services Atlas can connect to." },
+  skills: { title: "Skills", subtitle: "Install and manage instructions Atlas can load for a task." },
   workspace: { title: "Workspace", subtitle: "Choose where new chats start working." },
   permissions: { title: "Permissions", subtitle: "Set how much Atlas asks before using tools in new chats." },
 };
@@ -21,12 +24,13 @@ export function updateSettingsSection(container: HTMLElement, section: SettingsS
   if (title) title.textContent = settingsSections[section].title;
   if (subtitle) subtitle.textContent = settingsSections[section].subtitle;
   const footer = container.querySelector<HTMLElement>(".settings-actions");
-  if (footer) footer.hidden = section === "connections";
+  if (footer) footer.hidden = section === "connections" || section === "skills";
 }
 
 /** Refresh lightweight chrome while typed inputs and connection workers keep their identity. */
 export function updateSettingsChrome(container: HTMLElement, state: Readonly<ChatState>, store: ChatStore): void {
   updateSettingsSection(container, state.settingsSection);
+  skillsPanels.get(store)?.updateContext(store.skillContext(), state.activeSessionId, state.settingsSection === "skills");
   const saving = state.settingsStatus === "saving";
   const changed = store.hasSettingsChanges();
   const save = container.querySelector<HTMLButtonElement>('.settings-actions [type="submit"]');
@@ -128,6 +132,9 @@ export function renderSettings(
   const connectionsSection = document.createElement("section");
   connectionsSection.dataset.settingsSection = "connections";
   connectionsSection.className = "settings-category-page";
+  const skillsSection = document.createElement("section");
+  skillsSection.dataset.settingsSection = "skills";
+  skillsSection.className = "settings-category-page";
   const saving = state.settingsStatus === "saving";
   const profile = settings.providers?.find(p => p.provider === draft.selectedProvider);
   const overridden = new Set(profile?.environmentOverrides ?? settings.environmentOverrides);
@@ -356,7 +363,7 @@ export function renderSettings(
   workspaceCard.append(workspaceBlock);
   workspaceSection.append(workspaceCard);
   modelSection.append(connectionCard, limitsCard);
-  form.append(modelSection, connectionsSection, workspaceSection, permissionsSection);
+  form.append(modelSection, connectionsSection, skillsSection, workspaceSection, permissionsSection);
 
   if (state.settingsErrorMessage) {
     const error = document.createElement("div");
@@ -411,6 +418,12 @@ export function renderSettings(
     mcpPanels.set(store, mcpPanel);
   }
   connectionsSection.append(mcpPanel);
+  let skillsPanel = skillsPanels.get(store);
+  if (!skillsPanel) {
+    skillsPanel = createSkillsSettingsPanel(store, store.skillContext(), state.activeSessionId);
+    skillsPanels.set(store, skillsPanel);
+  }
+  skillsSection.append(skillsPanel.element);
   panel.append(heading, form);
   container.append(panel);
   updateSettingsChrome(container, state, store);

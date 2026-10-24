@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { SkillsApi, SkillCatalog, SkillDocument, SkillPreview, SkillInfo } from "./skills-types";
 
 import type {
   McpConnectionStatus,
@@ -19,7 +20,7 @@ import type {
   Workspace,
 } from "./types";
 
-export interface AtlasApi {
+export interface AtlasApi extends SkillsApi {
   listMcpConnections(): Promise<McpConnectionStatus[]>;
   connectMcpServer(server: string): Promise<void>;
   disconnectMcpServer(server: string): Promise<void>;
@@ -57,6 +58,11 @@ export interface AtlasApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    listSkills: (context) => invoke<SkillCatalog>("list_skills", {context}),
+    readSkill: (id, context) => invoke<SkillDocument>("read_skill", {id, context}),
+    previewSkillImport: (url) => invoke<SkillPreview[]>("preview_skill_import", {url}),
+    installSkill: (source, scope, replace, context) => invoke<SkillInfo>("install_skill", {source, scope, replace, context}),
+    setSkillEnabled: (id, enabled, context) => invoke<SkillInfo>("set_skill_enabled", {id, enabled, context}),
     listMcpConnections: () => invoke<McpConnectionStatus[]>("list_mcp_connections"),
     connectMcpServer: (server) => invoke<void>("connect_mcp_server", { server }),
     disconnectMcpServer: (server) => invoke<void>("disconnect_mcp_server", { server }),

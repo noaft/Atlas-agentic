@@ -195,6 +195,19 @@ impl DesktopState {
             .map(Into::into)
     }
 
+    pub(crate) fn skills_store(
+        &self,
+        conversation_id: Option<&ConversationId>,
+        requested: Option<&Path>,
+    ) -> Result<atlas_agentic::skills::SkillStore, String> {
+        let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
+        let workspace = self.resolve_workspace(conversation_id, requested, &effective)?;
+        Ok(atlas_agentic::skills::SkillStore::new(
+            self.settings_store.directory().join("skills"),
+            workspace,
+        ))
+    }
+
     fn resolve_workspace(
         &self,
         conversation_id: Option<&ConversationId>,
@@ -875,7 +888,7 @@ fn delete_impl(id: &str, state: &DesktopState) -> Result<DeleteResult, String> {
     Ok(DeleteResult { id: id.to_string() })
 }
 
-async fn run_blocking<T: Send + 'static>(
+pub(crate) async fn run_blocking<T: Send + 'static>(
     name: &'static str,
     operation: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -1842,6 +1855,57 @@ mod tests {
             .iter()
             .any(|activity| activity.summary == "Thinking"));
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn skills_use_saved_workspace_and_settings_directory_without_model_setup() {
+        let root = TempDir::new().unwrap();
+        let saved_workspace = root.path().join("saved");
+        let requested = root.path().join("requested");
+        let config = root.path().join("config");
+        for path in [&saved_workspace, &requested, &config] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        for (base, name) in [
+            (saved_workspace.join(".agents/skills"), "saved-skill"),
+            (requested.join(".agents/skills"), "wrong-skill"),
+            (config.join("skills"), "personal-skill"),
+        ] {
+            let folder = base.join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(
+                folder.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: Test instructions\n---\nRead context first."
+                ),
+            )
+            .unwrap();
+        }
+        let store = ConversationStore::at(root.path().join("data"));
+        let saved = store
+            .create_turn_with_workspace("question", "answer", Some(&saved_workspace))
+            .unwrap();
+        let state = state_with_responses_and_automatic(
+            store,
+            SettingsStore::at(config.join("settings.json")),
+            requested.clone(),
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let catalog = state
+            .skills_store(Some(&saved.id), Some(&requested))
+            .unwrap()
+            .list()
+            .unwrap();
+        let ids = catalog
+            .skills
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"project:saved-skill"));
+        assert!(ids.contains(&"personal:personal-skill"));
+        assert!(!ids.contains(&"project:wrong-skill"));
+        assert!(!root.path().join("config/settings.json").exists());
     }
 
     #[test]

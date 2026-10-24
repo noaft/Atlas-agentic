@@ -388,6 +388,12 @@ impl fmt::Debug for SettingsStore {
 }
 
 impl SettingsStore {
+    pub fn directory(&self) -> &std::path::Path {
+        self.path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+    }
+
     pub fn from_user_config() -> Result<Self, String> {
         let directory = match env::var_os("ATLAS_CONFIG_DIR") {
             Some(path) => PathBuf::from(path),

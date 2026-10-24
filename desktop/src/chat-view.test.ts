@@ -1,3 +1,4 @@
+import { EmptySkillsApi } from "./skills-api.test-support";
 import { taskFixtures } from "./task-fixtures.test-support";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -79,7 +80,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-class ViewApi implements AtlasApi {
+class ViewApi extends EmptySkillsApi implements AtlasApi {
   listMcpConnections = async () => [];
   connectMcpServer = async (_server: string) => {};
   disconnectMcpServer = async (_server: string) => {};
@@ -1007,7 +1008,7 @@ test("Settings replaces chat navigation with category pages and returns to the s
   const sidebar = root.querySelector<HTMLElement>("[data-sidebar]")!;
   expect(sidebar.querySelector("[data-conversation-list]")).toBeNull();
   expect([...sidebar.querySelectorAll("[data-settings-category]")].map(button=>button.textContent?.trim())).toEqual([
-    "Models & providers","MCP connections","Workspace","Permissions",
+    "Models & providers","MCP connections","Skills","Workspace","Permissions",
   ]);
   const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
   key.value="private-unsaved-key";key.focus();key.dispatchEvent(new Event("input",{bubbles:true}));

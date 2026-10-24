@@ -1,3 +1,4 @@
+import { emptySkillsApi } from "./skills-api.test-support";
 import { expect, test } from "vitest";
 
 import type { AtlasApi } from "./atlas-api";
@@ -24,6 +25,7 @@ const settings: SettingsView = {
 function fixture(currentSettings = settings) {
   const saves: SaveSettingsInput[] = [];
   const api = {
+    ...emptySkillsApi,
     listMcpConnections: async () => [],
     connectMcpServer: async (_server: string) => {},
     disconnectMcpServer: async (_server: string) => {},
@@ -401,4 +403,53 @@ test("invalid fields reveal their category before native validation", async () =
   invalid.dispatchEvent(new Event("invalid",{cancelable:true}));
   expect(store.getState().settingsSection).toBe("models");
   expect(invalid.closest<HTMLDetailsElement>("details")?.open).toBe(true);
+});
+
+
+test("Skills activates lazily, retains import input and hides model Save actions", async () => {
+  const { root, store, api } = fixture();
+  let loads = 0;
+  api.listSkills = async () => { loads++; return {skills: [], issues: []}; };
+  await store.initialize(); store.openSettings();
+  renderSettings(root, store.getState(), store);
+  expect(loads).toBe(0);
+  store.selectSettingsSection("skills");
+  updateSettingsChrome(root, store.getState(), store);
+  await Promise.resolve();
+  expect(loads).toBe(1);
+  expect(root.querySelector<HTMLElement>(".settings-actions")!.hidden).toBe(true);
+  const url = root.querySelector<HTMLInputElement>('[aria-label="GitHub skill URL"]')!;
+  url.value = "https://github.com/team/repo"; url.dispatchEvent(new Event("input"));
+  store.selectSettingsSection("models"); updateSettingsChrome(root, store.getState(), store);
+  renderSettings(root, store.getState(), store);
+  expect(root.querySelector('[aria-label="GitHub skill URL"]')).toBe(url);
+  expect(url.value).toContain("team/repo");
+  store.selectSettingsSection("skills"); updateSettingsChrome(root, store.getState(), store);
+  expect(loads).toBe(1);
+});
+
+test("lightweight Settings updates change Project ownership without replacing model or Skills drafts", async () => {
+  const {root, store, api} = fixture();
+  const contexts: Array<{conversationId: string | null; workspacePath: string | null}> = [];
+  api.listSkills = async context => { contexts.push(context); return {skills: [], issues: []}; };
+  await store.initialize(); store.openSettings(); store.selectSettingsSection("skills");
+  renderSettings(root, store.getState(), store);
+  await Promise.resolve();
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.value = "draft key"; key.dispatchEvent(new Event("input"));
+  const url = root.querySelector<HTMLInputElement>('[aria-label="GitHub skill URL"]')!;
+  url.value = "https://github.com/team/repo"; url.dispatchEvent(new Event("input"));
+  const scope = root.querySelector<HTMLSelectElement>('[aria-label="Skill scope"]')!;
+  scope.value = "project"; scope.dispatchEvent(new Event("change")); await Promise.resolve();
+  api.chooseWorkspace = async () => "/private/new-project";
+  api.validateWorkspace = async path => ({path, name: "new-project"});
+  await store.chooseWorkspaceForDraft();
+  updateSettingsChrome(root, store.getState(), store); await Promise.resolve();
+  expect(contexts.at(-1)?.workspacePath).toBe("/private/new-project");
+  expect(root.querySelector(".skills-settings")?.textContent).toContain("/private/new-project");
+  expect(root.querySelector('[aria-label="GitHub skill URL"]')).toBe(url);
+  expect(url.value).toBe("https://github.com/team/repo");
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("draft key");
+  expect(store.getState().settingsDraft?.apiKey).toBe("draft key");
 });

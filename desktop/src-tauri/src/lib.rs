@@ -2,6 +2,7 @@ mod commands;
 mod mcp_commands;
 mod provider_settings;
 mod requests;
+mod skill_commands;
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            skill_commands::list_skills,
+            skill_commands::read_skill,
+            skill_commands::preview_skill_import,
+            skill_commands::install_skill,
+            skill_commands::set_skill_enabled,
             mcp_commands::list_mcp_connections,
             mcp_commands::connect_mcp_server,
             mcp_commands::disconnect_mcp_server,

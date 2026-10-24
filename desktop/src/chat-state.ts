@@ -1,5 +1,6 @@
 import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
+import type { SkillScope, SkillSource, SkillWorkspaceContext } from "./skills-types";
 import type {
   TaskDescriptor,
   TaskResult,
@@ -176,6 +177,17 @@ export class ChatStore {
   }
 
   listMcpConnections = () => this.api.listMcpConnections();
+  skillContext = (): SkillWorkspaceContext => ({
+    conversationId: this.state.activeConversationId,
+    workspacePath: this.state.activeWorkspace?.path ?? null,
+  });
+  listSkills = (context = this.skillContext()) => this.api.listSkills(context);
+  readSkill = (id: string, context = this.skillContext()) => this.api.readSkill(id, context);
+  previewSkillImport = (url: string) => this.api.previewSkillImport(url);
+  installSkill = (source: SkillSource, scope: SkillScope, replace = false, context = this.skillContext()) =>
+    this.api.installSkill(source, scope, replace, context);
+  setSkillEnabled = (id: string, enabled: boolean, context = this.skillContext()) =>
+    this.api.setSkillEnabled(id, enabled, context);
   connectMcpServer = (server: string) => this.api.connectMcpServer(server);
   disconnectMcpServer = (server: string) => this.api.disconnectMcpServer(server);
   cancelMcpConnection = (server: string) => this.api.cancelMcpConnection(server);

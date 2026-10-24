@@ -9,6 +9,7 @@ mod exec_command;
 #[cfg(windows)]
 mod exec_command_windows;
 mod list_dir;
+mod load_skill;
 mod move_file;
 mod open_application;
 mod open_file;
@@ -37,6 +38,7 @@ pub use exec_command::ExecCommandTool;
 #[cfg(windows)]
 pub use exec_command_windows::ExecCommandTool;
 pub use list_dir::ListDirTool;
+pub use load_skill::LoadSkillTool;
 pub use move_file::MoveFileTool;
 pub use open_application::OpenApplicationTool;
 pub use open_file::OpenFileTool;

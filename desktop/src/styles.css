@@ -600,3 +600,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   .settings-panel .primary-button, .settings-panel .secondary-button { padding: 9px 11px; }
   .settings-permission-card { padding: 17px; }
 }
+
+.skills-settings, .skills-installed, .skills-preview { display: grid; gap: 17px; min-width: 0; }
+.skills-settings > select { justify-self: start; min-width: 180px; min-height: 40px; padding: 9px 12px; border: 1px solid #e0d5e9; border-radius: 8px; background: #fff; color: #6d5e79; font: inherit; font-size: 12px; }
+.skills-settings .settings-card > p:not(.settings-hint) { color: #786584; font-size: 12px; line-height: 1.7; }
+.skills-settings .settings-card { min-width: 0; }
+.skills-settings .settings-card > p { margin: 0; overflow-wrap: anywhere; }
+.skills-settings h3 { margin: 0; color: #796088; font-size: 13px; }
+.skill-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.skill-instructions { min-width: 0; }
+.skill-instructions pre { max-height: 340px; overflow: auto; margin: 0; padding: 15px; border: 1px solid #e9e0f0; border-radius: 9px; background: #f8f4fc; color: #685774; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; }
+.skill-instructions .settings-hint { overflow-wrap: anywhere; }

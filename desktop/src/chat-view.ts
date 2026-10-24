@@ -307,6 +307,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         const item = button(section.title, "settings-category-item");
         const paths: Record<string, string> = {
           models: '<rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8m-4-4v4"/>',
+          skills: '<path d="m12 3 3 6 6 3-6 3-3 6-3-6-6-3 6-3z"/>',
           connections: '<path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
           workspace: '<path d="M3 7V5h6l2 2h10v12H3Z"/>',
           permissions: '<path d="m12 3 8 3v5c0 5-8 10-8 10S4 16 4 11V6Z"/><path d="m8 12 3 3 5-6"/>',

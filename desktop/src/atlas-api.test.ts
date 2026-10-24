@@ -286,3 +286,21 @@ test("MCP commands expose status and server names without credentials", async ()
     {command:"disconnect_mcp_server",payload:{server:"server"}},
   ]);
 });
+
+test("skill commands preserve explicit workspace ownership and pinned sources", async () => {
+  const calls: Array<{command:string,payload:unknown}>=[];
+  mockIPC((command,payload)=>{calls.push({command,payload});return command === "list_skills" ? {skills:[],issues:[]} : null;});
+  const api=createTauriAtlasApi();
+  const context={conversationId:metadata.id,workspacePath:"/work/draft"};
+  const source={repository:"owner/repo",reference:"main",revision:"a".repeat(40),path:"skills/review"};
+  await api.listSkills(context);await api.readSkill("project:review",context);
+  await api.previewSkillImport("https://github.com/owner/repo");
+  await api.installSkill(source,"project",false,context);await api.setSkillEnabled("personal:review",false,context);
+  expect(calls).toEqual([
+    {command:"list_skills",payload:{context}},
+    {command:"read_skill",payload:{id:"project:review",context}},
+    {command:"preview_skill_import",payload:{url:"https://github.com/owner/repo"}},
+    {command:"install_skill",payload:{source,scope:"project",replace:false,context}},
+    {command:"set_skill_enabled",payload:{id:"personal:review",enabled:false,context}},
+  ]);
+});
