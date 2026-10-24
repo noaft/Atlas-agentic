@@ -189,8 +189,9 @@ requests keep their snapshots; newly saved skills are available next request.
 Instructions cannot grant permissions or override user/system guidance.
 
 Skills Settings opens with Installed skills and scope selection, with view, edit,
-and enable/disable actions. Do not render creation or import controls. Runtime
-creation and backend import capabilities remain available. Edit drafts and input
+and enable/disable actions. A collapsed Import from source section follows the
+installed list and offers local file/folder import and public GitHub preview/import.
+Keep the Create form removed; runtime creation remains available. Edit drafts and input
 focus survive navigation/background refreshes. Capture
 workspace/context per operation; saved conversations ignore conflicting frontend
 paths. Filesystem/network work runs on workers without broader frontend access.

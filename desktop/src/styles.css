@@ -614,3 +614,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .skills-settings textarea { box-sizing: border-box; width: 100%; min-height: 150px; resize: vertical; padding: 12px; border: 1px solid #e0d5e9; border-radius: 8px; background: #fff; color: #685774; font: inherit; font-size: 12px; line-height: 1.65; }
 .skills-settings textarea:focus-visible { outline: 2px solid #a787b8; outline-offset: 2px; }
 .skills-settings .skill-document-editor { min-height: 240px; font-family: monospace; }
+.skills-local-preview { display: grid; gap: 12px; min-width: 0; }
+.skills-other-sources { min-width: 0; border-top: 1px solid #e9e0f0; padding-top: 17px; }
+.skills-other-sources > summary { cursor: pointer; color: #796088; font-size: 13px; }
+.skills-other-sources > .settings-card { margin-top: 17px; }
+.skills-other-sources > code { display: block; overflow-wrap: anywhere; color: #685774; font-size: 12px; line-height: 1.65; }

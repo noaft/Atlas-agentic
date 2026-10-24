@@ -128,7 +128,10 @@ Built-in tools:
 A skill is a folder containing `SKILL.md` and optional references, scripts or
 assets. It needs no GitHub account or remote source metadata. **Settings → Skills**
 opens with installed skills. Choose **Personal** or **Project** to view, edit, or
-enable/disable them. Creation and import forms are not shown in Settings.
+enable/disable them. Expand **Import from source** below the list to import a local
+`SKILL.md` file or folder, or preview and install from a public GitHub URL. Review
+the instructions before installing into the selected scope. The Create form stays
+removed; ask Atlas to save a skill instead.
 
 To create a skill, ask Atlas: “Save this workflow as a Personal skill named
 project-review.” The `create_skill` tool creates one folder per skill and never
