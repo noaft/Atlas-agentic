@@ -24,6 +24,10 @@ const settings: SettingsView = {
 function fixture(currentSettings = settings) {
   const saves: SaveSettingsInput[] = [];
   const api = {
+    listMcpConnections: async () => [],
+    connectMcpServer: async (_server: string) => {},
+    disconnectMcpServer: async (_server: string) => {},
+    cancelMcpConnection: async (_server: string) => {},
     cancelCompaction: async () => {},
     listTasks: async () => [],
     runTask: async (taskId) => ({taskId, outcome: {kind: "compaction", result: {memory: null, message: "Done"}}}),
@@ -287,4 +291,22 @@ test("reopening Settings rejects discovery owned by a discarded draft", async ()
   const pending=store.refreshSettingsModels();await store.newChat();store.openSettings();
   resolve([{id:"discarded-model",name:"Discarded"}]);await pending;
   expect(store.getState().settingsModels).toEqual([]);
+});
+
+
+test("MCP status refresh preserves the mounted model settings draft and focus", async () => {
+  const { root, store, api } = fixture({...settings, apiKeySource: "missing", environmentOverrides: []});
+  let resolveStatus!: (value: import("./types").McpConnectionStatus[]) => void;
+  api.listMcpConnections = () => new Promise(resolve => {resolveStatus = resolve;});
+  await store.initialize(); store.openSettings();
+  renderSettings(root, store.getState(), store); document.body.append(root);
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.value = "private-draft"; key.dispatchEvent(new Event("input")); key.focus(); key.setSelectionRange(2, 5); root.scrollTop = 100;
+  resolveStatus([{name:"service",transport:"http",oauth:true,connected:true}]);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(root.textContent).toContain("Connected");
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("private-draft"); expect(store.getState().settingsDraft?.apiKey).toBe("private-draft");
+  expect(document.activeElement).toBe(key); expect(key.selectionStart).toBe(2); expect(root.scrollTop).toBe(100);
+  root.remove();
 });

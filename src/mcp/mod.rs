@@ -1,10 +1,12 @@
-//! Local MCP connections exposed through Atlas's normal runtime authorization boundary.
+//! MCP connections exposed through Atlas's normal runtime authorization boundary.
 mod config;
+mod http;
+pub mod oauth;
 mod stdio;
 #[cfg(windows)]
 mod windows;
 
-pub use config::{McpConfig, ServerConfig};
+pub use config::{McpConfig, OAuthConfig, ServerConfig};
 
 use std::{
     cell::RefCell,
@@ -21,10 +23,32 @@ use crate::{
     tools::{Tool, ToolDefinition, ToolRegistry, ToolResult},
 };
 
+enum Client {
+    Stdio(stdio::Client),
+    Http(http::Client),
+}
+
+impl Client {
+    fn connect(config: &ServerConfig, workspace: &Path) -> Result<Self, String> {
+        if config.url.is_some() {
+            http::Client::connect(config).map(Self::Http)
+        } else {
+            stdio::Client::connect(config, workspace).map(Self::Stdio)
+        }
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        match self {
+            Self::Stdio(client) => client.request(method, params),
+            Self::Http(client) => client.request(method, params),
+        }
+    }
+}
+
 struct Connections {
     config: McpConfig,
     workspace: PathBuf,
-    clients: BTreeMap<String, stdio::Client>,
+    clients: BTreeMap<String, Client>,
 }
 
 impl Connections {
@@ -39,11 +63,11 @@ impl Connections {
     fn run(
         &mut self,
         server: &str,
-        operation: impl FnOnce(&mut stdio::Client) -> Result<Value, String>,
+        operation: impl FnOnce(&mut Client) -> Result<Value, String>,
     ) -> Result<Value, String> {
         self.validate_server(server)?;
         if !self.clients.contains_key(server) {
-            let client = stdio::Client::connect(&self.config.servers[server], &self.workspace)?;
+            let client = Client::connect(&self.config.servers[server], &self.workspace)?;
             self.clients.insert(server.into(), client);
         }
         let result = operation(
@@ -113,15 +137,15 @@ impl Tool for McpTool {
             .collect();
         let (description, properties, required) = match self.operation {
             Operation::Servers => (
-                "List configured local MCP server names without launching processes. Use mcp_list_tools to discover a server's tools.",
+                "List configured MCP server names without launching processes. Use mcp_list_tools to discover a server's tools.",
                 json!({}), json!([]),
             ),
             Operation::List => (
-                "Connect to a configured local MCP server and list its tools with input schemas. May launch a process. Use mcp_call_tool with the returned tool name and arguments matching its inputSchema.",
+                "Connect to a configured MCP server and list its tools with input schemas. May launch a process or make HTTP requests. Use mcp_call_tool with the returned tool name and arguments matching its inputSchema.",
                 json!({"server":{"type":"string", "enum":servers}}), json!(["server"]),
             ),
             Operation::Call => (
-                "Call a tool on a configured local MCP server. Discover its name and inputSchema with mcp_list_tools first. External tools may read sensitive data or change the system; server annotations do not grant permission. Failed or timed-out calls may have changed external state: do not automatically retry them.",
+                "Call a tool on a configured MCP server. Discover its name and inputSchema with mcp_list_tools first. External tools may read sensitive data or change the system; server annotations do not grant permission. Failed or timed-out calls may have changed external state: do not automatically retry them.",
                 json!({"server":{"type":"string", "enum":servers},"tool":{"type":"string","minLength":1},"arguments":{"type":"object"}}),
                 json!(["server","tool","arguments"]),
             ),
@@ -142,7 +166,16 @@ impl Tool for McpTool {
             Operation::List => {
                 let args: ListArgs = parse(args)?;
                 self.connections.borrow().validate_server(&args.server)?;
-                Ok(ToolRisk::Launch)
+                Ok(
+                    if self.connections.borrow().config.servers[&args.server]
+                        .url
+                        .is_some()
+                    {
+                        ToolRisk::ExternalTool
+                    } else {
+                        ToolRisk::Launch
+                    },
+                )
             }
             Operation::Call => {
                 let args: CallArgs = parse(args)?;
@@ -183,7 +216,7 @@ impl Tool for McpTool {
     }
 }
 
-fn list_tools(client: &mut stdio::Client) -> Result<Value, String> {
+fn list_tools(client: &mut Client) -> Result<Value, String> {
     let mut tools = Vec::new();
     let mut names = BTreeSet::new();
     let mut cursors = BTreeSet::new();

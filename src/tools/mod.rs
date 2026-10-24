@@ -40,6 +40,8 @@ pub use list_dir::ListDirTool;
 pub use move_file::MoveFileTool;
 pub use open_application::OpenApplicationTool;
 pub use open_file::OpenFileTool;
+#[cfg(windows)]
+pub(crate) use platform::system_launcher;
 #[doc(hidden)]
 pub use platform::{application_command, file_command, CommandSpec, Platform, ProcessLauncher};
 pub use pwd::PwdTool;

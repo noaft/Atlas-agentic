@@ -77,7 +77,7 @@ The built-in runtime tools are:
 The displayed workspace is a starting directory, not a shell sandbox.
 User-local `mcp.toml` adds optional `mcp_list_servers`, `mcp_list_tools` and
 `mcp_call_tool` gateways, shared by CLI and desktop. `src/mcp/` owns validated
-stdio process configuration, JSON-RPC transport, negotiation, discovery and
+stdio/HTTP configuration, JSON-RPC transports, negotiation, discovery and
 result conversion. `ATLAS_MCP_CONFIG` overrides the file; otherwise load it beside
 settings using `ATLAS_CONFIG_DIR` or the platform user configuration directory.
 Never discover configuration from the workspace or launch processes during
@@ -86,11 +86,29 @@ start connections only during tool execution, after existing runtime approval.
 Ask and Workspace require confirmation for both; external calls use
 `ExternalTool` risk regardless of remote annotations. Full access preserves
 existing semantics. No frontend permissions are added.
-Servers inherit Atlas's environment and workspace. Preserve bounded requests,
+Local servers inherit Atlas's environment and workspace. Preserve bounded requests,
 pagination and protocol framing; never automatically replay failed calls.
 Timeouts have unknown action outcomes. Keep arbitrary server stderr and protocol
 error bodies out of backend errors/logs. Only text and structured tool results
 are supported; reject non-text content without persisting image payloads.
+HTTP uses Streamable HTTP with bounded JSON/SSE replies and negotiated session
+and protocol headers. Disable redirects and automatic retries, including after
+authentication failure or an expired session. Keep OAuth entirely in Rust under
+`src/mcp/oauth/`: explicit desktop Settings Connect/Cancel/Disconnect commands
+run on background workers; chat requests never initiate browser authorization.
+Use protected-resource and issuer metadata discovery, public-client registration
+or a configured public client ID, state and S256 PKCE, a bounded literal-loopback
+callback, resource/client-bound credentials and OS credential storage. OAuth
+endpoints require HTTPS; no plaintext credential fallback, client secret or
+frontend native permissions. Never expose codes/tokens/verifiers to model
+context, diagnostics or frontend state. Preserve useful per-server storage errors
+and Disconnect recovery controls without hiding other servers. Refresh under
+process and file leases, including refresh rotation; disconnect increments a
+nonsecret invalidation generation under the same lease so pending sign-ins from
+other processes cannot republish credentials. Cancel during a keyring write must
+remove any late save. Browser sign-in cancellation and deadlines must not publish
+late network results. The Settings MCP panel owns asynchronous status updates
+without remounting model inputs or disturbing their drafts/focus/scroll.
 Connections belong to one runtime and close on transport failure/drop. Preserve
 valid tool-error details as failed results while keeping the session usable.
 Unix terminates owned process groups; Windows contains the server in a
@@ -132,6 +150,9 @@ adapter rejects images over 8192 pixels per side or 32 MiB. Windows uses native
 capture, macOS requires Screen Recording permission, and Linux requires X11.
 Linux development/runtime environments need `libxcb`, `libxrandr`, and `dbus`
 (Debian/Ubuntu packages: `libxcb1 libxrandr2 libdbus-1-3`).
+Building the OAuth credential-store integration also requires `libdbus-1-dev`
+and `pkg-config` on Debian/Ubuntu; runtime sign-in requires an unlocked desktop
+Secret Service session.
 
 ## Model providers
 

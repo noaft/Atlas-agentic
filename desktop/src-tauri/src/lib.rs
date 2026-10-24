@@ -1,4 +1,5 @@
 mod commands;
+mod mcp_commands;
 mod provider_settings;
 mod requests;
 
@@ -35,6 +36,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mcp_commands::list_mcp_connections,
+            mcp_commands::connect_mcp_server,
+            mcp_commands::disconnect_mcp_server,
+            mcp_commands::cancel_mcp_connection,
             commands::list_conversations,
             commands::load_conversation,
             commands::rename_conversation,

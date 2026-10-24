@@ -500,3 +500,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .settings-advanced[open] { padding-bottom: 8px; }
 .settings-advanced summary { cursor: pointer; margin-bottom: 12px; color: var(--muted); }
 .model-provider-label { flex: 0 0 auto; white-space: nowrap; font-size: 11px; color: var(--muted); }
+
+.mcp-settings { display: grid; gap: 14px; margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border); }
+.mcp-settings h2, .mcp-settings p { margin: 0; }
+.mcp-settings > button { justify-self: start; }
+.mcp-connection { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; overflow-wrap: anywhere; }
+.mcp-connection > button { justify-self: start; }

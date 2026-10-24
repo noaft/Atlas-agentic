@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use serde::Deserialize;
 
-/// Local, explicitly trusted process configuration. Never load this from a workspace.
+/// User-local, explicitly trusted MCP configuration. Never load this from a workspace.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
@@ -13,11 +13,48 @@ pub struct McpConfig {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
+    #[serde(default)]
     pub command: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthConfig {
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub redirect_port: Option<u16>,
+}
+
+/// Remote endpoints use TLS except for literal loopback addresses used by local servers.
+pub(crate) fn validate_http_url(value: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "invalid MCP HTTP URL")?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+    });
+    if !matches!(url.scheme(), "https" | "http")
+        || (url.scheme() == "http" && !loopback)
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.query().is_some()
+    {
+        return Err("MCP URL requires HTTPS (or literal loopback HTTP), without userinfo, query, or fragment".into());
+    }
+    Ok(url)
 }
 
 fn default_timeout() -> u64 {
@@ -39,10 +76,36 @@ impl McpConfig {
                     "MCP server names must use 1–64 ASCII letters, digits, '_' or '-'".into(),
                 );
             }
-            if server.command.trim().is_empty()
-                || server.command.contains('\0')
-                || server.args.iter().any(|arg| arg.contains('\0'))
-            {
+            let has_command = !server.command.trim().is_empty();
+            if has_command == server.url.is_some() {
+                return Err("MCP server requires exactly one command or URL".into());
+            }
+            if let Some(url) = &server.url {
+                validate_http_url(url)?;
+                if !server.args.is_empty() {
+                    return Err("MCP HTTP servers cannot have command arguments".into());
+                }
+            }
+            if let Some(oauth) = &server.oauth {
+                if server.url.is_none()
+                    || oauth.redirect_port == Some(0)
+                    || oauth.client_id.as_ref().is_some_and(|value| {
+                        value.trim().is_empty()
+                            || value.len() > 4096
+                            || value.chars().any(char::is_control)
+                    })
+                    || oauth.scopes.len() > 64
+                    || oauth.scopes.iter().any(|value| {
+                        value.trim().is_empty()
+                            || value.len() > 1024
+                            || value.chars().any(char::is_whitespace)
+                            || value.chars().any(char::is_control)
+                    })
+                {
+                    return Err("invalid MCP OAuth configuration".into());
+                }
+            }
+            if server.command.contains('\0') || server.args.iter().any(|arg| arg.contains('\0')) {
                 return Err(
                     "MCP command must be nonblank and command arguments must not contain NUL"
                         .into(),

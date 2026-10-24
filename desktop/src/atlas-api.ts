@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
+  McpConnectionStatus,
   TaskDescriptor,
   TaskResult,
   ChatEvent,
@@ -19,6 +20,10 @@ import type {
 } from "./types";
 
 export interface AtlasApi {
+  listMcpConnections(): Promise<McpConnectionStatus[]>;
+  connectMcpServer(server: string): Promise<void>;
+  disconnectMcpServer(server: string): Promise<void>;
+  cancelMcpConnection(server: string): Promise<void>;
   listTasks(): Promise<TaskDescriptor[]>;
   runTask(taskId: string, args: Record<string, unknown>, conversationId: string | null, onEvent: (event: ChatEvent) => void): Promise<TaskResult>;
   cancelCompaction(id: string): Promise<void>;
@@ -52,6 +57,10 @@ export interface AtlasApi {
 
 export function createTauriAtlasApi(): AtlasApi {
   return {
+    listMcpConnections: () => invoke<McpConnectionStatus[]>("list_mcp_connections"),
+    connectMcpServer: (server) => invoke<void>("connect_mcp_server", { server }),
+    disconnectMcpServer: (server) => invoke<void>("disconnect_mcp_server", { server }),
+    cancelMcpConnection: (server) => invoke<void>("cancel_mcp_connection", { server }),
     listTasks: () => invoke<TaskDescriptor[]>("list_tasks"),
     runTask: (taskId, args, conversationId, onEvent) => {
       const channel = new Channel<ChatEvent>(onEvent);

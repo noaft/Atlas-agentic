@@ -22,6 +22,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 active-win-pos-rs = "0.11"
 base64 = "0.22"
 image = { version = "0.24", default-features = false, features = ["png"] }
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 screenshots = "0.8.10"
 
 [target.'cfg(unix)'.dependencies]

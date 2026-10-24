@@ -296,3 +296,11 @@ export interface TaskResult {
   taskId: string;
   outcome: {kind: "compaction"; result: CompactionResult};
 }
+
+export interface McpConnectionStatus {
+  name: string;
+  transport: "stdio" | "http";
+  oauth: boolean;
+  connected: boolean;
+  error?: string;
+}

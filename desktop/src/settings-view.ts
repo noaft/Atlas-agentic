@@ -1,5 +1,8 @@
 import type { ChatStore } from "./chat-state";
 import type { ChatState } from "./types";
+import { createMcpSettingsPanel } from "./mcp-settings";
+
+const mcpPanels = new WeakMap<ChatStore, HTMLElement>();
 
 function field(
   labelText: string,
@@ -321,6 +324,11 @@ export function renderSettings(
       store.cancelSettings();
     }
   });
-  panel.append(heading, form);
+  let mcpPanel = mcpPanels.get(store);
+  if (!mcpPanel) {
+    mcpPanel = createMcpSettingsPanel(store);
+    mcpPanels.set(store, mcpPanel);
+  }
+  panel.append(heading, form, mcpPanel);
   container.append(panel);
 }

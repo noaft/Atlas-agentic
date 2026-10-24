@@ -173,6 +173,11 @@ export class ChatStore {
     });
   }
 
+  listMcpConnections = () => this.api.listMcpConnections();
+  connectMcpServer = (server: string) => this.api.connectMcpServer(server);
+  disconnectMcpServer = (server: string) => this.api.disconnectMcpServer(server);
+  cancelMcpConnection = (server: string) => this.api.cancelMcpConnection(server);
+
   getState(): Readonly<ChatState> {
     return this.state;
   }

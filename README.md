@@ -11,6 +11,8 @@ Install Rust and Node.js/npm, plus the platform dependencies in the
 [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
 Linux also needs `libxcb`, `libxrandr`, and `dbus`
 (Debian/Ubuntu: `libxcb1 libxrandr2 libdbus-1-3`).
+Building the credential-store integration also needs `libdbus-1-dev` and
+`pkg-config` on Debian/Ubuntu.
 
 From the repository root:
 
@@ -119,7 +121,8 @@ Built-in tools:
 
 ## MCP connections
 
-Atlas can connect to local MCP servers over stdio from both CLI and desktop.
+Atlas can connect to local MCP servers over stdio and remote servers over
+Streamable HTTP from both CLI and desktop.
 Create `mcp.toml` beside your user-local `settings.json` (normally
 `~/.config/atlas/mcp.toml` on Linux), or set `ATLAS_MCP_CONFIG` to a configuration
 file. `ATLAS_CONFIG_DIR` also relocates the default MCP configuration directory.
@@ -139,6 +142,55 @@ so provide required credentials there rather than putting secrets in command
 arguments. Only configure servers you trust to run with your OS-user permissions.
 The timeout applies to each protocol request and must be between 1 and 300000 ms.
 
+For a remote server with OAuth, add a URL and an OAuth table instead of a command:
+
+```toml
+[servers.remote]
+url = "https://your-service.example/mcp"
+timeout_ms = 30000
+
+[servers.remote.oauth]
+# client_id = "your-registered-public-client-id"
+# redirect_port = 8765
+# scopes = ["files:read"]
+```
+
+Use the MCP URL provided by your service. Open **Settings → MCP connections**,
+click **Refresh connections**, then **Connect** beside the server. Your default
+browser opens for sign-in and consent; Atlas receives the callback locally and
+saves credentials in the OS credential store. You can cancel a pending sign-in.
+Connections apply immediately, independently of the model Settings Save button.
+Both desktop and CLI use the saved sign-in from the same configuration and OS
+account. Chat requests never open a sign-in window automatically.
+
+When `client_id` is omitted, Atlas attempts dynamic public-client registration.
+If the service requires preregistration, register Atlas as a public/native client
+using Authorization Code with PKCE and enter its client ID. If it requires a fixed
+callback port, set `redirect_port` and register exactly
+`http://127.0.0.1:8765/callback` (substituting that port). Otherwise Atlas chooses
+an available port. Do not configure an embedded client secret. By default scopes
+come from the service's authorization challenge or protected-resource metadata;
+an explicit `scopes` list overrides that selection.
+
+OAuth uses state validation, S256 PKCE and resource-bound tokens following the
+[MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+Authorization endpoints require HTTPS. Access and refresh tokens stay in macOS
+Keychain, Windows Credential Manager or Linux Secret Service; they are never put
+in `mcp.toml`, model context or frontend state. Linux/WSL needs an available,
+unlocked Secret Service session (such as GNOME Keyring or KWallet). There is no
+plaintext fallback. Atlas refreshes known-expired tokens before an approved
+request; rejected refreshes require reconnecting. If the service rejects an
+otherwise unexpired sign-in, disconnect and connect again. For insufficient
+permissions, set the required scopes before reconnecting.
+
+**Disconnect** removes local credentials and invalidates pending sign-ins; revoke
+the provider-side grant separately in the service's account settings if desired.
+It cannot retract a request already sent. HTTP transport disables redirects and
+automatic retries. A failed request is never automatically replayed after login
+or refresh. Plain HTTP is supported only for literal-loopback MCP endpoints;
+remote connections use HTTPS. Leave out the OAuth table for an unauthenticated
+HTTP server.
+
 Then ask Atlas to “list my MCP servers,” “show the tools on my_tools,” or use one
 of the discovered tools. When configuration contains servers, Atlas gains:
 
@@ -150,21 +202,23 @@ of the discovered tools. When configuration contains servers, Atlas gains:
 
 Ask and Workspace require approval for discovery and every external call, even
 when a server labels a tool read-only. Full access skips Atlas confirmations.
-Connections start lazily, are reused within a runtime request, and are closed
-when that runtime is dropped. A failed call is never automatically replayed;
+Tool connections start lazily and are reused within a runtime request. Local
+server processes close when that runtime is dropped. A failed call is never automatically replayed;
 a timeout can leave the action's outcome unknown. Configuration changes apply
 to the next chat request; running requests keep their original configuration.
 
 This version implements the
-[MCP stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+[MCP stdio and Streamable HTTP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 with the 2025-11-25 initialization handshake and supports negotiated versions
 2025-06-18 and 2025-03-26. Tool catalogs are bounded to 256 tools, 16 pages and
 1 MiB total; individual protocol messages are limited to 1 MiB. Tool results
 support text and structured JSON. Non-text content returns an explicit error
 and is not passed through as an attachment or saved as screenshot data. Server
 stderr and protocol-error bodies are not forwarded into Atlas errors or logs.
-HTTP connections, OAuth, resources, prompts, sampling and elicitation are not
-implemented. Cleanup terminates owned server process groups on Unix and process
+Resources, prompts, sampling, elicitation, hosted client metadata documents and
+confidential-client OAuth are not implemented. HTTP sessions support JSON and
+SSE POST responses; persistent GET streams, stream resumption, automatic session
+restart and explicit session DELETE are not implemented. Cleanup terminates owned server process groups on Unix and process
 trees through a kill-on-close Job Object on Windows.
 
 ## History and memory

@@ -271,3 +271,18 @@ test("task catalog and execution use validated request envelope and event channe
   expect(result.outcome.kind).toBe("compaction");
   expect(events).toHaveLength(1);
 });
+
+
+test("MCP commands expose status and server names without credentials", async () => {
+  const calls: Array<{command: string; payload: unknown}> = [];
+  mockIPC((command, payload) => { calls.push({command,payload}); return command === "list_mcp_connections" ? [] : undefined; });
+  const api = createTauriAtlasApi();
+  expect(await api.listMcpConnections()).toEqual([]);
+  await api.connectMcpServer("server"); await api.cancelMcpConnection("server"); await api.disconnectMcpServer("server");
+  expect(calls).toEqual([
+    {command:"list_mcp_connections",payload:{}},
+    {command:"connect_mcp_server",payload:{server:"server"}},
+    {command:"cancel_mcp_connection",payload:{server:"server"}},
+    {command:"disconnect_mcp_server",payload:{server:"server"}},
+  ]);
+});

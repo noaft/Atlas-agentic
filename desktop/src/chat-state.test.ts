@@ -77,6 +77,10 @@ const thinkingActivity: ActivityRecord = {
 };
 
 class FakeApi implements AtlasApi {
+  listMcpConnections = async () => [];
+  connectMcpServer = async (_server: string) => {};
+  disconnectMcpServer = async (_server: string) => {};
+  cancelMcpConnection = async (_server: string) => {};
   async listTasks() { return taskFixtures; }
   async runTask(taskId: string, _args: Record<string, unknown>, id: string | null, onEvent: (event: ChatEvent) => void): Promise<import("./types").TaskResult> {
     return {taskId, outcome: {kind: "compaction", result: await this.compactConversation(id!, onEvent)}};

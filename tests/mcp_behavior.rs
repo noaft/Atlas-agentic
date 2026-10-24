@@ -23,7 +23,7 @@ fn missing_config_is_optional_but_invalid_config_is_not() {
 fn config_rejects_blank_commands_unknown_fields_and_invalid_limits() {
     for config in [
         "[servers.demo]\ncommand = ' '",
-        "[servers.demo]\ncommand = 'server'\nurl = 'unsupported'",
+        "[servers.demo]\ncommand = 'server'\nurl = 'https://example.com/mcp'",
         "[servers.demo]\ncommand = 'server'\ntimeout_ms = 0",
         "[servers.demo]\ncommand = 'server'\ntimeout_ms = 300001",
         "[servers.'']\ncommand = 'server'",
@@ -368,6 +368,8 @@ Start-Sleep -Seconds 60
             "demo".into(),
             ServerConfig {
                 command: "powershell.exe".into(),
+                url: None,
+                oauth: None,
                 args: vec![
                     "-NoProfile".into(),
                     "-NonInteractive".into(),
