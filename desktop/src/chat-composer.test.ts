@@ -269,3 +269,96 @@ test("Enter selects the task directly without inserting a command or submitting 
   expect(runTask).toHaveBeenCalledExactlyOnceWith(taskFixtures[0]);
   expect(submit).not.toHaveBeenCalled(); expect(composer.textarea.value).toBe("/");
 });
+
+test("Vietnamese replacement input never collapses the live textarea", async () => {
+  const {composer, store} = await setup();
+  const height = vi.spyOn(composer.textarea.style, "height", "set");
+  for (const [value, inputType, data] of [
+    ["tieng", "insertText", "g"],
+    ["", "deleteContentBackward", null],
+    ["tiếng", "insertReplacementText", "tiếng"],
+    ["tiếng Việt", "insertFromPaste", " Việt"],
+  ] as const) {
+    composer.textarea.value = value;
+    composer.textarea.dispatchEvent(new InputEvent("input", {bubbles: true, inputType, data}));
+    expect(composer.textarea.value).toBe(value);
+    expect(store.getState().draftText).toBe(value);
+  }
+  expect(height).not.toHaveBeenCalledWith("0px");
+});
+
+test("composition input and window resize leave live geometry untouched until composition ends", async () => {
+  vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(50);
+  const {composer, store} = await setup();
+  const height = vi.spyOn(composer.textarea.style, "height", "set");
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+  composer.textarea.value = "tiế";
+  composer.textarea.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertCompositionText", data: "tiế", isComposing: true}));
+  window.dispatchEvent(new Event("resize"));
+  expect(height).not.toHaveBeenCalled();
+  expect(store.getState().draftText).toBe("tiế");
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionend", {bubbles: true, data: "tiế"}));
+  expect(composer.textarea.style.height).toBe("50px");
+});
+
+test("composition lifecycle blocks unflagged Enter and form submission until it ends", async () => {
+  const {composer, submit} = await setup();
+  composer.textarea.value = "tiếng Việt";
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+  const enter = new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true});
+  composer.textarea.dispatchEvent(enter);
+  composer.element.dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}));
+  expect(submit).not.toHaveBeenCalled();
+  expect(enter.defaultPrevented).toBe(false);
+  expect(composer.sendButton.disabled).toBe(true);
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionend", {bubbles: true, data: "tiếng Việt"}));
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
+test("an identical explicit draft replacement does not reset native editing", async () => {
+  const {composer} = await setup();
+  composer.textarea.value = "tiếng Việt"; composer.textarea.focus(); composer.textarea.setSelectionRange(3, 3);
+  const value = vi.spyOn(composer.textarea, "value", "set");
+  composer.replaceDraft("tiếng Việt");
+  expect(value).not.toHaveBeenCalled();
+  expect(composer.textarea.selectionStart).toBe(3);
+  expect(document.activeElement).toBe(composer.textarea);
+});
+
+test("a composition session cannot run a slash task even when key flags are missing", async () => {
+  const {composer, store, submit, runTask} = await setup();
+  const state = {...store.getState(), activeConversationId: "saved", settings: {...settings, apiKeySource: "settings" as const}};
+  composer.updateState(state);
+  composer.textarea.value = "/"; composer.textarea.focus();
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true})); composer.updateState(state);
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+  const enter = new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}); composer.textarea.dispatchEvent(enter);
+  expect(runTask).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+  expect(enter.defaultPrevented).toBe(false);
+  expect(composer.textarea.hasAttribute("aria-activedescendant")).toBe(false);
+});
+
+test("an IME cancellation without compositionend cannot block sending after blur", async () => {
+  const {composer, submit} = await setup();
+  composer.textarea.value = "tiếng Việt"; composer.textarea.focus(); composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+  composer.textarea.blur(); composer.textarea.focus();
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
+test("switching to an equal-text session clears stale composition without rewriting the draft", async () => {
+  const {composer, store, submit} = await setup();
+  composer.textarea.value = "tiếng Việt"; composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  composer.textarea.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+  await store.newChat(); store.setDraft("tiếng Việt");
+  const value = vi.spyOn(composer.textarea, "value", "set");
+  composer.replaceDraft(store.getState().draftText); composer.updateState(store.getState());
+  expect(value).not.toHaveBeenCalled();
+  expect(composer.sendButton.disabled).toBe(false);
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(submit).toHaveBeenCalledTimes(1);
+});

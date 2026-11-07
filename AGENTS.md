@@ -523,6 +523,17 @@ and coalesce visible streaming renders to animation frames. Blocking native
 storage/settings operations run on background workers rather than the Tauri
 event thread. Do not broaden frontend permissions to achieve concurrency.
 
+Keep the chat textarea stationary and browser-owned for native Vietnamese/IME
+input. Never collapse its live height to zero for measurement or rewrite an
+unchanged draft. Measure auto-height in a hidden, inert mirror and defer live
+layout changes while composition is active. Composition lifecycle, per-event
+isComposing and key code 229 must all guard Send and slash tasks. Native input,
+backspace, replacement and paste must remain unmodified; do not implement Telex
+conversion in JavaScript. Clear cancelled composition state on blur and session
+changes without erasing text, and remove measurement/listener resources on
+unmount. Browser composition checks do not establish Windows UniKey acceptance;
+report native verification separately.
+
 Model discovery preserves optional provider-reported `contextWindow` and
 `maxOutputTokens` limits in the shared model catalog. Model options contain names
 only; a compact context ring beside Send exposes exact used/max token details

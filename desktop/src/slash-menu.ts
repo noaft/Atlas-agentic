@@ -35,6 +35,7 @@ export function createSlashMenu(
   let query = "";
   let open = false;
   let destroyed = false;
+  let composing = false;
 
   function clearAria() {
     for (const attribute of ["aria-controls", "aria-expanded", "aria-activedescendant", "aria-autocomplete", "aria-haspopup"]) textarea.removeAttribute(attribute);
@@ -70,6 +71,7 @@ export function createSlashMenu(
   }
   function render() {
     if (destroyed || !data) return;
+    if (composing) { close(); return; }
     if (session !== data.sessionId) {
       session = data.sessionId; dismissed = null; active = 0; activeId = null; query = ""; close();
     }
@@ -142,7 +144,7 @@ export function createSlashMenu(
     position();
   }
   function handleKeydown(event: KeyboardEvent): boolean {
-    if (!open || event.isComposing || event.keyCode === 229 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (composing || !open || event.isComposing || event.keyCode === 229 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
     if (event.key === "Enter" && data?.status === "error") {
       event.preventDefault(); onRetry(); return true;
     }
@@ -178,6 +180,7 @@ export function createSlashMenu(
   return {
     update(next: MenuData) {data = next; render();},
     handleKeydown,
+    setComposing(active: boolean) { composing = active; if (active) close(); else render(); },
     destroy() {
       destroyed = true; close(); announcement.remove();
       events.forEach(event => textarea.removeEventListener(event, render));

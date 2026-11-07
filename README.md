@@ -30,6 +30,11 @@ Chats can run independently, with their own drafts, activity, and approvals.
 History is saved after successful replies; unsaved drafts and unfinished requests
 do not survive an app restart.
 
+The chat box uses your operating system's input method for Vietnamese and other
+languages. Atlas does not convert Telex itself. Enter sends after composition is
+finished; Shift+Enter inserts a newline. IME confirmation keys do not send the
+unfinished draft.
+
 ## CLI
 
 Set your API key in the environment or a local `.env` file (see
