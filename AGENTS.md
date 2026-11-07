@@ -55,7 +55,9 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 The built-in runtime tools are:
 
 - `create_skill`: save an explicitly requested new Personal or Project skill without overwriting
-- `load_skill`: lazily read enabled skill instructions or a registered UTF-8 supporting resource
+- `load_skill`: preload enabled skill metadata, then lazily read instructions or a registered UTF-8 resource
+- `preview_skill`: download and review bounded pinned public GitHub skill packages without installing
+- `install_skill`: install exact previewed bytes into Personal or Project storage without overwriting
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
@@ -188,9 +190,31 @@ skills stay out of the request catalog; valid others remain usable. Running
 requests keep their snapshots; newly saved skills are available next request.
 Instructions cannot grant permissions or override user/system guidance.
 
-Skills Settings opens with Installed skills and scope selection, with view, edit,
-and enable/disable actions. A collapsed Import from source section follows the
-installed list and offers local file/folder import and public GitHub preview/import.
+Preload concise enabled metadata, not full instructions; descriptions should aim
+for roughly 30 tokens describing when to use the skill. Runtime catalog bounds
+are 128 enabled skills, 64 KiB metadata and 32 MiB package snapshots. Preserve
+omission notices and frozen resources. Ratings remain a later feature.
+`preview_skill` and `install_skill` are available even with an empty catalog.
+Preview uses ExternalTool approval and retains up to 8 pinned packages / 8 MiB
+in memory, returning at most 64 KiB of instructions and file metadata. Install
+requires a token from that runtime's successful preview, reuses its exact bytes,
+and never redownloads, overwrites, executes scripts or installs dependencies.
+A successful new preview replaces old tokens; tokens do not survive a request.
+The runtime owns a tool request-scope guard that clears transient import state on
+entry and every exit, including errors, without resetting frozen skill catalogs.
+Project installation is ModifyWorkspace; Personal is ModifyOutsideWorkspace.
+Never discover credentials from development .env.local for either operation.
+
+Skills Settings keeps one Add skill action and scope selection at the top. The
+add panel opens on demand with one source picker (GitHub/folder/file), showing
+only the selected source's controls. A separate Installed skills library shows
+scoped search, installed/enabled counts and focus-preserving on/off switches.
+View/edit/update actions live in each skill's collapsed Details; refresh and
+other installation methods live under Library options. Group catalog issues in
+a collapsed warning without dropping diagnostics or weakening symlink checks.
+Closing the add panel preserves drafts/previews and does not cancel operations.
+Pending reads must respect a user collapsing Details; background refresh must
+preserve expanded details and editor focus/drafts.
 Keep the Create form removed; runtime creation remains available. Single installs
 track the selected source, preserve other candidates, and merge verified backend
 results immediately even if a subsequent refresh fails. Install all uses a bounded
@@ -523,7 +547,13 @@ Do not use real API keys or external model services in tests.
 
 ## Commit Traceability Rule
 
-After completing a requested code or documentation change, create one focused Git commit so the work can be traced, unless the user explicitly asks not to commit.
+After completing and verifying each feature, bug fix, or requested documentation
+change, create a focused Git commit before moving on to the next feature, unless
+the user explicitly asks not to commit. Do not leave multiple completed features
+accumulated as uncommitted work. Include the commit hash in the handoff so the
+change can be traced. A multi-feature request should produce separate commits
+for independently completed features. This authorizes local commits, not an
+automatic push, merge, release, or deployment.
 
 Before committing:
 

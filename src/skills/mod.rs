@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 pub use store::SkillStore;
 
+/// Bound runtime metadata while allowing catalogs of a hundred concise skills.
+pub const MAX_ENABLED_SKILLS: usize = 128;
 pub const MAX_FILES: usize = 256;
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 pub const MAX_PACKAGE_BYTES: usize = 8 * 1024 * 1024;

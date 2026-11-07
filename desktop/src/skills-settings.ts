@@ -50,40 +50,76 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
   let installBusy = false; let installError = ""; let notice = "";
   let localBusy = false; let localError = ""; let localNotice = ""; let localRequest = 0;
   let localPreviews: LocalSkillPreview[] = [];
+  let localSource: "file" | "folder" | null = null;
   let localInstalling: string | null = null;
   const openDocuments = new Set<string>();
+  const openDetails = new Set<string>();
   const editors = new Map<string, HTMLTextAreaElement>();
   const busy = new Map<string, string>(); const errors = new Map<string, string>(); const documents = new Map<string, SkillDocument>();
 
   const scopeInput = node("select"); scopeInput.setAttribute("aria-label", "Skill scope");
-  for (const [value, text] of [["personal", "Personal"], ["project", "Project"]]) {
+  for (const [value, text] of [["personal", "All projects"], ["project", "This project"]]) {
     const option = node("option", text); option.value = value; scopeInput.append(option);
   }
   const hint = node("p", undefined, "settings-hint");
   const list = node("div", undefined, "skills-installed");
   const searchInput = node("input"); searchInput.type = "search"; searchInput.maxLength = 512;
   searchInput.placeholder = "Search installed skills"; searchInput.setAttribute("aria-label", "Search skills");
-  const importCard = node("div", undefined, "settings-card");
+  const importCard = node("div", undefined, "settings-card skills-github-source");
   const label = node("label", undefined, "settings-field");
   const url = node("input"); url.type = "text"; url.setAttribute("aria-label", "GitHub skill URL"); url.placeholder = "https://github.com/owner/repository/tree/main/skill";
   label.append(node("span", "GitHub skill URL", "settings-label"), url);
   const previewButton = button("Preview", () => void previewImport());
   const previewArea = node("div", undefined, "skills-preview");
-  importCard.append(node("h2", "Import from GitHub"), node("p", "Review the instructions and pinned source before installing. Changes apply immediately; Save and Discard do not affect skills.", "settings-hint"), label, previewButton, previewArea);
-  const localCard = node("div", undefined, "settings-card skills-local");
+  importCard.append(node("h2", "Import from GitHub"), node("p", "Paste a GitHub link to see which skills you can add.", "settings-hint"), label, previewButton, previewArea);
+  const localCard = node("div", undefined, "settings-card skills-local skills-local-source");
   const chooseFile = button("Choose skill file", () => void chooseLocal("file"));
   const chooseFolder = button("Choose skill folder", () => void chooseLocal("folder"));
   const localArea = node("div", undefined, "skills-local-preview");
-  localCard.append(node("h2", "Import local"), node("p", "Choose a SKILL.md file or a skill folder with supporting files. Review before installing. Scripts are never run.", "settings-hint"), chooseFile, chooseFolder, localArea);
+  localCard.append(node("h2", "Import local"), node("p", "Choose a skill from your computer, then review it before adding.", "settings-hint"), chooseFile, chooseFolder, localArea);
   const otherSources = node("details", undefined, "skills-other-sources");
-  otherSources.append(node("summary", "Import from source"), node("p", "Use another installer for GitLab, Git URLs, or local paths. Atlas reads standard skill folders.", "settings-hint"), node("code", "npx skills add <source> --agent universal --copy"), node("p", "Add --global for Personal skills.", "settings-hint"), localCard, importCard);
-  element.append(node("h2", "Installed skills"), scopeInput, hint, searchInput, list, otherSources);
+  otherSources.append(node("summary", "Other installation methods"), node("p", "Atlas also reads standard skill folders installed by other tools.", "settings-hint"), node("code", "npx skills add <source> --agent universal --copy"), node("p", "Add --global for Personal skills.", "settings-hint"));
+  const sourceInput = node("select"); sourceInput.setAttribute("aria-label", "Skill source");
+  for (const [value, text] of [["github", "GitHub link"], ["folder", "Folder on my computer"], ["file", "SKILL.md file"]]) {
+    const option = node("option", text); option.value = value; sourceInput.append(option);
+  }
+  let sourceMode = "github";
+  const sourceField = node("label", undefined, "settings-field"); sourceField.append(node("span", "Add from", "settings-label"), sourceInput);
+  const add = node("section", undefined, "skills-add"); add.setAttribute("aria-label", "Add skills"); add.hidden = true;
+  add.append(node("h2", "Add skills"), sourceField, importCard, localCard);
+  const addButton = button("Add skill", () => { setAddOpen(add.hidden === true); if (!add.hidden) sourceInput.focus(); });
+  addButton.className = "primary-button"; addButton.dataset.addSkill = ""; addButton.setAttribute("aria-expanded", "false");
+  const setAddOpen = (open: boolean) => {
+    add.hidden = !open; addButton.textContent = open ? "Close" : "Add skill"; addButton.setAttribute("aria-expanded", String(open));
+  };
+  const drawSource = () => {
+    importCard.hidden = sourceMode !== "github"; localCard.hidden = sourceMode === "github";
+    chooseFile.hidden = sourceMode !== "file"; chooseFolder.hidden = sourceMode !== "folder";
+    localArea.hidden = localSource !== null && localSource !== sourceMode;
+    sourceInput.disabled = previewBusy || installBusy || localBusy;
+  };
+  const toolbar = node("div", undefined, "skills-toolbar");
+  const scopeField = node("label", undefined, "skills-scope settings-field");
+  scopeField.append(node("span", "Skills for", "settings-label"), scopeInput);
+  toolbar.append(scopeField, addButton);
+  const library = node("section", undefined, "skills-library"); library.setAttribute("aria-label", "Installed skills");
+  const counts = node("p", undefined, "settings-hint"); counts.setAttribute("role", "status");
+  const libraryHeading = node("div", undefined, "skills-library-heading"); libraryHeading.append(node("h2", "Installed skills"), counts);
+  const refreshButton = button("Refresh skills", () => void refresh());
+  const options = node("details", undefined, "skills-library-options"); options.append(node("summary", "Library options"), refreshButton, otherSources);
+  const issues = node("details", undefined, "skills-issues"); const issueSummary = node("summary"); const issueBody = node("div"); issues.append(issueSummary, issueBody);
+  library.append(libraryHeading, searchInput, issues, list, options, node("p", "Enabled skills are ready for your next request. Changes save automatically.", "settings-hint"));
+  element.append(toolbar, hint, add, library);
+  sourceInput.addEventListener("change", () => {
+    if (previewBusy || installBusy || localBusy) { sourceInput.value = sourceMode; return; }
+    sourceMode = sourceInput.value; drawSource();
+  });
 
   const clearPreview = () => { previewRequest++; previews = []; previewBusy = false; previewError = ""; installBusy = false; installingSource = null; installError = ""; notice = ""; updateTarget = null; batchBusy = false; previewErrors.clear(); };
   const reset = () => {
     searchRequest++; clearTimeout(searchTimer); searchResults = null; searchBusy = false; searchError = "";
     generation++; loaded = false; loading = false; catalog = {skills: [], issues: []}; listError = "";
-    busy.clear(); errors.clear(); documents.clear(); editors.clear(); openDocuments.clear(); clearPreview(); localRequest++; localBusy = false; localError = ""; localNotice = ""; localPreviews = []; localInstalling = null;
+    busy.clear(); errors.clear(); documents.clear(); editors.clear(); openDocuments.clear(); openDetails.clear(); clearPreview(); localRequest++; localBusy = false; localError = ""; localNotice = ""; localPreviews = []; localInstalling = null; localSource = null;
   };
   const drawPreview = () => {
     url.disabled = installBusy;
@@ -94,11 +130,13 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
     if (previewError) previewArea.append(alert(previewError));
     if (installError) previewArea.append(alert(installError));
     if (notice) { const message = node("p", notice); message.setAttribute("role", "status"); previewArea.append(message); }
-    if (previews.length > 1 && !updateTarget) previewArea.append(button(batchBusy ? "Installing all…" : "Install all", () => void installAll(), installBusy || previewBusy || localBusy));
+    if (previews.length > 1 && !updateTarget) previewArea.append(button(batchBusy ? "Installing all…" : "Add all", () => void installAll(), installBusy || previewBusy || localBusy));
     for (const preview of previews) {
       const card = node("article", undefined, "settings-card skill-preview");
-      card.append(node("h3", preview.title), node("p", preview.description), node("p", sourceText(preview), "settings-hint"), instructions(preview.content, preview.files, true));
-      card.append(button(installingSource === JSON.stringify(preview.source) ? "Installing…" : updateTarget ? "Update installed skill" : `Install in ${scope === "personal" ? "Personal" : "Project"}`, () => void install(preview), installBusy || previewBusy || localBusy));
+      const provenance = node("details", undefined, "skill-source-details");
+      provenance.append(node("summary", "Source details"), node("p", sourceText(preview), "settings-hint"));
+      card.append(node("h3", preview.title), node("p", preview.description), instructions(preview.content, preview.files, true), provenance);
+      card.append(button(installingSource === JSON.stringify(preview.source) ? "Installing…" : updateTarget ? "Update installed skill" : `Add to ${scope === "personal" ? "all projects" : "this project"}`, () => void install(preview), installBusy || previewBusy || localBusy));
       const error = previewErrors.get(JSON.stringify(preview.source)); if (error) card.append(alert(error));
       previewArea.append(card);
     }
@@ -108,37 +146,75 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
     const editing = focused instanceof HTMLTextAreaElement && list.contains(focused) ? focused : null;
     const selection = editing ? [editing.selectionStart, editing.selectionEnd] : null;
     const scrollTop = editing?.scrollTop;
-    hint.textContent = scope === "personal" ? "Personal skills use the shared skills folder and apply across all projects." : `Project skills live in .agents/skills and apply to the current starting folder: ${context.workspacePath ?? "Atlas default folder"}.`;
-    list.replaceChildren(button(loading ? "Loading skills…" : "Refresh skills", () => void refresh(), loading));
-    if (listError) list.append(alert(listError));
-    for (const issue of catalog.issues) list.append(alert(issue));
+    const focusedSwitchId = focused instanceof HTMLInputElement && list.contains(focused) && focused.getAttribute("role") === "switch" ? focused.dataset.skillId : undefined;
+    const switchControls = new Map<string, HTMLInputElement>();
+    hint.textContent = scope === "personal" ? "Available across all your projects." : `Only for this project: ${context.workspacePath ?? "Atlas default folder"}.`;
+    const scoped = catalog.skills.filter(skill => skill.scope === scope);
+    const enabled = scoped.filter(skill => skill.enabled).length;
+    counts.textContent = `${scoped.length} installed · ${enabled} enabled`;
+    refreshButton.textContent = loading ? "Loading skills…" : "Refresh skills"; refreshButton.disabled = loading;
+    issues.hidden = !catalog.issues.length;
+    issueSummary.textContent = `${catalog.issues.length} ${catalog.issues.length === 1 ? "skill needs" : "skills need"} attention`;
+    issueBody.replaceChildren(node("p", "These skills could not be loaded. Your other skills are still available.", "settings-hint"));
+    if (catalog.issues.some(issue => issue.includes("symlink"))) issueBody.append(node("p", "Linked folders are not supported. Import the actual skill folder to create a local copy.", "settings-hint"));
+    for (const issue of catalog.issues) issueBody.append(alert(issue));
+    list.replaceChildren();
+    if (!loading && !listError && scoped.length && !enabled) list.append(node("p", "Enable a skill to make it available to Atlas on the next request.", "settings-hint"));
+    if (listError) list.append(alert(listError), button("Retry", () => void refresh()));
+    if (loading && !scoped.length) { const status = node("p", "Loading skills…", "settings-hint"); status.setAttribute("role", "status"); list.append(status); }
     if (searchBusy) { const status = node("p", "Searching skills…"); status.setAttribute("role", "status"); list.append(status); }
     if (searchError) list.append(alert(searchError));
-    const skills = (searchResults ?? catalog.skills.filter(skill => skill.scope === scope)).map(skill => catalog.skills.find(item => item.id === skill.id) ?? skill);
-    if (!loading && !searchBusy && !listError && !skills.length) list.append(node("p", searchInput.value.trim() ? "No matching skills." : `No ${scope} skills installed.`));
+    const skills = (searchResults ?? scoped).map(skill => catalog.skills.find(item => item.id === skill.id) ?? skill);
+    if (!loading && !searchBusy && !listError && !skills.length) list.append(node("p", searchInput.value.trim() ? "No matching skills." : "No skills yet. Choose Add skill to get started.", "settings-hint"));
     for (const skill of skills) {
       const card = node("article", undefined, "settings-card skill-installed");
       const operation = busy.get(skill.id);
-      card.append(node("h2", skill.title), node("p", skill.description), node("p", sourceText(skill), "settings-hint"), node("span", skill.enabled ? "Enabled" : "Disabled", "settings-hint"));
+      const header = node("div", undefined, "skill-card-heading");
+      const toggleLabel = node("label", undefined, "skill-toggle");
+      const toggleInput = node("input"); toggleInput.type = "checkbox"; toggleInput.setAttribute("role", "switch"); toggleInput.setAttribute("aria-label", `Use ${skill.title}`);
+      toggleInput.dataset.skillId = skill.id;
+      toggleInput.checked = operation === "toggle" ? !skill.enabled : skill.enabled;
+      // Keep the switch focusable while saving; suppress repeated activation.
+      toggleInput.setAttribute("aria-disabled", String(!!operation));
+      toggleInput.addEventListener("click", event => { if (busy.has(skill.id)) event.preventDefault(); });
+      toggleInput.addEventListener("keydown", event => {
+        if (event.key === "Enter") { event.preventDefault(); if (!event.repeat) toggleInput.click(); }
+      });
+      toggleInput.addEventListener("change", () => { if (!busy.has(skill.id)) void toggle(skill); });
+      switchControls.set(skill.id, toggleInput);
+      toggleLabel.append(toggleInput);
+      header.append(node("h3", skill.title), toggleLabel);
+      card.append(header, node("p", skill.description, "skill-description"));
+      if (operation === "toggle") { const status = node("span", "Saving…", "settings-hint"); status.setAttribute("role", "status"); card.append(status); }
+      if (errors.has(skill.id)) card.append(alert(errors.get(skill.id)!));
+      const details = node("details", undefined, "skill-details"); details.open = openDetails.has(skill.id);
+      const summary = node("summary", "Details");
+      summary.addEventListener("click", event => {
+        event.preventDefault(); details.open = !details.open;
+        if (details.open) openDetails.add(skill.id); else openDetails.delete(skill.id);
+      });
+      details.append(summary, node("p", sourceText(skill), "settings-hint"));
       const actions = node("div", undefined, "skill-actions");
       actions.append(button(operation === "read" ? "Loading instructions…" : openDocuments.has(skill.id) && !editors.has(skill.id) ? "Close instructions" : "View instructions", () => {
         if (openDocuments.has(skill.id)) openDocuments.delete(skill.id);
         else if (documents.has(skill.id)) openDocuments.add(skill.id);
         else { void read(skill); return; }
         drawList();
-      }, !!operation), button(operation === "toggle" ? "Saving…" : skill.enabled ? "Disable" : "Enable", () => void toggle(skill), !!operation));
-      actions.append(button("Edit skill", () => void read(skill, true), !!operation));
-      if (skill.source) actions.append(button("Update", () => { otherSources.open = true; url.value = sourceUrl(skill); void previewImport(skill); }, !!operation || previewBusy || installBusy));
-      card.append(actions);
-      if (errors.has(skill.id)) card.append(alert(errors.get(skill.id)!));
+      }, !!operation), button("Edit skill", () => void read(skill, true), !!operation));
+      if (skill.source) actions.append(button("Update", () => {
+        setAddOpen(true); sourceMode = "github"; sourceInput.value = sourceMode; drawSource();
+        url.value = sourceUrl(skill); void previewImport(skill); add.scrollIntoView?.({block: "nearest"});
+      }, !!operation || previewBusy || installBusy || localBusy));
+      details.append(actions);
       const doc = documents.get(skill.id);
       const editor = editors.get(skill.id);
       if (doc && editor) {
         editor.disabled = !!operation;
-        card.append(editor, node("p", `Files: ${doc.files.join(", ")}`, "settings-hint"), button(operation === "save" ? "Saving skill…" : "Save skill", () => void save(skill), !!operation), button("Reload skill from disk", () => void read(skill, true, true), !!operation));
-      } else if (doc && openDocuments.has(skill.id)) card.append(instructions(doc.content, doc.files));
-      list.append(card);
+        details.append(editor, node("p", `Files: ${doc.files.join(", ")}`, "settings-hint"), button(operation === "save" ? "Saving skill…" : "Save skill", () => void save(skill), !!operation), button("Reload skill from disk", () => void read(skill, true, true), !!operation));
+      } else if (doc && openDocuments.has(skill.id)) details.append(instructions(doc.content, doc.files));
+      card.append(details); list.append(card);
     }
+    if (focusedSwitchId) switchControls.get(focusedSwitchId)?.focus({preventScroll: true});
     if (editing && list.contains(editing) && !editing.disabled) {
       editing.focus({preventScroll: true});
       editing.setSelectionRange(selection![0], selection![1]); editing.scrollTop = scrollTop!;
@@ -152,7 +228,7 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
     if (localNotice) { const status = node("p", localNotice); status.setAttribute("role", "status"); localArea.append(status); }
     for (const preview of localPreviews) {
       const card = node("article", undefined, "settings-card");
-      card.append(node("h3", preview.title), node("p", preview.description), instructions(preview.content, preview.files, true), button(localInstalling === preview.path ? "Installing…" : "Install local skill", () => void installLocal(preview), localBusy));
+      card.append(node("h3", preview.title), node("p", preview.description), instructions(preview.content, preview.files, true), button(localInstalling === preview.path ? "Installing…" : "Add this skill", () => void installLocal(preview), localBusy));
       localArea.append(card);
     }
   };
@@ -160,11 +236,11 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
     catalog.skills = [...catalog.skills.filter(item => item.id !== skill.id), skill];
     if (!editors.has(skill.id)) { documents.delete(skill.id); openDocuments.delete(skill.id); }
   };
-  const draw = () => { drawList(); drawPreview(); drawLocal(); };
+  const draw = () => { drawList(); drawPreview(); drawLocal(); drawSource(); };
   const chooseLocal = async (kind: "file" | "folder") => {
     if (localBusy || installBusy) return;
     const version = generation; const request = ++localRequest;
-    localBusy = true; localError = ""; localNotice = ""; localPreviews = []; draw();
+    localBusy = true; localSource = kind; localError = ""; localNotice = ""; localPreviews = []; draw();
     try {
       const path = await api.chooseSkillImport(kind);
       if (!path || version !== generation || request !== localRequest) return;
@@ -301,7 +377,7 @@ export function createSkillsSettingsPanel(api: SkillsApi, initialContext: SkillW
   scopeInput.addEventListener("change", () => {
     scope = scopeInput.value as SkillScope; reset(); draw(); if (active) void refresh();
   });
-  url.addEventListener("input", () => { clearPreview(); drawPreview(); });
+  url.addEventListener("input", () => { clearPreview(); drawPreview(); drawSource(); });
   url.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); void previewImport(); } });
   draw();
   return {element, updateContext(next, nextOwner, enabled = true) {

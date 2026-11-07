@@ -184,8 +184,8 @@ impl SkillStore {
             count += 1;
             metadata_bytes += model_metadata(skill).to_string().len() + 1;
         }
-        if count > 64 || metadata_bytes > 64 * 1024 {
-            issue(&mut catalog,"Runtime skill catalog is bounded to 64 enabled skills and 64 KiB metadata; excess skills are omitted".into());
+        if count > MAX_ENABLED_SKILLS || metadata_bytes > 64 * 1024 {
+            issue(&mut catalog, format!("Runtime skill catalog is bounded to {MAX_ENABLED_SKILLS} enabled skills and 64 KiB metadata; excess skills are omitted"));
         }
         if enabled_bytes > 32 * 1024 * 1024 {
             issue(&mut catalog,"Runtime skill text snapshots are bounded to 32 MiB; packages exceeding the remaining budget are omitted".into());
@@ -243,7 +243,7 @@ impl SkillStore {
             }
             let size = files.values().map(Vec::len).sum::<usize>();
             let metadata_size = model_metadata(&current).to_string().len() + 1;
-            if result.len() >= 64
+            if result.len() >= MAX_ENABLED_SKILLS
                 || bytes + size > 32 * 1024 * 1024
                 || metadata_bytes + metadata_size > 64 * 1024
             {

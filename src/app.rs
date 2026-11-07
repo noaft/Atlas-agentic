@@ -62,6 +62,7 @@ pub fn build_runtime_with_settings(
     if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&skill_store) {
         tools.register(Box::new(tool));
     }
+    crate::tools::register_skill_import_tools(&mut tools, skill_store.clone());
     tools.register(Box::new(crate::tools::CreateSkillTool::new(skill_store)));
     crate::mcp::register_tools(
         &mut tools,
@@ -178,9 +179,11 @@ mod tests {
         let settings = saved.resolve_with(|_| None).unwrap();
         let runtime =
             super::build_runtime_with_settings(workspace.path(), &agent_file, &settings).unwrap();
-        assert!(runtime
-            .tool_definitions()
-            .iter()
-            .any(|tool| tool.name == "create_skill"));
+        for name in ["create_skill", "preview_skill", "install_skill"] {
+            assert!(runtime
+                .tool_definitions()
+                .iter()
+                .any(|tool| tool.name == name));
+        }
     }
 }

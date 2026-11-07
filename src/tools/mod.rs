@@ -9,6 +9,7 @@ mod delete_file;
 mod exec_command;
 #[cfg(windows)]
 mod exec_command_windows;
+mod import_skill;
 mod list_dir;
 mod load_skill;
 mod move_file;
@@ -39,6 +40,7 @@ pub use delete_file::DeleteFileTool;
 pub use exec_command::ExecCommandTool;
 #[cfg(windows)]
 pub use exec_command_windows::ExecCommandTool;
+pub use import_skill::register_skill_import_tools;
 pub use list_dir::ListDirTool;
 pub use load_skill::LoadSkillTool;
 pub use move_file::MoveFileTool;
@@ -95,6 +97,9 @@ impl ToolResult {
 pub trait Tool {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
+    /// Clear transient request state at runtime entry and on every exit.
+    /// Persistent configuration and frozen skill catalogs are unaffected.
+    fn reset_request_state(&self) {}
     fn risk(&self, _args: &serde_json::Value) -> Result<ToolRisk, String> {
         Ok(ToolRisk::ReadOnly)
     }
@@ -164,6 +169,14 @@ fn secret_key(key: &str) -> bool {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+}
+
+pub(crate) struct ToolRequestScope<'a>(&'a ToolRegistry);
+
+impl Drop for ToolRequestScope<'_> {
+    fn drop(&mut self) {
+        self.0.reset_request_state();
+    }
 }
 
 pub struct ToolAuthorization {
@@ -250,6 +263,17 @@ impl ToolRegistry {
             arguments: tool.summarize(args),
             context,
         })
+    }
+
+    fn reset_request_state(&self) {
+        for tool in self.tools.values() {
+            tool.reset_request_state();
+        }
+    }
+
+    pub(crate) fn request_scope(&self) -> ToolRequestScope<'_> {
+        self.reset_request_state();
+        ToolRequestScope(self)
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

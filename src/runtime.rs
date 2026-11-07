@@ -148,6 +148,7 @@ impl Runtime {
         permission_mode: PermissionMode,
         callbacks: RuntimeAskCallbacks<'_>,
     ) -> Result<String, String> {
+        let _tool_request_scope = self.tools.request_scope();
         let RuntimeAskCallbacks {
             authorizer,
             on_delta,

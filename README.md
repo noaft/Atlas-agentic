@@ -121,16 +121,23 @@ Built-in tools:
 | Open and execute | `open_file`, `open_application`, `exec_command` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
-| Save and load skills | `create_skill`, `load_skill` (when enabled skills are available) |
+| Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
 
 ## Skills
 
 A skill is a folder containing `SKILL.md` and optional references, scripts or
 assets. It needs no GitHub account or remote source metadata. **Settings → Skills**
-opens with installed skills. Choose **Personal** or **Project** to view, edit, or
-enable/disable them. Expand **Import from source** below the list to import a local
-`SKILL.md` file or folder, or preview and install from a public GitHub URL. Review
-the instructions before installing into the selected scope. **Install all** submits
+shows a compact library with an **Add skill** button at the top. Choose
+**All projects** (Personal) or **This project** (Project). Click **Add skill** and
+choose a GitHub link, local folder, or `SKILL.md` file; only the selected source's
+controls appear. Preview the instructions, then add the selected skill.
+The **Installed skills** section shows names, short descriptions, search and
+on/off switches. Expand a skill's **Details** to view/edit instructions or preview
+an update. **Library options** contains refresh and other installation methods.
+Skills that could not load are grouped in one collapsed warning with details.
+Enabled descriptions are available to Atlas on its next request; full instructions
+load only when needed. Skills changes apply immediately, independently of model
+Settings Save/Discard. **Install all** submits
 the previewed GitHub selections as one backend batch and reports each failure
 without undoing successful installs or overwriting existing skills. Installing one
 skill keeps the other candidates available; only the selected card shows progress.
@@ -142,6 +149,16 @@ project-review.” The `create_skill` tool creates one folder per skill and neve
 overwrites an existing skill. Personal creation asks for approval in Ask and
 Workspace modes; Project creation follows ordinary workspace-write permissions.
 Newly created skills become available to the model on the next request.
+
+You can also ask Atlas: “Install the skill at this public GitHub URL as a Project
+skill.” The `preview_skill` tool downloads pinned packages as data, then
+`install_skill` saves the exact reviewed bytes using a preview token. Preview
+requires approval in Ask and Workspace; installation follows Project/Personal
+write permissions. Neither tool executes scripts, installs dependencies or
+overwrites an existing skill. Tokens last for the current request and are replaced
+by a new successful preview; if you continue in a later turn, Atlas must preview
+again. Runtime preview is limited to 8 candidates, 8 MiB of package data and
+64 KiB of preview text; use a specific skill folder or Settings for larger sources.
 
 Use **Search skills** to rank installed skills locally with BM25 across their
 names, titles, summaries, and instructions. Search stays within the selected scope
@@ -192,8 +209,13 @@ Read project instructions and inspect affected code before suggesting changes.
 Verify findings with relevant tests or direct checks.
 ```
 
-The model initially sees enabled skill IDs, names, titles, and descriptions. It
-requests full instructions, their folder and resource list through `load_skill`,
+The model initially sees enabled skill IDs, names, titles, and descriptions.
+Keep descriptions concise (roughly 30 tokens explaining when to use the skill);
+put detailed steps in the instructions and supporting files. The runtime admits
+up to 128 enabled skills within 64 KiB of metadata and a 32 MiB package snapshot;
+Settings reports when limits omit packages. These are bounds, not an exact model
+token estimate. Standard skill folders remain the source of truth; ratings and
+a separate database are not required. Atlas requests full instructions, their folder and resource list through `load_skill`,
 optionally loading a relative UTF-8 supporting file. Personal and Project IDs stay
 distinct, even when names match. A running request retains its original snapshot;
 subsequent requests discover changes. Invalid packages appear as issues in Settings.

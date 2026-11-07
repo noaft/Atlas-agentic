@@ -185,7 +185,7 @@ fn catalog_limits_and_non_string_metadata_are_rejected() {
 fn runtime_catalog_is_bounded_and_contains_metadata_only() {
     let t = tempfile::tempdir().unwrap();
     let s = store(&t);
-    for n in 0..65 {
+    for n in 0..129 {
         let mut p = package("Instructions never in catalog");
         p.files.insert(
             "SKILL.md".into(),
@@ -201,7 +201,7 @@ fn runtime_catalog_is_bounded_and_contains_metadata_only() {
         .unwrap()
         .issues
         .iter()
-        .any(|i| i.contains("64 enabled")));
+        .any(|i| i.contains("128 enabled")));
     let tool = LoadSkillTool::new(&s).unwrap().unwrap();
     let definition = tool.definition();
     assert_eq!(
@@ -209,7 +209,7 @@ fn runtime_catalog_is_bounded_and_contains_metadata_only() {
             .as_array()
             .unwrap()
             .len(),
-        64
+        128
     );
     assert!(!definition.description.contains("revision"));
     assert!(!definition.description.contains("Instructions never"));
@@ -333,4 +333,34 @@ fn editing_imported_skill_creates_local_fork_and_preserves_binary_assets() {
     assert!(s
         .update_document("personal:demo", &document.content, &document.fingerprint)
         .is_err());
+}
+
+#[test]
+fn one_hundred_short_descriptions_are_preloaded_without_instruction_bodies() {
+    let t = tempfile::tempdir().unwrap();
+    let s = store(&t);
+    for n in 0..100 {
+        let mut p = package("PRIVATE full instruction body");
+        p.files.insert("SKILL.md".into(), format!("---\nname: workflow-{n}\ndescription: Review code changes\n---\nPRIVATE full instruction body").into_bytes());
+        s.install(p, SkillScope::Personal, false).unwrap();
+    }
+    let definition = LoadSkillTool::new(&s).unwrap().unwrap().definition();
+    assert_eq!(
+        definition.input_schema["properties"]["id"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        100
+    );
+    assert!(definition.description.contains("workflow-99"));
+    assert!(definition.description.contains("Review code changes"));
+    assert!(!definition
+        .description
+        .contains("PRIVATE full instruction body"));
+    assert!(!s
+        .list()
+        .unwrap()
+        .issues
+        .iter()
+        .any(|issue| issue.contains("excess skills")));
 }

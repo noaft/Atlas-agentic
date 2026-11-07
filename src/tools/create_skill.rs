@@ -65,7 +65,7 @@ impl Tool for CreateSkillTool {
                     "scope":{"type":"string","enum":["personal","project"]},
                     "name":{"type":"string","description":"Folder name: lowercase letters, digits and single hyphens; 1–64 bytes."},
                     "title":{"type":"string","description":"Optional display title."},
-                    "description":{"type":"string","description":"Short summary of when to use the skill."},
+                    "description":{"type":"string","description":"Concise when-to-use description; aim for roughly 30 tokens. Descriptions are preloaded each request, so keep detailed steps in instructions."},
                     "instructions":{"type":"string","description":"Nonempty Markdown instructions, without YAML frontmatter."},
                     "files":{"type":"object","additionalProperties":{"type":"string"},"description":"Optional supporting UTF-8 files keyed by safe relative path. Cannot replace SKILL.md."}
                 }

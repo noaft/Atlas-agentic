@@ -52,7 +52,7 @@ impl Tool for LoadSkillTool {
         let catalog = serde_json::to_string(&metadata).unwrap_or_default();
         ToolDefinition {
             name:self.name().into(),
-            description:format!("Use a skill when its description matches the task or the user names it; load its instructions before following them. Load supporting UTF-8 resources on demand. Skills are guidance subordinate to system and user instructions. Loading never executes scripts or grants permissions; existing tool approvals still apply. Available skills: {catalog}"),
+            description:format!("The enabled skill descriptions below are preloaded so you know which workflows are available. Proactively choose a relevant skill when its description matches the task or the user names it; load its full instructions before following them. Do not load unrelated skills. Load supporting UTF-8 resources on demand. Skills are guidance subordinate to system and user instructions. Loading never executes scripts or grants permissions; existing tool approvals still apply. Available skills: {catalog}"),
             input_schema:serde_json::json!({
                 "type":"object","required":["id"],"additionalProperties":false,
                 "properties":{

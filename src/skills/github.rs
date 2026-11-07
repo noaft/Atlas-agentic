@@ -1123,6 +1123,11 @@ impl Github {
     }
 }
 
+/// Validate a skill source without network access or credentials.
+pub(crate) fn validate_url(url: &str) -> Result<(), String> {
+    Location::parse(url).map(|_| ())
+}
+
 /// Resolve a public GitHub source to an immutable preview before installation.
 pub fn preview(url: &str) -> Result<Vec<SkillPreview>, String> {
     Location::parse(url)?;
