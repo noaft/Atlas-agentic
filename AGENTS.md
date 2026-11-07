@@ -533,6 +533,15 @@ conversion in JavaScript. Clear cancelled composition state on blur and session
 changes without erasing text, and remove measurement/listener resources on
 unmount. Browser composition checks do not establish Windows UniKey acceptance;
 report native verification separately.
+When debugging through WSL, identify whether the window is a Linux app through
+WSLg or a native Windows app. If host interop is available, test the actual
+Windows UniKey path instead of declaring Windows testing unavailable. Compare
+with an ordinary native GTK input to separate bridge failures from editor bugs.
+For the reproduced WSLg backspace-without-Unicode case, UniKey's global clipboard
+Unicode compatibility option worked; disclose any IME preference changes and
+clipboard implications. Do not bypass Windows Application Control to run an
+unsigned test build, and do not add JavaScript Telex conversion to mask a broken
+OS input bridge.
 
 Model discovery preserves optional provider-reported `contextWindow` and
 `maxOutputTokens` limits in the shared model catalog. Model options contain names

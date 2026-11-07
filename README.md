@@ -35,6 +35,24 @@ languages. Atlas does not convert Telex itself. Enter sends after composition is
 finished; Shift+Enter inserts a newline. IME confirmation keys do not send the
 unfinished draft.
 
+### Vietnamese input when using WSLg
+
+If Vietnamese works in a Windows browser but typing into **Atlas (Ubuntu-...)**
+erases letters, check the Windows UniKey → WSLg input path before changing the
+chat editor. This was reproduced in both Atlas and a plain GTK input with no
+Atlas JavaScript: backspaces arrived, but the replacement Unicode text did not.
+
+For this case, open UniKey with **Ctrl+Shift+F5**, choose **Mở rộng**, enable
+**Luôn sử dụng clipboard cho Unicode**, then choose **Đóng**. Keep Unicode and
+Telex selected. Direct typing was verified in the Tauri window after enabling
+this option. It is a global UniKey preference and can replace clipboard contents
+while typing; turn it off when that compatibility mode is no longer needed.
+See the [official UniKey Unicode-input FAQ](https://www.unikey.org/support/ukfaq.html).
+
+A native Windows Tauri build uses a different input path from the Linux app
+shown through WSLg. Passing browser IME tests does not verify Windows UniKey
+through WSLg. See the [native reproduction notes](docs/superpowers/specs/2026-11-07-wslg-unikey-reproduction.md).
+
 ## CLI
 
 Set your API key in the environment or a local `.env` file (see
