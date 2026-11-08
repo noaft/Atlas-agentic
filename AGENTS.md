@@ -66,6 +66,7 @@ The built-in runtime tools are:
   approved paths outside the workspace
 - `search_files`: search workspace filenames and UTF-8 contents
 - `create_file`: safely create a new file inside the workspace
+- `apply_patch`: atomically edit an existing workspace UTF-8 file with exact, unique replacements
 - `create_directory`: create directories inside the workspace
 - `copy_file`, `move_file`, `delete_file`: manage files inside the workspace
 - `open_file`: open a workspace file with the OS default application
@@ -78,6 +79,15 @@ The built-in runtime tools are:
 - `key_press`: press named or Unicode keys with optional modifiers
 - `get_ui_state`: read pointer, primary-display, and active-window metadata
 - `capture_screen`: capture the primary display as an in-memory PNG for model vision
+
+`apply_patch` accepts one relative path and 1–64 sequential `{old_text,new_text}`
+edits. Source, result and aggregate replacement input are bounded to 1 MiB. Old
+text must match exactly once, including overlapping occurrences. Preserve bytes
+outside edits and Unix permission bits. Reject symlink/special-file targets and
+unsafe parents. Capture the full preimage at authorization and verify its content
+and inode under a bounded source-file lease before same-directory atomic replace;
+stale approvals must not overwrite newer files. Patch overwrites use Destructive
+risk in Ask and Workspace modes. No shell execution or partial edit publication.
 
 The displayed workspace is a starting directory, not a shell sandbox.
 User-local `mcp.toml` adds optional `mcp_list_servers`, `mcp_list_tools` and

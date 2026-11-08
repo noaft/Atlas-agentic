@@ -140,11 +140,18 @@ Built-in tools:
 | Purpose | Tools |
 | --- | --- |
 | Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
-| Manage files | `create_file`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
+| Manage files | `create_file`, `apply_patch`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
 | Open and execute | `open_file`, `open_application`, `exec_command` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 | Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
+
+`apply_patch` edits an existing UTF-8 file with exact replacements:
+`{"path":"src/example.rs","edits":[{"old_text":"old code","new_text":"new code"}]}`.
+Each old segment must occur exactly once; all edits must fit before Atlas publishes
+one atomic update. Source/result/input are bounded to 1 MiB, with up to 64 edits.
+A file changed while approval is pending is rejected. Ask and Workspace modes
+require overwrite confirmation.
 
 ## Skills
 

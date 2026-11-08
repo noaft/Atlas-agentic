@@ -8,11 +8,11 @@ use crate::{
     },
     settings::{AtlasSettings, EffectiveSettings, SettingsStore},
     tools::{
-        system_computer_controller, CaptureScreenTool, CopyFileTool, CreateDirectoryTool,
-        CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool, KeyPressTool, ListDirTool,
-        MouseClickTool, MouseMoveTool, MouseScrollTool, MoveFileTool, OpenApplicationTool,
-        OpenFileTool, PwdTool, ReadFileTool, RipgrepTool, SearchFilesTool, ToolRegistry,
-        TypeTextTool,
+        system_computer_controller, ApplyPatchTool, CaptureScreenTool, CopyFileTool,
+        CreateDirectoryTool, CreateFileTool, CurrentTimeTool, DeleteFileTool, GetUiStateTool,
+        KeyPressTool, ListDirTool, MouseClickTool, MouseMoveTool, MouseScrollTool, MoveFileTool,
+        OpenApplicationTool, OpenFileTool, PwdTool, ReadFileTool, RipgrepTool, SearchFilesTool,
+        ToolRegistry, TypeTextTool,
     },
     Runtime,
 };
@@ -85,6 +85,7 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
         Box::new(ListDirTool::new(workspace_root)),
         Box::new(ReadFileTool::new(workspace_root)),
         Box::new(CreateFileTool::new(workspace_root)),
+        Box::new(ApplyPatchTool::new(workspace_root)),
         Box::new(CreateDirectoryTool::new(workspace_root)),
         Box::new(CopyFileTool::new(workspace_root)),
         Box::new(MoveFileTool::new(workspace_root)),
@@ -142,6 +143,7 @@ mod tests {
         names.sort();
 
         let mut expected = vec![
+            "apply_patch",
             "capture_screen",
             "copy_file",
             "create_directory",

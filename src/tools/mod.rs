@@ -1,3 +1,4 @@
+mod apply_patch;
 mod computer;
 mod copy_file;
 mod create_directory;
@@ -24,6 +25,7 @@ mod ripgrep;
 mod search_files;
 mod workspace_path;
 
+pub use apply_patch::ApplyPatchTool;
 pub use computer::{
     system_computer_controller, ActiveWindowState, CaptureScreenTool, CapturedImage,
     ComputerController, ComputerKey, ComputerUiState, CoordinateMode, GetUiStateTool, KeyDirection,
