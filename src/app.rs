@@ -18,7 +18,7 @@ use crate::{
 };
 
 #[cfg(any(unix, windows))]
-use crate::tools::ExecCommandTool;
+use crate::tools::register_process_tools;
 
 /// Settings inspection stays available when an agent file is missing; runtime construction
 /// still reports invalid definitions before provider setup. Valid definitions supply defaults.
@@ -106,7 +106,7 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
     #[cfg(any(unix, windows))]
     let tools = {
         let mut tools = tools;
-        tools.register(Box::new(ExecCommandTool::new(workspace_root)));
+        register_process_tools(&mut tools, workspace_root);
         tools
     };
 
@@ -166,7 +166,7 @@ mod tests {
             "type_text",
         ];
         #[cfg(any(unix, windows))]
-        expected.push("exec_command");
+        expected.extend(["exec_command", "read_process", "stop_process"]);
         expected.sort();
 
         assert_eq!(names, expected);

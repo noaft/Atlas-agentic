@@ -7,7 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use super::process_sessions::{self, ProcessControl, ProcessSessions};
+use std::sync::Arc;
 
 use crate::permissions::ToolRisk;
 
@@ -23,6 +24,8 @@ pub struct ExecCommandTool {
     workspace: PathBuf,
     timeout: Duration,
     output_limit: usize,
+    sessions: Arc<ProcessSessions>,
+    control: Option<Arc<ProcessControl>>,
 }
 
 impl ExecCommandTool {
@@ -39,7 +42,16 @@ impl ExecCommandTool {
             workspace: workspace.as_ref().to_path_buf(),
             timeout,
             output_limit,
+            sessions: Arc::new(ProcessSessions::new(workspace.as_ref(), output_limit)),
+            control: None,
         }
+    }
+    pub fn session_tools(&self) -> Vec<Box<dyn Tool>> {
+        process_sessions::session_tools(self.sessions.clone())
+    }
+    pub(super) fn with_control(mut self, control: Arc<ProcessControl>) -> Self {
+        self.control = Some(control);
+        self
     }
 }
 
@@ -49,43 +61,38 @@ impl Tool for ExecCommandTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: "Execute an unrestricted shell command from the Atlas workspace. Supports shell operators, pipes, redirects, and access outside the workspace."
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "required": ["command"],
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The complete shell command to execute."
-                    }
-                }
-            }),
-        }
+        process_sessions::exec_definition()
     }
-
+    fn reset_request_state(&self) {
+        self.sessions.clear();
+    }
     fn risk(&self, args: &serde_json::Value) -> Result<ToolRisk, String> {
-        let args: ExecCommandArgs = serde_json::from_value(args.clone())
-            .map_err(|error| format!("invalid exec_command args: {error}"))?;
-        if args.command.trim().is_empty() {
-            return Err("exec_command command is required".to_string());
-        }
+        process_sessions::parse_exec(args)?;
         Ok(ToolRisk::Command)
     }
 
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
-        let args: ExecCommandArgs = serde_json::from_value(args.clone())
-            .map_err(|error| format!("invalid exec_command args: {error}"))?;
-        if args.command.trim().is_empty() {
-            return Err("exec_command command is required".to_string());
+        let args = process_sessions::parse_exec(args)?;
+        if args.yield_time_ms.is_some() && self.control.is_none() {
+            return self.sessions.start(args);
         }
-
+        if self
+            .control
+            .as_ref()
+            .is_some_and(|control| control.stopped())
+        {
+            return Ok(ToolResult::text(
+                serde_json::json!({"exit_code":null,"timed_out":false,"stopped":true}).to_string(),
+            ));
+        }
+        let timeout = args
+            .timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(self.timeout);
         // Validate the caller-provided duration before starting a process. Dropping Child does not
         // terminate it, so no fallible timeout setup may happen after spawn.
         let deadline = Instant::now()
-            .checked_add(self.timeout)
+            .checked_add(timeout)
             .ok_or_else(|| "exec_command timeout is too large".to_string())?;
 
         let mut command = shell_command(&args.command);
@@ -100,7 +107,7 @@ impl Tool for ExecCommandTool {
             .spawn()
             .map_err(|error| format!("failed to start exec_command: {error}"))?;
         let process_group = child.id() as i32;
-        let capture_result = prepare_capture(&mut child, self.output_limit);
+        let capture_result = prepare_capture(&mut child, self.output_limit, self.control.as_ref());
         let (stdout, stderr) = match capture_result {
             Ok(capture) => capture,
             Err(error) => {
@@ -110,7 +117,14 @@ impl Tool for ExecCommandTool {
             }
         };
 
-        let execution = match run_and_capture(&mut child, process_group, stdout, stderr, deadline) {
+        let execution = match run_and_capture(
+            &mut child,
+            process_group,
+            stdout,
+            stderr,
+            deadline,
+            self.control.as_deref(),
+        ) {
             Ok(execution) => execution,
             Err(error) => {
                 let _ = terminate_child(&mut child, process_group);
@@ -126,6 +140,7 @@ impl Tool for ExecCommandTool {
                 execution.status.and_then(|status| status.code())
             },
             "timed_out": execution.timed_out,
+            "stopped": execution.stopped,
             "stdout": String::from_utf8_lossy(&execution.stdout.bytes),
             "stderr": String::from_utf8_lossy(&execution.stderr.bytes),
             "stdout_truncated": execution.stdout.truncated,
@@ -137,17 +152,13 @@ impl Tool for ExecCommandTool {
     }
 }
 
-#[derive(Deserialize)]
-struct ExecCommandArgs {
-    command: String,
-}
-
 struct CapturedStream<R> {
     reader: R,
     bytes: Vec<u8>,
     limit: usize,
     truncated: bool,
     eof: bool,
+    observer: Option<(Arc<ProcessControl>, bool)>,
 }
 
 impl<R: Read> CapturedStream<R> {
@@ -158,6 +169,7 @@ impl<R: Read> CapturedStream<R> {
             limit,
             truncated: false,
             eof: false,
+            observer: None,
         }
     }
 
@@ -170,6 +182,9 @@ impl<R: Read> CapturedStream<R> {
             match self.reader.read(&mut buffer) {
                 Ok(0) => self.eof = true,
                 Ok(read) => {
+                    if let Some((control, stderr)) = &self.observer {
+                        control.capture(*stderr, &buffer[..read]);
+                    }
                     let remaining = self.limit.saturating_sub(self.bytes.len());
                     let to_store = read.min(remaining);
                     self.bytes.extend_from_slice(&buffer[..to_store]);
@@ -189,6 +204,7 @@ impl<R: Read> CapturedStream<R> {
 struct CommandExecution<O, E> {
     status: Option<ExitStatus>,
     timed_out: bool,
+    stopped: bool,
     stdout: CapturedStream<O>,
     stderr: CapturedStream<E>,
 }
@@ -196,6 +212,7 @@ struct CommandExecution<O, E> {
 fn prepare_capture(
     child: &mut std::process::Child,
     limit: usize,
+    control: Option<&Arc<ProcessControl>>,
 ) -> Result<
     (
         CapturedStream<std::process::ChildStdout>,
@@ -213,10 +230,11 @@ fn prepare_capture(
         .ok_or_else(|| "failed to capture exec_command stderr".to_string())?;
     set_nonblocking(stdout.as_raw_fd())?;
     set_nonblocking(stderr.as_raw_fd())?;
-    Ok((
-        CapturedStream::new(stdout, limit),
-        CapturedStream::new(stderr, limit),
-    ))
+    let mut stdout = CapturedStream::new(stdout, limit);
+    let mut stderr = CapturedStream::new(stderr, limit);
+    stdout.observer = control.map(|control| (control.clone(), false));
+    stderr.observer = control.map(|control| (control.clone(), true));
+    Ok((stdout, stderr))
 }
 
 fn run_and_capture<O: Read, E: Read>(
@@ -225,6 +243,7 @@ fn run_and_capture<O: Read, E: Read>(
     mut stdout: CapturedStream<O>,
     mut stderr: CapturedStream<E>,
     deadline: Instant,
+    control: Option<&ProcessControl>,
 ) -> Result<CommandExecution<O, E>, String> {
     loop {
         stdout.poll()?;
@@ -233,20 +252,36 @@ fn run_and_capture<O: Read, E: Read>(
         // Do not reap the process-group leader until both pipes close. Keeping its PID reserved
         // prevents a later timeout signal from ever targeting a reused process-group ID.
         if stdout.eof && stderr.eof {
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|error| format!("failed to wait for exec_command: {error}"))?
-            {
+            let status = if control.is_some() {
+                if exited_without_reaping(child)? {
+                    // Reserve the leader PID until all remaining session group members are killed.
+                    kill_process_group(process_group)?;
+                    Some(
+                        child
+                            .wait()
+                            .map_err(|error| format!("failed to reap exec_command: {error}"))?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                child
+                    .try_wait()
+                    .map_err(|error| format!("failed to wait for exec_command: {error}"))?
+            };
+            if let Some(status) = status {
                 return Ok(CommandExecution {
                     status: Some(status),
                     timed_out: false,
+                    stopped: false,
                     stdout,
                     stderr,
                 });
             }
         }
 
-        if Instant::now() >= deadline {
+        let stopped = control.is_some_and(ProcessControl::stopped);
+        if stopped || Instant::now() >= deadline {
             terminate_child(child, process_group)?;
             child
                 .wait()
@@ -271,7 +306,8 @@ fn run_and_capture<O: Read, E: Read>(
             stderr.poll()?;
             return Ok(CommandExecution {
                 status: None,
-                timed_out: true,
+                timed_out: !stopped,
+                stopped,
                 stdout,
                 stderr,
             });
@@ -279,6 +315,31 @@ fn run_and_capture<O: Read, E: Read>(
 
         thread::sleep(WAIT_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
+}
+
+fn exited_without_reaping(child: &std::process::Child) -> Result<bool, String> {
+    // SAFETY: waitid writes to initialized siginfo for our owned child. WNOWAIT leaves
+    // the PID reserved, preventing a group signal from targeting a reused PID.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == -1 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        return Err(format!(
+            "failed to inspect exec_command completion: {error}"
+        ));
+    }
+    // SAFETY: waitid returned valid siginfo; si_pid is zero when no exit is ready.
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), String> {

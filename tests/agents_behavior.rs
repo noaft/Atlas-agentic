@@ -189,6 +189,9 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
         "read_file",
         "create_file",
         "exec_command",
+        "apply_patch",
+        "read_process",
+        "stop_process",
         "capture_screen",
     ] {
         assert!(
@@ -220,6 +223,9 @@ fn readme_documents_the_complete_default_toolset_and_permission_modes() {
         "open_file",
         "open_application",
         "exec_command",
+        "apply_patch",
+        "read_process",
+        "stop_process",
         "mouse_move",
         "mouse_click",
         "mouse_scroll",

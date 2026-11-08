@@ -19,6 +19,8 @@ mod open_file;
 #[cfg(any(windows, test))]
 mod output_capture;
 mod platform;
+#[cfg(any(unix, windows))]
+mod process_sessions;
 mod pwd;
 mod read_file;
 mod ripgrep;
@@ -52,6 +54,8 @@ pub use open_file::OpenFileTool;
 pub(crate) use platform::system_launcher;
 #[doc(hidden)]
 pub use platform::{application_command, file_command, CommandSpec, Platform, ProcessLauncher};
+#[cfg(any(unix, windows))]
+pub use process_sessions::register_process_tools;
 pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;
 pub use ripgrep::RipgrepTool;

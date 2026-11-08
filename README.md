@@ -141,7 +141,7 @@ Built-in tools:
 | --- | --- |
 | Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
 | Manage files | `create_file`, `apply_patch`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
-| Open and execute | `open_file`, `open_application`, `exec_command` |
+| Open and execute | `open_file`, `open_application`, `exec_command`, `read_process`, `stop_process` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 | Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
@@ -152,6 +152,24 @@ Each old segment must occur exactly once; all edits must fit before Atlas publis
 one atomic update. Source/result/input are bounded to 1 MiB, with up to 64 edits.
 A file changed while approval is pending is rejected. Ask and Workspace modes
 require overwrite confirmation.
+
+Commands keep their existing synchronous behavior by default. For a longer job,
+Atlas can use `exec_command` with `yield_time_ms` (0–10000). A finished command
+returns its result; a running command returns an opaque `session_id` and its new
+output. `read_process` reads further output with an optional `wait_ms` (0–10000,
+default 1000); consumed output is never repeated. `stop_process` stops that owned
+process and its contained children, with the existing command confirmation rules.
+Run session programs in the foreground: remaining contained children stop when
+the shell finishes, even if their output was redirected.
+Stopping does not undo effects already performed. Unread output is capped at
+64 KiB per stream; overflow is reported explicitly.
+
+Sessions belong to one agent request, across its tool calls. They do **not**
+survive the final answer, failure, application restart or a new user message.
+Atlas stops remaining sessions when that request exits. There are at most eight
+active sessions and 32 retained records per runtime. `timeout_ms` accepts
+1–600000; defaults are 30 seconds for synchronous commands and ten minutes for
+sessions. No interactive terminal/stdin or cross-turn background service is added.
 
 ## Skills
 

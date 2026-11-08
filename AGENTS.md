@@ -72,6 +72,8 @@ The built-in runtime tools are:
 - `open_file`: open a workspace file with the OS default application
 - `open_application`: launch an application
 - `exec_command`: execute an unrestricted platform shell command from the workspace
+- `read_process`: consume new output/status from an owned request-local command session
+- `stop_process`: stop an owned command session and its contained descendants
 - `mouse_move`: move the pointer with absolute or relative coordinates
 - `mouse_click`: click left, middle, right, back, or forward in the active application
 - `mouse_scroll`: scroll horizontally or vertically in the active application
@@ -86,6 +88,8 @@ text must match exactly once, including overlapping occurrences. Preserve bytes
 outside edits and Unix permission bits. Reject symlink/special-file targets and
 unsafe parents. Capture the full preimage at authorization and verify its content
 and inode under a bounded source-file lease before same-directory atomic replace;
+re-resolve the original workspace path and parent identity at execution/publication,
+and reject moved/replaced parents rather than writing through a detached handle;
 stale approvals must not overwrite newer files. Patch overwrites use Destructive
 risk in Ask and Workspace modes. No shell execution or partial edit publication.
 
@@ -153,6 +157,21 @@ unrestricted. It supports shell operators, pipes, redirects, and paths outside
 the starting folder, and it runs with the same permissions as the Atlas process.
 The structured file helpers remain workspace-scoped. The command's default
 timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
+Opt-in `yield_time_ms` (0–10000) starts a request-owned process session; share its
+manager with `read_process` and `stop_process` when registering exec_command.
+`timeout_ms` is 1–600000; session default is ten minutes, legacy default remains
+30 seconds. Read waits are 0–10000 ms (default 1000), return only unread output,
+preserve split UTF-8 sequences, and flag overflow of each 64 KiB unread buffer.
+Managers allow eight active sessions and 32 retained records; reject starts at
+capacity before spawning. Opaque IDs are valid only within the owning runtime
+request, never cross-chat, cross-turn or persistent. Read is ReadOnly; start and
+stop are Command risk. Reset/exit/drop stops all workers and joins cleanup,
+including failure paths; never leave sessions alive after the final answer.
+Reuse Unix owned groups and Windows suspended-start kill-on-close Job Objects.
+For sessions, kill remaining group members before reaping a completed Unix leader
+(use WNOWAIT to reserve its PID); redirected quiet descendants must not outlive it.
+No stdin/PTY, new frontend permissions, automatic retry or cross-turn daemon.
+
 
 Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
 read-only tools automatically. Workspace also permits non-destructive structured

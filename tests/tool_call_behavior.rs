@@ -1963,3 +1963,64 @@ fn tool_call_messages_are_bounded_and_cleared_on_provider_errors() {
         .unwrap();
     assert_eq!(previews, vec!["🦀".repeat(1000)]);
 }
+
+#[cfg(unix)]
+#[test]
+fn runtime_sessions_continue_between_tools_and_are_cleaned_on_final_or_error() {
+    struct SessionModel {
+        phase: Cell<u8>,
+        workspace: std::path::PathBuf,
+        fail: bool,
+    }
+    impl ModelProvider for SessionModel {
+        fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+            let phase = self.phase.replace(self.phase.get() + 1);
+            if phase == 0 {
+                return Ok(r#"{"type":"tool_call","tool":"exec_command","args":{"command":"touch started; printf step; sleep 1; touch leaked","yield_time_ms":0}}"#.into());
+            }
+            let pending: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
+            let records = pending["tool_results"].as_array().unwrap();
+            let output: serde_json::Value =
+                serde_json::from_str(records.last().unwrap()["output"].as_str().unwrap()).unwrap();
+            let id = output["session_id"].as_str().unwrap();
+            if phase == 1 {
+                return Ok(format!(
+                    r#"{{"type":"tool_call","tool":"read_process","args":{}}}"#,
+                    serde_json::json!({"session_id":id,"wait_ms":100})
+                ));
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !self.workspace.join("started").exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(self.workspace.join("started").exists());
+            if self.fail {
+                Err("fake provider failure".into())
+            } else {
+                Ok(r#"{"type":"final","content":"Session inspected."}"#.into())
+            }
+        }
+    }
+    for fail in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut tools = ToolRegistry::empty();
+        atlas_agentic::tools::register_process_tools(&mut tools, workspace.path());
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition(),
+            Box::new(SessionModel {
+                phase: Cell::new(0),
+                workspace: workspace.path().into(),
+                fail,
+            }),
+        ))]))
+        .with_tools(tools);
+        let result = ask(&runtime, "run and inspect");
+        if fail {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), "Session inspected.");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1050));
+        assert!(!workspace.path().join("leaked").exists());
+    }
+}

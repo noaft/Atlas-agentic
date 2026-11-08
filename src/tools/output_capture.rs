@@ -1,8 +1,9 @@
 use std::io::Read;
 
-pub(super) fn capture_bounded(
+pub(super) fn capture_bounded_observed(
     mut reader: impl Read,
     limit: usize,
+    mut observer: impl FnMut(&[u8]),
 ) -> Result<(Vec<u8>, bool), String> {
     let mut retained = Vec::with_capacity(limit.min(8 * 1024));
     let mut buffer = [0_u8; 8 * 1024];
@@ -15,6 +16,7 @@ pub(super) fn capture_bounded(
         if read == 0 {
             break;
         }
+        observer(&buffer[..read]);
         let remaining = limit.saturating_sub(retained.len());
         let keep = read.min(remaining);
         retained.extend_from_slice(&buffer[..keep]);
@@ -24,6 +26,10 @@ pub(super) fn capture_bounded(
     Ok((retained, truncated))
 }
 
+#[cfg(test)]
+fn capture_bounded(reader: impl Read, limit: usize) -> Result<(Vec<u8>, bool), String> {
+    capture_bounded_observed(reader, limit, |_| {})
+}
 #[cfg(test)]
 mod tests {
     use super::capture_bounded;

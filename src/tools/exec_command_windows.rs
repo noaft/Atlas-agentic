@@ -17,11 +17,12 @@ use windows_sys::Win32::{
     System::Threading::CREATE_SUSPENDED,
 };
 
-use serde::Deserialize;
+use super::process_sessions::{self, ProcessControl, ProcessSessions};
+use std::sync::Arc;
 
 use crate::permissions::ToolRisk;
 
-use super::{output_capture::capture_bounded, Tool, ToolDefinition, ToolResult};
+use super::{output_capture::capture_bounded_observed, Tool, ToolDefinition, ToolResult};
 
 #[link(name = "ntdll")]
 extern "system" {
@@ -36,6 +37,8 @@ pub struct ExecCommandTool {
     workspace: PathBuf,
     timeout: Duration,
     output_limit: usize,
+    sessions: Arc<ProcessSessions>,
+    control: Option<Arc<ProcessControl>>,
 }
 
 impl ExecCommandTool {
@@ -52,7 +55,16 @@ impl ExecCommandTool {
             workspace: workspace.as_ref().to_path_buf(),
             timeout,
             output_limit,
+            sessions: Arc::new(ProcessSessions::new(workspace.as_ref(), output_limit)),
+            control: None,
         }
+    }
+    pub fn session_tools(&self) -> Vec<Box<dyn Tool>> {
+        process_sessions::session_tools(self.sessions.clone())
+    }
+    pub(super) fn with_control(mut self, control: Arc<ProcessControl>) -> Self {
+        self.control = Some(control);
+        self
     }
 }
 
@@ -62,30 +74,42 @@ impl Tool for ExecCommandTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: "Execute an unrestricted shell command from the Atlas workspace. Supports shell operators, pipes, redirects, and access outside the workspace."
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type":"object",
-                "required":["command"],
-                "properties":{"command":{"type":"string","description":"The complete shell command to execute."}}
-            }),
-        }
+        process_sessions::exec_definition()
     }
-
+    fn reset_request_state(&self) {
+        self.sessions.clear();
+    }
     fn risk(&self, args: &serde_json::Value) -> Result<ToolRisk, String> {
-        parse(args)?;
+        process_sessions::parse_exec(args)?;
         Ok(ToolRisk::Command)
     }
 
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
-        let args = parse(args)?;
+        let args = process_sessions::parse_exec(args)?;
+        if args.yield_time_ms.is_some() && self.control.is_none() {
+            return self.sessions.start(args);
+        }
+        if self
+            .control
+            .as_ref()
+            .is_some_and(|control| control.stopped())
+        {
+            return Ok(ToolResult::text(
+                serde_json::json!({"exit_code":null,"timed_out":false,"stopped":true}).to_string(),
+            ));
+        }
+        let timeout = args
+            .timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(self.timeout);
         let deadline = Instant::now()
-            .checked_add(self.timeout)
+            .checked_add(timeout)
             .ok_or_else(|| "exec_command timeout is too large".to_string())?;
         let mut child = Command::new("cmd.exe")
-            .args(["/D", "/S", "/C", &args.command])
+            .args(["/D", "/S", "/C"])
+            // cmd.exe does not use C-runtime argument escaping. Preserve the approved
+            // shell text, including inner quotes, inside its required outer quotes.
+            .raw_arg(format!("\"{}\"", args.command))
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -122,22 +146,40 @@ impl Tool for ExecCommandTool {
             ));
         }
         let limit = self.output_limit;
-        let stdout_reader = thread::spawn(move || capture_bounded(stdout, limit));
-        let stderr_reader = thread::spawn(move || capture_bounded(stderr, limit));
+        let stdout_control = self.control.clone();
+        let stderr_control = self.control.clone();
+        let stdout_reader = thread::spawn(move || {
+            capture_bounded_observed(stdout, limit, |bytes| {
+                if let Some(control) = &stdout_control {
+                    control.capture(false, bytes);
+                }
+            })
+        });
+        let stderr_reader = thread::spawn(move || {
+            capture_bounded_observed(stderr, limit, |bytes| {
+                if let Some(control) = &stderr_control {
+                    control.capture(true, bytes);
+                }
+            })
+        });
 
-        let (status, timed_out) = loop {
+        let (status, timed_out, stopped) = loop {
             if let Some(status) = child
                 .try_wait()
                 .map_err(|error| format!("failed to wait for exec_command: {error}"))?
             {
-                break (Some(status), false);
+                break (Some(status), false, false);
             }
-            if Instant::now() >= deadline {
+            let stopped = self
+                .control
+                .as_ref()
+                .is_some_and(|control| control.stopped());
+            if stopped || Instant::now() >= deadline {
                 drop(job.take());
                 child
                     .wait()
                     .map_err(|error| format!("failed to reap timed-out exec_command: {error}"))?;
-                break (None, true);
+                break (None, !stopped, stopped);
             }
             thread::sleep(WAIT_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
         };
@@ -154,6 +196,7 @@ impl Tool for ExecCommandTool {
             "command": args.command,
             "exit_code": if timed_out { None } else { status.and_then(|value| value.code()) },
             "timed_out": timed_out,
+            "stopped": stopped,
             "stdout": String::from_utf8_lossy(&stdout.0),
             "stderr": String::from_utf8_lossy(&stderr.0),
             "stdout_truncated": stdout.1,
@@ -212,18 +255,4 @@ impl Drop for Job {
             CloseHandle(self.0);
         }
     }
-}
-
-#[derive(Deserialize)]
-struct ExecCommandArgs {
-    command: String,
-}
-
-fn parse(args: &serde_json::Value) -> Result<ExecCommandArgs, String> {
-    let args: ExecCommandArgs = serde_json::from_value(args.clone())
-        .map_err(|error| format!("invalid exec_command args: {error}"))?;
-    if args.command.trim().is_empty() {
-        return Err("exec_command command is required".to_string());
-    }
-    Ok(args)
 }
