@@ -29,24 +29,11 @@ impl ApplyPatchTool {
     fn prepare(&self, args: &serde_json::Value) -> Result<Patch, String> {
         let input = parse(args)?;
         let path = validate_relative_path("apply_patch", "path", &input.path)?;
-        let mut parent = open_workspace("apply_patch", &self.workspace)?;
-        if let Some(ancestors) = path.parent() {
-            for component in ancestors.components() {
-                if component == std::path::Component::CurDir {
-                    continue;
-                }
-                let part = Path::new(component.as_os_str());
-                let metadata = parent
-                    .symlink_metadata(part)
-                    .map_err(|_| "Could not inspect patch parent")?;
-                if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                    return Err("Patch parents must be directories, not symlinks".into());
-                }
-                parent = parent
-                    .open_dir(part)
-                    .map_err(|_| "Could not open patch parent")?;
-            }
-        }
+        let workspace = self
+            .workspace
+            .canonicalize()
+            .map_err(|_| "Could not resolve patch workspace")?;
+        let parent = resolve_parent(&workspace, &path)?;
         let name = path
             .file_name()
             .ok_or("Patch needs a file name")?
@@ -74,6 +61,7 @@ impl ApplyPatchTool {
             }
         }
         Ok(Patch {
+            workspace,
             parent,
             name,
             original,
@@ -117,6 +105,7 @@ fn parse(args: &serde_json::Value) -> Result<Input, String> {
     Ok(input)
 }
 struct Patch {
+    workspace: PathBuf,
     parent: Dir,
     name: std::ffi::OsString,
     original: File,
@@ -124,6 +113,43 @@ struct Patch {
     after: String,
     path: String,
     replacements: usize,
+}
+fn resolve_parent(workspace: &Path, path: &Path) -> Result<Dir, String> {
+    if workspace
+        .canonicalize()
+        .map_err(|_| "Patch workspace changed")?
+        != workspace
+    {
+        return Err("Patch workspace changed; read the file again".into());
+    }
+    let mut parent = open_workspace("apply_patch", workspace)?;
+    if let Some(ancestors) = path.parent() {
+        for component in ancestors.components() {
+            if component == std::path::Component::CurDir {
+                continue;
+            }
+            let part = Path::new(component.as_os_str());
+            let metadata = parent
+                .symlink_metadata(part)
+                .map_err(|_| "Could not inspect patch parent")?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err("Patch parents must be directories, not symlinks".into());
+            }
+            parent = parent
+                .open_dir(part)
+                .map_err(|_| "Could not open patch parent")?;
+        }
+    }
+    Ok(parent)
+}
+fn directory_identity(directory: &Dir) -> Result<same_file::Handle, String> {
+    same_file::Handle::from_file(
+        directory
+            .try_clone()
+            .map_err(|_| "Could not inspect patch parent identity")?
+            .into_std_file(),
+    )
+    .map_err(|_| "Could not inspect patch parent identity".into())
 }
 fn options() -> OpenOptions {
     let mut options = OpenOptions::new();
@@ -163,7 +189,7 @@ fn open_file(parent: &Dir, path: &Path) -> Result<File, String> {
     }
     Ok(file)
 }
-fn read(file: &mut File) -> Result<String, String> {
+fn read(file: &mut (impl Read + Seek)) -> Result<String, String> {
     file.rewind().map_err(|_| "Could not read patch file")?;
     let mut bytes = Vec::new();
     file.take((MAX_BYTES + 1) as u64)
@@ -176,7 +202,11 @@ fn read(file: &mut File) -> Result<String, String> {
 }
 impl Patch {
     fn verify(&self) -> Result<(), String> {
-        let mut current = open_file(&self.parent, Path::new(&self.name))?;
+        let parent = resolve_parent(&self.workspace, Path::new(&self.path))?;
+        if directory_identity(&parent)? != directory_identity(&self.parent)? {
+            return Err("Patch parent changed; read the file again".into());
+        }
+        let current = open_file(&parent, Path::new(&self.name))?;
         let previous = same_file::Handle::from_file(
             self.original
                 .try_clone()
@@ -189,7 +219,10 @@ impl Patch {
                 .map_err(|_| "Could not inspect patch identity")?,
         )
         .map_err(|_| "Could not inspect patch identity")?;
-        if previous != handle || read(&mut current)? != self.before {
+        // Use the original handle for reads under its lock (Windows locks deny reads
+        // through other independently opened handles, even in the same process).
+        let mut original = &self.original;
+        if previous != handle || read(&mut original)? != self.before {
             return Err("Patch file changed; read it again before editing".into());
         }
         Ok(())

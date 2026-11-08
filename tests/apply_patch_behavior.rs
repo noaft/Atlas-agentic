@@ -169,3 +169,50 @@ fn oversized_binary_and_empty_edit_inputs_are_rejected() {
         .is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), "small");
 }
+
+#[test]
+fn moving_an_approved_parent_outside_the_workspace_invalidates_the_patch() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(workspace.join("sub")).unwrap();
+    fs::write(workspace.join("sub/note.txt"), "original").unwrap();
+    let mut registry = ToolRegistry::empty();
+    registry.register(Box::new(ApplyPatchTool::new(&workspace)));
+    let mut input = args("original", "changed");
+    input["path"] = "sub/note.txt".into();
+    let approval = registry.authorization("apply_patch", &input).unwrap();
+    let moved = fs::rename(workspace.join("sub"), root.path().join("outside"));
+    #[cfg(windows)]
+    if moved
+        .as_ref()
+        .is_err_and(|error| error.raw_os_error() == Some(32))
+    {
+        // Windows directory handles can prevent the namespace move itself.
+        assert_eq!(
+            fs::read_to_string(workspace.join("sub/note.txt")).unwrap(),
+            "original"
+        );
+        drop(approval);
+        fs::rename(workspace.join("sub"), root.path().join("outside")).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("outside/note.txt")).unwrap(),
+            "original"
+        );
+        return;
+    }
+    moved.unwrap();
+    assert!(registry
+        .execute_authorized(
+            &AgentOutput::ToolCall {
+                tool: "apply_patch".into(),
+                args: input,
+                message: None
+            },
+            &approval
+        )
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(root.path().join("outside/note.txt")).unwrap(),
+        "original"
+    );
+}
