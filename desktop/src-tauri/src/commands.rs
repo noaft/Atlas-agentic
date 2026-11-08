@@ -205,6 +205,25 @@ impl DesktopState {
         atlas_agentic::skills::SkillStore::for_settings(&self.settings_store, workspace)
     }
 
+    pub(crate) fn mcp_inspection_context(
+        &self,
+        id: Option<&ConversationId>,
+        requested: Option<&Path>,
+        mode: PermissionMode,
+    ) -> Result<(PathBuf, PermissionMode), String> {
+        let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
+        if let Some(id) = id {
+            let metadata = self.store.load(id)?.metadata;
+            let workspace = match metadata.workspace_path {
+                Some(saved) => validate_workspace_path(&saved)?,
+                None => self.resolve_default_workspace(&effective)?.0,
+            };
+            Ok((workspace, metadata.permission_mode.unwrap_or_default()))
+        } else {
+            Ok((self.resolve_workspace(None, requested, &effective)?, mode))
+        }
+    }
+
     fn resolve_workspace(
         &self,
         conversation_id: Option<&ConversationId>,
@@ -1852,6 +1871,46 @@ mod tests {
             .iter()
             .any(|activity| activity.summary == "Thinking"));
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mcp_inspection_uses_saved_authority_without_changing_history() {
+        let root = TempDir::new().unwrap();
+        let workspace = root.path().join("saved");
+        let requested = root.path().join("requested");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&requested).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let saved = store
+            .create_turn_with_workspace("question", "answer", Some(&workspace))
+            .unwrap();
+        store
+            .set_permission_mode(&saved.id, PermissionMode::Ask)
+            .unwrap();
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("config/settings.json")),
+            requested.clone(),
+            vec![],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        assert_eq!(
+            state
+                .mcp_inspection_context(
+                    Some(&saved.id),
+                    Some(&requested),
+                    PermissionMode::FullAccess
+                )
+                .unwrap(),
+            (workspace, PermissionMode::Ask)
+        );
+        assert_eq!(
+            state
+                .mcp_inspection_context(None, Some(&requested), PermissionMode::Workspace)
+                .unwrap(),
+            (requested, PermissionMode::Workspace)
+        );
+        assert_eq!(store.load(&saved.id).unwrap().messages.len(), 2);
     }
 
     #[test]

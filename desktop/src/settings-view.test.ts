@@ -305,14 +305,14 @@ test("reopening Settings rejects discovery owned by a discarded draft", async ()
 test("MCP status refresh preserves the mounted model settings draft and focus", async () => {
   const { root, store, api } = fixture({...settings, apiKeySource: "missing", environmentOverrides: []});
   let resolveStatus!: (value: import("./types").McpConnectionStatus[]) => void;
-  api.listMcpConnections = () => new Promise(resolve => {resolveStatus = resolve;});
+  api.loadMcpSettings = async () => ({path:"/config/mcp.toml",fingerprint:"fixture",connections:await new Promise(resolve => {resolveStatus = resolve;})});
   await store.initialize(); store.openSettings();
   renderSettings(root, store.getState(), store); document.body.append(root);
   const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
   key.value = "private-draft"; key.dispatchEvent(new Event("input")); key.focus(); key.setSelectionRange(2, 5); root.scrollTop = 100;
   resolveStatus([{name:"service",transport:"http",oauth:true,connected:true}]);
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  expect(root.textContent).toContain("Connected");
+  expect(root.textContent).toContain("Authorized");
   expect(root.querySelector("[data-settings-api-key]")).toBe(key);
   expect(key.value).toBe("private-draft"); expect(store.getState().settingsDraft?.apiKey).toBe("private-draft");
   expect(document.activeElement).toBe(key); expect(key.selectionStart).toBe(2); expect(root.scrollTop).toBe(100);
@@ -323,7 +323,7 @@ test("MCP status refresh preserves the mounted model settings draft and focus", 
 test("settings categories show only their controls while retaining draft inputs and MCP panel", async () => {
   const { root, store, api } = fixture(multiSettings);
   let refreshes = 0;
-  api.listMcpConnections = async () => { refreshes++; return []; };
+  api.loadMcpSettings = async () => { refreshes++; return {path:"/config/mcp.toml",fingerprint:"fixture",connections:[]}; };
   await store.initialize(); store.openSettings();
   renderSettings(root, store.getState(), store);
   const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
@@ -463,4 +463,19 @@ test("Skills installed list survives category navigation and Escape back to chat
   expect(store.getState().screen).toBe("chat");
   store.openSettings(); renderSettings(root, store.getState(), store);
   expect(root.querySelector(".skills-installed")).toBe(list);
+});
+
+test("switching chats after leaving Settings cancels its pending MCP check",async()=>{
+ const {root,store,api}=fixture();
+ api.loadMcpSettings=async()=>({path:"/config/mcp.toml",fingerprint:"version",connections:[{name:"local",transport:"stdio",oauth:false,connected:true}]});
+ let finish!: (result:import("./mcp-types").McpCheckResult)=>void;let cancels=0;
+ api.inspectMcpServer=async()=>new Promise(resolve=>{finish=resolve;});
+ api.cancelMcpInspection=async()=>{cancels++;};
+ await store.initialize();store.openSettings();renderSettings(root,store.getState(),store);
+ for(let i=0;i<12;i++)await Promise.resolve();
+ [...root.querySelectorAll("button")].find(button=>button.textContent==="Check tools")!.click();
+ store.backToChat();await store.newChat();
+ expect(cancels).toBe(1);
+ finish({fingerprint:"version",workspacePath:"/old",tools:[]});
+ for(let i=0;i<12;i++)await Promise.resolve();expect(root.textContent).not.toContain("Verified");
 });

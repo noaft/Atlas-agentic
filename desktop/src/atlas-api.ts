@@ -1,3 +1,4 @@
+import type { McpOnboardingApi, McpSettingsView, McpCheckEvent, McpCheckResult } from "./mcp-types";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -20,7 +21,7 @@ import type {
   Workspace,
 } from "./types";
 
-export interface AtlasApi extends SkillsApi {
+export interface AtlasApi extends SkillsApi, McpOnboardingApi {
   listMcpConnections(): Promise<McpConnectionStatus[]>;
   connectMcpServer(server: string): Promise<void>;
   disconnectMcpServer(server: string): Promise<void>;
@@ -74,6 +75,11 @@ export function createTauriAtlasApi(): AtlasApi {
     previewSkillImport: (url) => invoke<SkillPreview[]>("preview_skill_import", {url}),
     installSkill: (source, scope, replace, context) => invoke<SkillInfo>("install_skill", {source, scope, replace, context}),
     setSkillEnabled: (id, enabled, context) => invoke<SkillInfo>("set_skill_enabled", {id, enabled, context}),
+    loadMcpSettings: () => invoke<McpSettingsView>("load_mcp_settings"),
+    addMcpServer: (fingerprint, name, server) => invoke<McpSettingsView>("add_mcp_server", {fingerprint, name, server}),
+    inspectMcpServer: (request, onEvent) => invoke<McpCheckResult>("inspect_mcp_server", {request, channel: new Channel<McpCheckEvent>(onEvent)}),
+    resolveMcpInspectionApproval: (id, approvalId, allow) => invoke<void>("resolve_mcp_inspection_approval", {id, approvalId, allow}),
+    cancelMcpInspection: (id) => invoke<void>("cancel_mcp_inspection", {id}),
     listMcpConnections: () => invoke<McpConnectionStatus[]>("list_mcp_connections"),
     connectMcpServer: (server) => invoke<void>("connect_mcp_server", { server }),
     disconnectMcpServer: (server) => invoke<void>("disconnect_mcp_server", { server }),

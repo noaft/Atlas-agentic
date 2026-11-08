@@ -338,3 +338,19 @@ test("skill batch installation and BM25 search use native commands with captured
     {command: "search_skills", payload: {query: "rust review", scope: "personal", context}},
   ]);
 });
+
+test("MCP onboarding passes typed settings, owned checks and approval IDs through the bridge",async()=>{
+ const calls: Array<{command:string;payload:unknown}>=[];
+ mockIPC((command,payload)=>{calls.push({command,payload});if(command==="inspect_mcp_server") {
+  (payload as {channel:Channel<import("./mcp-types").McpCheckEvent>}).channel.onmessage({event:"approvalRequested",data:{id:"approval",tool:"mcp_list_tools",arguments:"{}",reason:"external access"}});
+  return {fingerprint:"version",workspacePath:"/one",tools:[]};
+ }return {path:"/config/mcp.toml",fingerprint:"version",connections:[]};});
+ const api=createTauriAtlasApi(),events:unknown[]=[];
+ await api.loadMcpSettings();const config={command:"program",args:["--stdio"],timeout_ms:30000};
+ await api.addMcpServer("version","local",config);
+ const request={id:"operation",server:"local",fingerprint:"version",context:{conversationId:null,workspacePath:"/one",permissionMode:"ask" as const}};
+ await api.inspectMcpServer(request,event=>events.push(event));await api.resolveMcpInspectionApproval("operation","approval",false);await api.cancelMcpInspection("operation");
+ expect(calls.map(c=>c.command)).toEqual(["load_mcp_settings","add_mcp_server","inspect_mcp_server","resolve_mcp_inspection_approval","cancel_mcp_inspection"]);
+ expect(calls[1].payload).toEqual({fingerprint:"version",name:"local",server:config});expect(calls[2].payload).toMatchObject({request});
+ expect(calls[3].payload).toEqual({id:"operation",approvalId:"approval",allow:false});expect(events).toHaveLength(1);
+});

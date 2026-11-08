@@ -1,8 +1,12 @@
 //! MCP connections exposed through Atlas's normal runtime authorization boundary.
 mod config;
 mod http;
+mod inspection;
 pub mod oauth;
+mod settings;
 mod stdio;
+pub use inspection::{inspect_server_tools, InspectedTool};
+pub use settings::{McpConfigSnapshot, McpConfigStore};
 #[cfg(windows)]
 mod windows;
 
@@ -13,6 +17,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use serde::Deserialize;
@@ -49,6 +57,7 @@ struct Connections {
     config: McpConfig,
     workspace: PathBuf,
     clients: BTreeMap<String, Client>,
+    cancelled: Option<Arc<AtomicBool>>,
 }
 
 impl Connections {
@@ -66,10 +75,12 @@ impl Connections {
         operation: impl FnOnce(&mut Client) -> Result<Value, String>,
     ) -> Result<Value, String> {
         self.validate_server(server)?;
+        check_cancelled(self.cancelled.as_deref())?;
         if !self.clients.contains_key(server) {
             let client = Client::connect(&self.config.servers[server], &self.workspace)?;
             self.clients.insert(server.into(), client);
         }
+        check_cancelled(self.cancelled.as_deref())?;
         let result = operation(
             self.clients
                 .get_mut(server)
@@ -197,7 +208,12 @@ impl Tool for McpTool {
             }
             Operation::List => {
                 let args: ListArgs = parse(args)?;
-                connections.run(&args.server, list_tools)?
+                {
+                    let cancelled = connections.cancelled.clone();
+                    connections.run(&args.server, |client| {
+                        list_tools(client, cancelled.as_deref())
+                    })?
+                }
             }
             Operation::Call => {
                 let args: CallArgs = parse(args)?;
@@ -216,14 +232,23 @@ impl Tool for McpTool {
     }
 }
 
-fn list_tools(client: &mut Client) -> Result<Value, String> {
+fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), String> {
+    if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        Err("MCP tool check cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+fn list_tools(client: &mut Client, cancelled: Option<&AtomicBool>) -> Result<Value, String> {
     let mut tools = Vec::new();
     let mut names = BTreeSet::new();
     let mut cursors = BTreeSet::new();
     let mut params = json!({});
     let mut total_bytes = 0;
     for _ in 0..16 {
+        check_cancelled(cancelled)?;
         let page = client.request("tools/list", params)?;
+        check_cancelled(cancelled)?;
         total_bytes += serde_json::to_vec(&page)
             .map_err(|_| "invalid MCP tool catalog")?
             .len();
@@ -304,6 +329,14 @@ fn text_result(result: Value) -> Result<Value, String> {
 
 /// Register gateways without spawning servers; all side effects stay in tool execution.
 pub fn register_tools(registry: &mut ToolRegistry, config: McpConfig, workspace: &Path) {
+    register_tools_with_cancel(registry, config, workspace, None);
+}
+fn register_tools_with_cancel(
+    registry: &mut ToolRegistry,
+    config: McpConfig,
+    workspace: &Path,
+    cancelled: Option<Arc<AtomicBool>>,
+) {
     if config.servers.is_empty() {
         return;
     }
@@ -311,6 +344,7 @@ pub fn register_tools(registry: &mut ToolRegistry, config: McpConfig, workspace:
         config,
         workspace: workspace.to_path_buf(),
         clients: BTreeMap::new(),
+        cancelled,
     }));
     for operation in [Operation::Servers, Operation::List, Operation::Call] {
         registry.register(Box::new(McpTool {

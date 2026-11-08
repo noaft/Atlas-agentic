@@ -1,9 +1,9 @@
 import type { ChatStore } from "./chat-state";
 import type { ChatState, SettingsSection } from "./types";
-import { createMcpSettingsPanel } from "./mcp-settings";
+import { createMcpSettingsPanel, type McpSettingsPanel } from "./mcp-settings";
 import { createSkillsSettingsPanel, type SkillsSettingsPanel } from "./skills-settings";
 
-const mcpPanels = new WeakMap<ChatStore, HTMLElement>();
+const mcpPanels = new WeakMap<ChatStore, McpSettingsPanel>();
 const skillsPanels = new WeakMap<ChatStore, SkillsSettingsPanel>();
 
 export const settingsSections: Record<SettingsSection, { title: string; subtitle: string }> = {
@@ -30,6 +30,7 @@ export function updateSettingsSection(container: HTMLElement, section: SettingsS
 /** Refresh lightweight chrome while typed inputs and connection workers keep their identity. */
 export function updateSettingsChrome(container: HTMLElement, state: Readonly<ChatState>, store: ChatStore): void {
   updateSettingsSection(container, state.settingsSection);
+  mcpPanels.get(store)?.updateContext(store.mcpContext(), state.activeSessionId);
   skillsPanels.get(store)?.updateContext(store.skillContext(), state.activeSessionId, state.settingsSection === "skills");
   const saving = state.settingsStatus === "saving";
   const changed = store.hasSettingsChanges();
@@ -415,7 +416,11 @@ export function renderSettings(
   let mcpPanel = mcpPanels.get(store);
   if (!mcpPanel) {
     mcpPanel = createMcpSettingsPanel(store);
+    mcpPanel.updateContext(store.mcpContext(), state.activeSessionId);
     mcpPanels.set(store, mcpPanel);
+    // The panel outlives the visible Settings page; track ownership even in chat.
+    const ownedPanel = mcpPanel;
+    store.subscribe(next => ownedPanel.updateContext(store.mcpContext(), next.activeSessionId));
   }
   connectionsSection.append(mcpPanel);
   let skillsPanel = skillsPanels.get(store);

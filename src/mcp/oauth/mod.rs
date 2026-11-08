@@ -466,10 +466,15 @@ fn configured(server: &str) -> Result<ServerConfig, String> {
 }
 
 pub fn list_connections() -> Result<Vec<ConnectionStatus>, String> {
-    McpConfig::from_environment()?
+    connection_statuses(&McpConfig::from_environment()?)
+}
+
+/// Read credential status from an already captured configuration, without connecting.
+pub fn connection_statuses(config: &McpConfig) -> Result<Vec<ConnectionStatus>, String> {
+    config
         .servers
         .iter()
-        .map(|(name, config)| service().status(name, config))
+        .map(|(name, server)| service().status(name, server))
         .collect()
 }
 

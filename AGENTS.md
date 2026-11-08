@@ -114,6 +114,20 @@ other processes cannot republish credentials. Cancel during a keyring write must
 remove any late save. Browser sign-in cancellation and deadlines must not publish
 late network results. The Settings MCP panel owns asynchronous status updates
 without remounting model inputs or disturbing their drafts/focus/scroll.
+Settings may add new servers through the bounded user-local McpConfigStore:
+preserve original bytes/comments, reject duplicate names and malformed/unsupported
+or symlink/special-file inputs, and bind writes to a path/content fingerprint under
+a bounded file lease with private atomic publication. Never overwrite existing
+server identities or probe on load/save. Explicit Check tools uses the existing
+MCP registry authorization and discovery with Settings-owned operation IDs,
+approvals and cancellation. Saved conversation workspace and permission mode are
+native authority. Check cancellation stops at the next RPC boundary; an in-flight
+RPC remains bounded to 30 seconds. Retain Cancelling state until its worker exits;
+ignore stale approvals/results and reject pre-save refresh responses after a save.
+Keep sign-in status distinct from checked tool availability. Config/context changes
+invalidate checks without cancelling chat approvals or browser sign-ins. Check
+transports are short-lived; no business tools execute during inspection.
+
 Connections belong to one runtime and close on transport failure/drop. Preserve
 valid tool-error details as failed results while keeping the session usable.
 Unix terminates owned process groups; Windows contains the server in a

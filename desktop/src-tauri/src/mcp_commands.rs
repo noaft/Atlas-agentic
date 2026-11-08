@@ -139,3 +139,39 @@ mod tests {
         assert!(PendingConnection::reserve("valid-server_1.test").is_ok());
     }
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSettingsView {
+    path: String,
+    fingerprint: String,
+    connections: Vec<ConnectionStatus>,
+}
+fn settings_view(
+    snapshot: atlas_agentic::mcp::McpConfigSnapshot,
+) -> Result<McpSettingsView, String> {
+    Ok(McpSettingsView {
+        path: snapshot.path.display().to_string(),
+        fingerprint: snapshot.fingerprint,
+        connections: oauth::connection_statuses(&snapshot.config)?,
+    })
+}
+#[tauri::command]
+pub async fn load_mcp_settings() -> Result<McpSettingsView, String> {
+    crate::commands::run_blocking("desktop.load_mcp_settings", || {
+        settings_view(atlas_agentic::mcp::McpConfigStore::from_environment()?.load()?)
+    })
+    .await
+}
+#[tauri::command]
+pub async fn add_mcp_server(
+    fingerprint: String,
+    name: String,
+    server: atlas_agentic::mcp::ServerConfig,
+) -> Result<McpSettingsView, String> {
+    crate::commands::run_blocking("desktop.add_mcp_server", move || {
+        let store = atlas_agentic::mcp::McpConfigStore::from_environment()?;
+        settings_view(store.add(&fingerprint, &name, server)?)
+    })
+    .await
+}

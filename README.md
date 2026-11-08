@@ -251,7 +251,13 @@ independently of model Settings Save/Discard.
 
 Atlas can connect to local MCP servers over stdio and remote servers over
 Streamable HTTP from both CLI and desktop.
-Create `mcp.toml` beside your user-local `settings.json` (normally
+Open **Settings → MCP connections → Add connection**. Enter a name and server
+URL, or choose **Local program (stdio)** and enter the executable and one argument
+per line. Advanced options include timeout and optional browser sign-in (OAuth).
+**Save connection** adds a new server without contacting it or starting a program.
+Existing names cannot be overwritten; edit existing entries in the file manually.
+
+You can also create `mcp.toml` beside your user-local `settings.json` (normally
 `~/.config/atlas/mcp.toml` on Linux), or set `ATLAS_MCP_CONFIG` to a configuration
 file. `ATLAS_CONFIG_DIR` also relocates the default MCP configuration directory.
 Atlas never automatically reads MCP configuration from a project folder.
@@ -284,10 +290,22 @@ timeout_ms = 30000
 ```
 
 Use the MCP URL provided by your service. Open **Settings → MCP connections**,
-click **Refresh connections**, then **Connect** beside the server. Your default
+click **Sign in** beside the server. Your default
 browser opens for sign-in and consent; Atlas receives the callback locally and
 saves credentials in the OS credential store. You can cancel a pending sign-in.
 Connections apply immediately, independently of the model Settings Save button.
+
+**Authorized** means sign-in credentials are available. Use **Check tools** to
+initialize the server and inspect its tool list, then expand **Tool details**.
+Ask and Workspace modes require a separate confirmation before this check;
+Full access skips that confirmation. Checks use the current chat’s starting folder
+and permissions, with saved chat metadata taking precedence. They call no business
+tools and close their connections afterward. Each check RPC has a timeout capped
+at 30 seconds. Cancelling lets the current RPC finish, stops further discovery
+requests, and discards its result. Switching chats or changing the folder,
+permissions or configuration invalidates prior checks. Saving or refreshing
+configuration never checks servers automatically.
+
 Both desktop and CLI use the saved sign-in from the same configuration and OS
 account. Chat requests never open a sign-in window automatically.
 

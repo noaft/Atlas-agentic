@@ -1,16 +1,16 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// User-local, explicitly trusted MCP configuration. Never load this from a workspace.
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
     #[serde(default)]
     pub servers: BTreeMap<String, ServerConfig>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default)]
@@ -25,7 +25,7 @@ pub struct ServerConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OAuthConfig {
     #[serde(default)]
@@ -126,7 +126,7 @@ impl McpConfig {
         }
     }
 
-    pub fn from_environment() -> Result<Self, String> {
+    pub fn path_from_environment() -> Result<std::path::PathBuf, String> {
         let path = if let Some(path) = std::env::var_os("ATLAS_MCP_CONFIG") {
             std::path::PathBuf::from(path)
         } else {
@@ -139,6 +139,9 @@ impl McpConfig {
             };
             directory.join("mcp.toml")
         };
-        Self::load(&path)
+        Ok(path)
+    }
+    pub fn from_environment() -> Result<Self, String> {
+        Self::load(&Self::path_from_environment()?)
     }
 }

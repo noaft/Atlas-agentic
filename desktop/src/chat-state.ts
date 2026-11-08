@@ -1,3 +1,4 @@
+import type { McpOnboardingApi, McpContext } from "./mcp-types";
 import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
 import type { SkillScope, SkillSource, SkillWorkspaceContext, SkillDraftInput } from "./skills-types";
@@ -176,6 +177,12 @@ export class ChatStore {
     });
   }
 
+  loadMcpSettings = () => this.api.loadMcpSettings();
+  addMcpServer: McpOnboardingApi["addMcpServer"] = (...args) => this.api.addMcpServer(...args);
+  inspectMcpServer: McpOnboardingApi["inspectMcpServer"] = (...args) => this.api.inspectMcpServer(...args);
+  resolveMcpInspectionApproval: McpOnboardingApi["resolveMcpInspectionApproval"] = (...args) => this.api.resolveMcpInspectionApproval(...args);
+  cancelMcpInspection = (id: string) => this.api.cancelMcpInspection(id);
+  mcpContext = (): McpContext => ({...this.skillContext(), permissionMode: this.state.activePermissionMode});
   listMcpConnections = () => this.api.listMcpConnections();
   skillContext = (): SkillWorkspaceContext => ({
     conversationId: this.state.activeConversationId,

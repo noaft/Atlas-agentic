@@ -1,5 +1,6 @@
 mod commands;
 mod mcp_commands;
+mod mcp_inspection;
 mod provider_settings;
 mod requests;
 mod skill_commands;
@@ -48,6 +49,11 @@ pub fn run() {
             skill_commands::install_skills,
             skill_commands::search_skills,
             skill_commands::set_skill_enabled,
+            mcp_commands::load_mcp_settings,
+            mcp_commands::add_mcp_server,
+            mcp_inspection::inspect_mcp_server,
+            mcp_inspection::resolve_mcp_inspection_approval,
+            mcp_inspection::cancel_mcp_inspection,
             mcp_commands::list_mcp_connections,
             mcp_commands::connect_mcp_server,
             mcp_commands::disconnect_mcp_server,

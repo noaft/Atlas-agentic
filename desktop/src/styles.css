@@ -667,3 +667,17 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .skill-source-details, .skill-instructions > summary { color: #84718f; font-size: 12px; }
 .skill-source-details > summary, .skill-instructions > summary { cursor: pointer; }
 .skill-source-details .settings-hint { overflow-wrap: anywhere; }
+
+.mcp-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.mcp-editor[hidden] { display: none; }
+.mcp-field { display: grid; gap: 7px; min-width: 0; color: var(--muted); font-size: 12px; }
+.mcp-field input:not([type="checkbox"]), .mcp-field textarea, .mcp-field select { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--ink); background: var(--surface); font: inherit; }
+.mcp-editor > div:not([hidden]), .mcp-editor details[open], .mcp-editor details > div:not([hidden]) { display: grid; gap: 12px; }
+.mcp-editor summary, .mcp-connection summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.mcp-editor > button { justify-self: start; }
+.mcp-approval { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.mcp-approval > p { flex-basis: 100%; }
+.mcp-connection details[open] { display: grid; gap: 8px; }
+.mcp-config-path { overflow-wrap: anywhere; }
+.mcp-list { display: grid; gap: 12px; }
+.mcp-editor > .mcp-toolbar:not([hidden]) { display: flex; }

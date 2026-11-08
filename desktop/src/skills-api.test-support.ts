@@ -1,7 +1,13 @@
+import type { McpOnboardingApi, McpSettingsView } from "./mcp-types";
 import type { SkillsApi, SkillDocument, SkillInfo } from "./skills-types";
 
 /** Empty skill catalog for tests of unrelated chat/model behavior. */
-export class EmptySkillsApi implements SkillsApi {
+export class EmptySkillsApi implements SkillsApi, McpOnboardingApi {
+  loadMcpSettings = async (): Promise<McpSettingsView> => ({path: "/config/mcp.toml", fingerprint: "fixture", connections: []});
+  addMcpServer: McpOnboardingApi["addMcpServer"] = async () => {throw new Error("unused");};
+  inspectMcpServer: McpOnboardingApi["inspectMcpServer"] = async () => {throw new Error("unused");};
+  resolveMcpInspectionApproval = async () => {};
+  cancelMcpInspection = async () => {};
   installSkills = async () => [];
   searchSkills = async () => [];
   createSkill = async (): Promise<SkillInfo> => { throw new Error("No skill configured in this test"); };
@@ -16,4 +22,4 @@ export class EmptySkillsApi implements SkillsApi {
   setSkillEnabled = async (): Promise<SkillInfo> => { throw new Error("No skill configured in this test"); };
 }
 
-export const emptySkillsApi: SkillsApi = new EmptySkillsApi();
+export const emptySkillsApi = new EmptySkillsApi();
