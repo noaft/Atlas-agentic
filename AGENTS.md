@@ -171,9 +171,10 @@ Limit active sessions to8/scope32/app and retained records32/scope128/app. These
 are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
 rings with absolute offsets, per-chat default agent cursor and independent UI
 cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms.
-UI Stop is explicit user intent through native ownership checks; agent Start/Stop
-still use Command risk, reads/list ReadOnly. Stop_requested is not confirmation;
-keep Stopping until worker completion.
+The retained native Stop endpoint requires explicit user intent and native
+ownership checks. The current UI uses agent tool calls to stop resources. Agent
+Start/Stop use Command risk, reads/list ReadOnly. Stop_requested is not
+confirmation; report Stopping until worker completion.
 
 Draft tokens belong to native window/client epochs; no history is created for
 scope allocation. Bind successful drafts to saved conversations without changing
@@ -187,9 +188,13 @@ not persisted/restored after restart. Preserve Unix groups, signal before reapin
 leaders (WNOWAIT), and Windows suspended-start kill-on-close Jobs. Keep command
 text raw-quoted correctly for cmd.exe. MCP/OAuth ownership remains unchanged.
 
-The UI accesses all process operations only via atlas-api.ts; keep its disclosure,
-rows, focus and viewer output stable across background updates. Reject stale
-callbacks after navigation; do not let UI reads or UI Stop advance agent cursors.
+The UI accesses backend operations only via atlas-api.ts. Show tool execution
+inline as a terminal card with command, status and scrollable plain-text output;
+keep raw call details collapsed and preserve expansion for the same session/call.
+Do not mount a separate Processes panel or poll processes automatically. Output
+comes from tool events, not simulated streaming. Saved Activity retains output.
+Process tools still list/read/stop resources under existing authorization; reject
+stale callbacks after navigation and preserve independent cursor semantics.
 See docs/architecture/process-sessions.md and docs/guides/process-manager-demo.md.
 
 Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits

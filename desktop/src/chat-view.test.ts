@@ -420,7 +420,7 @@ test("current tool has a status region while approvals stay prominent", async ()
   const finishedDisclosure = root.querySelector<HTMLElement>(
     "[data-current-tool]",
   );
-  expect(finishedDisclosure?.querySelector("summary")?.textContent).toContain("Completed");
+  expect(finishedDisclosure?.querySelector(".tool-terminal-header")?.textContent).toContain("Completed");
   expect(finishedDisclosure?.textContent).toContain("Found 3 matches");
   pending.resolve({ answer: "done", metadata, created: true, activities: [] });
   await sending;
@@ -2000,32 +2000,33 @@ test("long tool runs show one current call and retain complete collapsed saved h
   }
   api.eventSink!({event: "toolStarted", data: {sequence: 199, tool: "tool_199"}});
   await flushStreaming();
-  const current = () => root.querySelector<HTMLDetailsElement>("[data-current-tool]")!;
+  const current = () => root.querySelector<HTMLElement>("[data-current-tool]")!;
+  const disclosure = () => current().querySelector<HTMLDetailsElement>(".tool-terminal-details")!;
   expect(root.querySelectorAll("[data-current-tool]")).toHaveLength(1);
   expect(root.querySelector("[data-live-activity]")).toBeNull();
-  expect(current().querySelector("summary")?.textContent).toContain("tool_199");
-  expect(current().querySelector("summary")?.textContent).toContain("Running");
+  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("tool_199");
+  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("Running");
   expect(current().querySelectorAll(".activity-row")).toHaveLength(1);
   expect(current().textContent).not.toContain("tool_198");
-  expect(current().open).toBe(false);
+  expect(disclosure().open).toBe(false);
   const content = root.querySelector(".message-assistant .message-content")!;
   expect([...content.parentElement!.children].indexOf(current())).toBeGreaterThan([...content.parentElement!.children].indexOf(content));
-  current().open = true;
+  disclosure().open = true;
   api.eventSink!({event: "toolFinished", data: {sequence: 198, tool: "tool_198", success: true, summary: "Old completed", details: "old output"}});
   await flushStreaming();
-  expect(current().querySelector("summary")?.textContent).toContain("tool_199");
-  expect(current().open).toBe(true);
+  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("tool_199");
+  expect(disclosure().open).toBe(true);
   store.setDraft("keep my draft");
-  expect(current().open).toBe(true);
+  expect(disclosure().open).toBe(true);
   api.eventSink!({event: "toolFinished", data: {sequence: 199, tool: "tool_199", success: false, summary: "Current failed", details: "current error"}});
   await flushStreaming();
-  expect(current().querySelector("summary")?.textContent).toContain("Failed");
+  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("Failed");
   expect(current().textContent).toContain("current error");
-  expect(current().open).toBe(true);
+  expect(disclosure().open).toBe(true);
   api.eventSink!({event: "toolRequested", data: {sequence: 200, tool: "next_tool", arguments: "{}"}});
   await flushStreaming();
-  expect(current().querySelector("summary")?.textContent).toContain("next_tool");
-  expect(current().open).toBe(false);
+  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("next_tool");
+  expect(disclosure().open).toBe(false);
   const activities: ActivityRecord[] = Array.from({length: 201}, (_, sequence) => ({
     sequence, kind: "toolResult", tool: `tool_${sequence}`, arguments: "{}", outcome: "succeeded", summary: `Saved call ${sequence}`, details: null, createdAt: metadata.updatedAt,
   }));
@@ -2053,4 +2054,49 @@ test("Settings navigation keeps keyboard focus during background updates", async
   const nav=root.querySelector<HTMLButtonElement>('[data-settings-category="models"]')!;nav.focus();
   pending.resolve({answer:"Done",metadata,created:true});await sending;
   expect(document.activeElement).toBe(nav);
+});
+
+
+test("tool execution appears inline as a terminal with readable command and output", async () => {
+  const api = new ViewApi();
+  const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const listProcesses = vi.spyOn(api, "listProcesses");
+  const {root, store} = setup(api);
+  await store.initialize();
+  expect(root.querySelector(".processes-panel")).toBeNull();
+  expect(listProcesses).not.toHaveBeenCalled();
+  store.setDraft("run a command"); const sending = store.send();
+  const command = "printf 'Xin chào\\n'";
+  api.eventSink!({event: "toolRequested", data: {sequence: 0, tool: "exec_command", arguments: JSON.stringify({command})}});
+  api.eventSink!({event: "toolStarted", data: {sequence: 0, tool: "exec_command"}});
+  await flushStreaming();
+  const card = () => root.querySelector<HTMLElement>("[data-current-tool]")!;
+  expect(card().querySelector(".tool-terminal-command")?.textContent).toBe("$ " + command);
+  expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("Waiting for output");
+  api.eventSink!({event: "toolFinished", data: {sequence: 0, tool: "exec_command", success: false, summary: "Command exited", details: JSON.stringify({stdout: "Xin chào\n<img src=x>\n", stderr: "an error\n", exit_code: 1})}});
+  await flushStreaming();
+  expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("Xin chào\n<img src=x>");
+  expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("[stderr]\nan error");
+  expect(card().querySelector(".tool-terminal-output")?.textContent).not.toContain('"stdout"');
+  expect(card().querySelector("img")).toBeNull();
+  expect(card().querySelector(".tool-terminal-details")?.textContent).toContain('"stdout"');
+  expect(card().querySelector("[role=status]")?.textContent).toBe("Failed");
+  pending.resolve({answer: "Done", metadata, created: true}); await sending;
+});
+
+
+test("saved tool output remains readable and preserves truncation and session metadata", async () => {
+  const api = new ViewApi();
+  api.load = async (): Promise<Conversation> => ({...conversation(), activities: [{turnId: "turn-output", assistantMessageIndex: 1, records: [{
+    sequence: 0, kind: "toolResult", tool: "read_process", arguments: '{"session_id":"owned"}',
+    outcome: "succeeded", summary: "Read process", createdAt: metadata.updatedAt,
+    details: JSON.stringify({stdout: "tick 4\ntick 5\n", stderr: "", stdout_truncated: true, session_id: "owned", running: true}),
+  }]}]});
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const output = root.querySelector("[data-activity] .tool-terminal-output");
+  expect(output?.textContent).toContain("tick 4\ntick 5");
+  expect(output?.textContent).toContain("[Earlier output was truncated]");
+  expect(output?.textContent).toContain("[session owned · running]");
+  expect(root.querySelector<HTMLDetailsElement>("[data-activity]")?.open).toBe(false);
 });

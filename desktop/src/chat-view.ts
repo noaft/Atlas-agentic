@@ -1,4 +1,3 @@
-import { createProcessesPanel } from "./processes-panel";
 import { createCompactionStatus } from "./compaction-status";
 import { taskUnavailableReason } from "./slash-commands";
 import { renderMemory } from "./memory-view";
@@ -44,7 +43,7 @@ function chatIsBusy(state: Readonly<ChatState>) {
 type RenderableActivity = Pick<
   ActivityRecord,
   "summary" | "arguments" | "details"
-> & { outcome: string | null };
+> & { outcome: string | null; tool?: string | null };
 
 function outcomeLabel(record: RenderableActivity): string {
   if (!record.outcome) return record.summary;
@@ -69,6 +68,7 @@ function formatWorkingDuration(durationMs: number): string {
 function renderActivity(
   records: RenderableActivity[],
   durationMs?: number | null,
+  raw = false,
 ): HTMLDetailsElement {
   records = records.filter((record) => record.outcome !== null || record.summary !== "Preparing answer");
   const details = document.createElement("details");
@@ -90,14 +90,15 @@ function renderActivity(
     row.append(heading);
     for (const [label, value] of [
       ["Arguments", record.arguments],
-      ["Details", record.details],
+      ["Output", record.details],
     ] as const) {
       if (!value) continue;
       const caption = document.createElement("span");
       caption.className = "activity-detail-label";
       caption.textContent = label;
-      const pre = document.createElement("pre");
-      pre.textContent = value;
+      const formattedOutput = label === "Output" && !raw;
+      const pre = formattedOutput ? terminalOutput(value, value) : document.createElement("pre");
+      if (!formattedOutput) pre.textContent = !raw && label === "Arguments" ? toolCommand(record.tool ?? null, value) : value;
       row.append(caption, pre);
     }
     timeline.append(row);
@@ -109,39 +110,92 @@ function renderActivity(
 function renderCurrentTool(
   records: ToolActivity[],
   sessionId: string,
-  previous: HTMLDetailsElement | null,
-): HTMLDetailsElement | null {
+  previous: HTMLElement | null,
+): HTMLElement | null {
   let current: ToolActivity | undefined;
   for (let index = records.length - 1; index >= 0; index--) {
-    if (records[index].kind === "tool") {
-      current = records[index];
-      break;
-    }
+    if (records[index].kind === "tool") { current = records[index]; break; }
   }
   if (!current) return null;
-  const details = renderActivity([{
-    summary: current.summary, arguments: current.arguments,
-    details: current.details, outcome: current.status,
-  }]);
-  delete details.dataset.activity;
-  details.classList.add("current-tool");
-  details.dataset.currentTool = current.id;
-  details.dataset.sessionId = sessionId;
-  details.dataset.toolStatus = current.status;
-  details.setAttribute("aria-label", "Current tool call");
+  const card = document.createElement("section");
+  card.className = "current-tool tool-terminal";
+  card.dataset.currentTool = current.id;
+  card.dataset.sessionId = sessionId;
+  card.dataset.toolStatus = current.status;
+  card.setAttribute("aria-label", "Current tool call");
   const labels: Record<ToolActivity["status"], string> = {
     requested: "Waiting to run", waiting: "Waiting for approval", running: "Running",
     succeeded: "Completed", failed: "Failed", denied: "Denied", status: "Waiting to run",
   };
+  const header = document.createElement("div");
+  header.className = "tool-terminal-header";
+  const icon = document.createElement("span");
+  icon.className = "tool-terminal-icon";
+  icon.textContent = ">_";
+  icon.setAttribute("aria-hidden", "true");
   const name = document.createElement("code");
   name.textContent = current.tool;
   const status = document.createElement("span");
+  status.className = "tool-terminal-status";
   status.setAttribute("role", "status");
   status.textContent = labels[current.status];
-  details.querySelector("summary")!.replaceChildren(name, " · ", status);
-  details.open = previous?.dataset.sessionId === sessionId &&
-    previous.dataset.currentTool === current.id && previous.open;
-  return details;
+  header.append(icon, name, status);
+  const command = document.createElement("pre");
+  command.className = "tool-terminal-command";
+  command.textContent = toolCommand(current.tool, current.arguments);
+  command.hidden = !command.textContent;
+  let output = terminalOutput(current.details,
+    current.status === "running" ? "Waiting for output…" : current.summary);
+  // Keep the reader's position when the same call receives another event.
+  const sameCall = previous?.dataset.sessionId === sessionId && previous.dataset.currentTool === current.id;
+  const oldOutput = sameCall ? previous.querySelector<HTMLElement>(".tool-terminal-output") : null;
+  const details = renderActivity([{
+    summary: current.summary, arguments: current.arguments,
+    details: current.details, outcome: current.status,
+  }], undefined, true);
+  delete details.dataset.activity;
+  details.className = "tool-terminal-details";
+  details.querySelector("summary")!.textContent = "Call details";
+  details.open = !!sameCall && !!previous.querySelector<HTMLDetailsElement>(".tool-terminal-details")?.open;
+  if (oldOutput && oldOutput.textContent === output.textContent) output = oldOutput as HTMLPreElement;
+  card.append(header, command, output, details);
+  return card;
+}
+
+function toolCommand(tool: string | null, argumentsText: string | null): string {
+  if (!argumentsText) return "";
+  if (tool === "exec_command") {
+    try {
+      const args = JSON.parse(argumentsText);
+      if (typeof args?.command === "string") return `$ ${args.command}`;
+    } catch { /* Keep malformed or legacy arguments readable as plain text. */ }
+  }
+  return argumentsText;
+}
+
+function terminalOutput(details: string | null, fallback: string): HTMLPreElement {
+  const pre = document.createElement("pre");
+  pre.className = "tool-terminal-output";
+  pre.tabIndex = 0;
+  pre.setAttribute("aria-label", "Tool output");
+  let text = details ?? fallback;
+  if (details) {
+    try {
+      const result = JSON.parse(details);
+      if (result && typeof result === "object" &&
+          (typeof result.stdout === "string" || typeof result.stderr === "string")) {
+        const lines = [result.stdout ?? ""];
+        if (typeof result.stderr === "string" && result.stderr) lines.push(`[stderr]\n${result.stderr}`);
+        if (result.stdout_truncated || result.stderr_truncated) lines.push("[Earlier output was truncated]");
+        if (typeof result.error === "string" && result.error) lines.push(result.error);
+        if (result.exit_code != null) lines.push(`[exit ${result.exit_code}]`);
+        if (typeof result.session_id === "string") lines.push(`[session ${result.session_id}${result.running === true ? " · running" : ""}]`);
+        text = lines.filter(Boolean).join("\n") || "No output returned.";
+      }
+    } catch { /* Result details may be plain text or a bounded JSON fragment. */ }
+  }
+  pre.textContent = text;
+  return pre;
 }
 
 function renderMessage(message: DisplayMessage): HTMLElement {
@@ -241,8 +295,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     () => {void syncComposerRequest(() => store.retryCompaction());},
   );
   notices.before(compactionStatus.element);
-  const processes = createProcessesPanel(store);
-  chatScreen.append(processes.element, composer.element, dialog);
+  chatScreen.append(composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
   const isCompactSidebar = () =>
@@ -457,11 +510,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
   let pickerCleanups: Array<() => void> = [];
   const renderNow = (state: Readonly<ChatState>) => {
-    processes.updateContext(state.activeSessionId, state.screen === "chat");
     const focusedPickerLabel = document.activeElement?.closest(".composer-picker")
       ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
     const oldMemoryDisclosure = messages.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]");
-    const oldCurrentTool = messages.querySelector<HTMLDetailsElement>("[data-current-tool]");
+    const oldCurrentTool = messages.querySelector<HTMLElement>("[data-current-tool]");
     const focusedMemoryElement = oldMemoryDisclosure?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
@@ -874,7 +926,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       else content.textContent = message.progressPreview || message.progressMessage || "Thinking…";
     }
     if (previous.toolActivity !== state.toolActivity) {
-      const oldCurrent = article.querySelector<HTMLDetailsElement>("[data-current-tool]");
+      const oldCurrent = article.querySelector<HTMLElement>("[data-current-tool]");
       const current = renderCurrentTool(state.toolActivity, state.activeSessionId, oldCurrent);
       if (current) {
         if (oldCurrent) oldCurrent.replaceWith(current);
@@ -937,7 +989,6 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   return () => {
     if (pendingFrame !== null) cancelFrame(pendingFrame);
     pickerCleanups.splice(0).forEach((cleanup) => cleanup());
-    processes.destroy();
     composer.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();

@@ -46,8 +46,8 @@ client cũ; saved chat có thể gắn lại background trong backend còn sốn
 | `stop_process` | `session_id` | Command |
 
 Ask/Workspace xác nhận start và tool Stop; Full access giữ semantics bỏ qua xác
-nhận Atlas, không nâng quyền OS. Stop từ UI là thao tác user tường minh trên scope
-đã được backend resolve, không phải quyền model chạy thêm một command mới.
+nhận Atlas, không nâng quyền OS. Native API Stop vẫn kiểm tra ownership scope;
+UI hiện dùng tool `stop_process` qua agent, không có nút Stop riêng.
 
 Schema/catalog có metadata trạng thái ngắn của scope để agent nhận ra resource
 đã có. Không preload command hoặc raw stdout/stderr. Agent nên dùng danh sách để
@@ -83,8 +83,8 @@ không đoán PID/session của chat khác. Lỗi scope/ID không tự khởi đ
 ## Output và cursor
 
 Buffer stdout/stderr là ring có offset tăng tuyệt đối. Reader mặc định của agent
-chỉ lấy phần mới, giữ cursor qua các lượt của chat. UI dùng cursor riêng, nên mở
-log không lấy mất output của agent. Cursor tùy chọn có dạng:
+chỉ lấy phần mới, giữ cursor qua các lượt của chat. Native API hỗ trợ cursor riêng cho reader độc lập. UI hiện tại chỉ
+hiển thị kết quả tool inline, không có viewer polling riêng. Cursor tùy chọn có dạng:
 
 ```json
 {"stdout":0,"stderr":0}
@@ -106,11 +106,12 @@ lại lệnh. Một lần đọc có thể không có output mà process vẫn �
 | `stop_requested` | Mới gửi yêu cầu stop; khác với đã dừng. |
 | `error` | Lỗi worker/khởi chạy nếu có. |
 
-UI giữ Stopping khi cleanup chưa xác nhận. Stop có thể trả `running: true`, lúc đó
-đọc lại trạng thái. Dừng/timeout không hoàn tác tác động command đã thực hiện.
+Stop có thể trả `running: true` khi cleanup chưa xác nhận; lúc đó
+agent cần đọc lại trạng thái. Dừng/timeout không hoàn tác tác động command đã thực hiện.
 UTF-8 bị chia giữa các lần đọc được giữ tới khi đủ byte; byte không hợp lệ được
-biểu diễn thay thế. UI giữ tối đa 64 KiB ký tự hiển thị mỗi viewer, độc lập với
-buffer byte backend; đây không phải log archive có thể replay vô hạn.
+biểu diễn thay thế. Terminal inline hiển thị dữ liệu tool event trả về trong vùng
+cuộn; Activity lưu bản bounded theo chính sách hiện có. Không có output streaming
+riêng từ process manager, không có log archive replay vô hạn.
 
 ## Giới hạn
 
@@ -154,6 +155,6 @@ process còn sống hoặc kho lưu toàn bộ log.
   [output/cursor](../../src/tools/process_sessions/output.rs),
   [tool handlers](../../src/tools/process_sessions.rs).
 - [Native ownership/IPC](../../desktop/src-tauri/src/process_commands.rs),
-  [UI](../../desktop/src/processes-panel.ts), [API adapter](../../desktop/src/atlas-api.ts).
+  [UI](../../desktop/src/chat-view.ts), [API adapter](../../desktop/src/atlas-api.ts).
 - [Demo local](../../examples/process_sessions.rs) và
   [test scope/process](../../tests/chat_process_behavior.rs).

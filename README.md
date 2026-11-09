@@ -158,9 +158,10 @@ Desktop process tools share an app-owned manager with a scope for each chat.
 long-running session with `read_process`; when explicitly requested, use
 `lifetime: "background"` to keep a foreground service across messages in that chat.
 `list_processes` discovers existing resources; `stop_process` stops the selected
-owned group/Job with the current authorization policy. UI **Processes** shows
-status, cwd and output, with an explicit Stop button. Its viewer cursor does not
-consume agent output.
+owned group/Job with the current authorization policy. Tool calls appear inline
+as terminal cards with the command, status and scrollable output. Raw call details
+are collapsed; completed turns retain output in Activity. There is no separate
+Processes panel or automatic UI polling; ask Atlas to read or stop a session.
 
 Job sessions default to ten minutes (max ten minutes); synchronous commands keep
 their 30-second default. Background defaults to one hour (max 24 hours). Desktop
