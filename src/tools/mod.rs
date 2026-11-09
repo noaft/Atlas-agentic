@@ -55,7 +55,10 @@ pub(crate) use platform::system_launcher;
 #[doc(hidden)]
 pub use platform::{application_command, file_command, CommandSpec, Platform, ProcessLauncher};
 #[cfg(any(unix, windows))]
-pub use process_sessions::register_process_tools;
+pub use process_sessions::{
+    register_process_tools, register_process_tools_in_scope, ProcessCursor, ProcessInfo,
+    ProcessLifetime, ProcessManager, ProcessRead, ProcessScope,
+};
 pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;
 pub use ripgrep::RipgrepTool;

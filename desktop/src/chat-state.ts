@@ -1,3 +1,4 @@
+import type { ProcessContext, ProcessCursor } from "./process-types";
 import type { McpOnboardingApi, McpContext } from "./mcp-types";
 import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
@@ -163,6 +164,8 @@ const sessionState = (state: ChatState): SessionState =>
 export class ChatStore {
   private state: ChatState = initialState();
   private readonly listeners = new Set<Listener>();
+  private readonly processScopes = new Map<string, string>();
+  private readonly pendingProcessScopes = new Map<string, Promise<ProcessContext>>();
   private selectionToken = 0;
   private nextSession = 1;
   private readonly chats = new Map<string, ChatSession>();
@@ -176,6 +179,26 @@ export class ChatStore {
       state: sessionState(this.state), generation: 0,
     });
   }
+
+  processContext = async (owner = this.state.activeSessionId): Promise<ProcessContext> => {
+    const chat = this.chats.get(owner);
+    if (!chat) throw new Error("Chat no longer exists");
+    const known = this.processScopes.get(owner);
+    if (known) return {conversationId: chat.state.activeConversationId, scopeId: known};
+    const existing = this.pendingProcessScopes.get(owner);
+    if (existing) return existing;
+    const context = {conversationId: chat.state.activeConversationId, scopeId: this.processScopes.get(owner) ?? null};
+    const pending = this.api.openProcessScope(context).then(result => {
+      if (!this.chats.has(owner)) throw new Error("Chat no longer exists");
+      this.processScopes.set(owner, result.scopeId);
+      return {conversationId: this.chats.get(owner)!.state.activeConversationId, scopeId: result.scopeId};
+    }).finally(() => this.pendingProcessScopes.delete(owner));
+    this.pendingProcessScopes.set(owner, pending);
+    return pending;
+  };
+  listProcesses = async (owner: string) => this.api.listProcesses(await this.processContext(owner));
+  readProcessOutput = async (owner: string, id: string, cursor: ProcessCursor) => this.api.readProcessOutput(await this.processContext(owner), id, cursor);
+  stopProcess = async (owner: string, id: string) => this.api.stopProcess(await this.processContext(owner), id);
 
   loadMcpSettings = () => this.api.loadMcpSettings();
   addMcpServer: McpOnboardingApi["addMcpServer"] = (...args) => this.api.addMcpServer(...args);
@@ -225,7 +248,7 @@ export class ChatStore {
       settingsStatus: "loading",
       settingsErrorMessage: null,
     });
-    await Promise.all([this.loadConversationList(), this.loadInitialSettings(), this.retryTasks()]);
+    await Promise.all([this.loadConversationList(), this.loadInitialSettings(), this.retryTasks(), this.processContext().catch(() => undefined)]);
   }
 
   async retryTasks(): Promise<void> {
@@ -297,7 +320,20 @@ export class ChatStore {
     }
   }
 
+  private async releaseEmptyProcessDraft(owner: string): Promise<void> {
+    const chat=this.chats.get(owner);
+    if (!chat || chat.state.activeConversationId || chat.state.messages.length) return;
+    try {
+      const pending=this.pendingProcessScopes.get(owner);if(pending)await pending;
+      const latest=this.chats.get(owner);
+      if(owner===this.state.activeSessionId || !latest || latest.state.activeConversationId || latest.state.messages.length) return;
+      const scopeId=this.processScopes.get(owner);
+      if(scopeId){await this.api.releaseProcessScope({conversationId:null,scopeId});this.processScopes.delete(owner);}
+    } catch { /* Keep other chat navigation available; explicit process controls can retry. */ }
+  }
+
   async newChat(): Promise<void> {
+    const previousOwner=this.state.activeSessionId;
     this.settingsDiscoveryToken++;
     this.selectionToken += 1;
     this.workspaceToken += 1;
@@ -309,15 +345,20 @@ export class ChatStore {
     };
     this.chats.set(id, { state: fresh, generation: 0 });
     this.replace({ ...this.state, ...fresh, activeSessionId: id, screen: "chat" });
+    await this.releaseEmptyProcessDraft(previousOwner);
+    await this.processContext(id).catch(() => undefined);
   }
 
   async selectSession(id: string): Promise<void> {
+    const previousOwner=this.state.activeSessionId;
     this.settingsDiscoveryToken++;
     const chat = this.chats.get(id);
     if (!chat) return;
     this.selectionToken += 1;
     this.workspaceToken += 1;
     this.replace({ ...this.state, ...chat.state, activeSessionId: id, screen: "chat" });
+    if(previousOwner!==id)await this.releaseEmptyProcessDraft(previousOwner);
+    await this.processContext(id).catch(() => undefined);
   }
 
   async selectConversation(id: string): Promise<void> {
@@ -461,12 +502,16 @@ export class ChatStore {
       toolActivity: [],
     });
     try {
+      const processContext = this.processScopes.has(owner)
+        ? {scopeId: this.processScopes.get(owner)!}
+        : await this.processContext(owner);
       const completed = await this.api.ask(
         prompt,
         conversationId,
         conversationId ? null : workspace.path,
         permissionMode,
         (event) => this.handleChatEvent(owner, generation, event),
+        processContext.scopeId,
       );
       if (generation !== chat.generation) return;
       const messages = chat.state.messages.map((message, index, all) => {
@@ -497,7 +542,7 @@ export class ChatStore {
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
         messages,
         status: "idle",
-        errorMessage: null,
+        errorMessage: completed.processWarning ?? null,
         pendingApproval: null,
         toolActivity: [],
       });
@@ -953,13 +998,20 @@ export class ChatStore {
 
   async deleteActive(): Promise<void> {
     const id = this.state.activeConversationId;
-    if (!id || this.state.status === "streaming" || this.state.status === "loading") return;
+    if (this.state.status === "streaming" || this.state.status === "loading") return;
     const owner = this.state.activeSessionId;
     this.update({ status: "loading", errorMessage: null });
     try {
-      await this.api.deleteConversation(id);
+      if(id) await this.api.deleteConversation(id);
+      else {
+        const pending=this.pendingProcessScopes.get(owner);if(pending)await pending;
+        const scopeId=this.processScopes.get(owner);
+        if(scopeId)await this.api.releaseProcessScope({conversationId:null,scopeId});
+      }
+      this.processScopes.delete(owner);
       if (this.state.activeSessionId === owner) await this.newChat();
       this.chats.delete(owner);
+      this.processScopes.delete(owner);
       this.update({ conversations: this.state.conversations.filter((item) => item.id !== id) });
     } catch (error) {
       this.updateSession(owner, { status: "error", errorMessage: errorMessage(error) });

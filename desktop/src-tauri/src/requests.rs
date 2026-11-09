@@ -37,6 +37,16 @@ impl ActiveRequests {
             cancelled,
         })
     }
+    pub(crate) fn cancel_all(&self) {
+        for flag in self
+            .conversations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
     pub(crate) fn cancel(&self, id: &ConversationId) -> Result<(), String> {
         if let Some(flag) = self
             .conversations

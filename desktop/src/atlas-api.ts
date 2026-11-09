@@ -1,3 +1,4 @@
+import type { ProcessesApi, ProcessInfo, ProcessOutput } from "./process-types";
 import type { McpOnboardingApi, McpSettingsView, McpCheckEvent, McpCheckResult } from "./mcp-types";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,7 +22,7 @@ import type {
   Workspace,
 } from "./types";
 
-export interface AtlasApi extends SkillsApi, McpOnboardingApi {
+export interface AtlasApi extends SkillsApi, McpOnboardingApi, ProcessesApi {
   listMcpConnections(): Promise<McpConnectionStatus[]>;
   connectMcpServer(server: string): Promise<void>;
   disconnectMcpServer(server: string): Promise<void>;
@@ -38,6 +39,8 @@ export interface AtlasApi extends SkillsApi, McpOnboardingApi {
     workspacePath: string | null,
     permissionMode: PermissionMode,
     onEvent: (event: ChatEvent) => void,
+    /** Required for drafts; obtain it through openProcessScope. Saved chats use native metadata ownership. */
+    processScopeId?: string | null,
   ): Promise<ConversationAskResult>;
   renameConversation(id: string, title: string): Promise<ConversationMetadata>;
   deleteConversation(id: string): Promise<void>;
@@ -58,7 +61,17 @@ export interface AtlasApi extends SkillsApi, McpOnboardingApi {
 }
 
 export function createTauriAtlasApi(): AtlasApi {
+  let processClient: Promise<string> | null = null;
+  const client = () => {
+    if (!processClient) processClient = invoke<string>("initialize_process_client").catch(error => {processClient = null; throw error;});
+    return processClient;
+  };
   return {
+    openProcessScope: async (context) => invoke<{scopeId: string}>("open_process_scope", {client: await client(), context}),
+    releaseProcessScope: async (context) => invoke<void>("release_process_scope", {client: await client(), context}),
+    listProcesses: async (context) => invoke<ProcessInfo[]>("list_processes", {client: await client(), context}),
+    readProcessOutput: async (context, sessionId, cursor) => invoke<ProcessOutput>("read_process_output", {client: await client(), context, sessionId, cursor}),
+    stopProcess: async (context, sessionId) => invoke<ProcessOutput>("stop_process", {client: await client(), context, sessionId}),
     installSkills: (sources, scope, context) => invoke<SkillInstallResult[]>("install_skills", {sources, scope, context}),
     searchSkills: (query, scope, context) => invoke<SkillSearchResult[]>("search_skills", {query, scope, context}),
     createSkill: (input, scope, context) => invoke<SkillInfo>("create_skill", {input, scope, context}),
@@ -96,7 +109,8 @@ export function createTauriAtlasApi(): AtlasApi {
     },
     listConversations: () => invoke<ConversationMetadata[]>("list_conversations"),
     loadConversation: (id) => invoke<Conversation>("load_conversation", { id }),
-    ask: (prompt, conversationId, workspacePath, permissionMode, onEvent) => {
+    ask: async (prompt, conversationId, workspacePath, permissionMode, onEvent, processScopeId) => {
+      if (!conversationId && !processScopeId) throw new Error("Open a draft process scope before sending a request");
       const channel = new Channel<ChatEvent>((message) => {
         onEvent(message);
       });
@@ -106,6 +120,8 @@ export function createTauriAtlasApi(): AtlasApi {
         workspacePath,
         permissionMode,
         channel,
+        processClient: await client(),
+        processScopeId: processScopeId ?? null,
       });
     },
     renameConversation: (id, title) =>

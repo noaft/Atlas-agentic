@@ -72,7 +72,8 @@ The built-in runtime tools are:
 - `open_file`: open a workspace file with the OS default application
 - `open_application`: launch an application
 - `exec_command`: execute an unrestricted platform shell command from the workspace
-- `read_process`: consume new output/status from an owned request-local command session
+- `list_processes`: discover resources owned by this runtime/chat scope
+- `read_process`: read new or explicit-cursor output/status from an owned session
 - `stop_process`: stop an owned command session and its contained descendants
 - `mouse_move`: move the pointer with absolute or relative coordinates
 - `mouse_click`: click left, middle, right, back, or forward in the active application
@@ -157,21 +158,39 @@ unrestricted. It supports shell operators, pipes, redirects, and paths outside
 the starting folder, and it runs with the same permissions as the Atlas process.
 The structured file helpers remain workspace-scoped. The command's default
 timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
-Opt-in `yield_time_ms` (0–10000) starts a request-owned process session; share its
-manager with `read_process` and `stop_process` when registering exec_command.
-`timeout_ms` is 1–600000; session default is ten minutes, legacy default remains
-30 seconds. Read waits are 0–10000 ms (default 1000), return only unread output,
-preserve split UTF-8 sequences, and flag overflow of each 64 KiB unread buffer.
-Managers allow eight active sessions and 32 retained records; reject starts at
-capacity before spawning. Opaque IDs are valid only within the owning runtime
-request, never cross-chat, cross-turn or persistent. Read is ReadOnly; start and
-stop are Command risk. Reset/exit/drop stops all workers and joins cleanup,
-including failure paths; never leave sessions alive after the final answer.
-Reuse Unix owned groups and Windows suspended-start kill-on-close Job Objects.
-For sessions, kill remaining group members before reaping a completed Unix leader
-(use WNOWAIT to reserve its PID); redirected quiet descendants must not outlive it.
-No stdin/PTY, new frontend permissions, automatic retry or cross-turn daemon.
+Opt-in `yield_time_ms` (0–10000) returns process sessions. Desktop shares an
+app-owned ProcessManager through native chat scopes; CLI remains request-local
+and rejects background. Desktop also tracks synchronous commands (default 30s).
+`lifetime` defaults to job, cleaned on request exit; background is only for an
+explicit user request and survives final/model errors in its chat. Job timeout is
+1–600000ms (session default10min); background default1h/max24h. `list_processes`
+metadata is bounded and contains no command/raw output; inspect actual cwd/status
+before reusing a service. No automatic retries/restarts, stdin/PTY or daemon.
 
+Limit active sessions to8/scope32/app and retained records32/scope128/app. These
+are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
+rings with absolute offsets, per-chat default agent cursor and independent UI
+cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms.
+UI Stop is explicit user intent through native ownership checks; agent Start/Stop
+still use Command risk, reads/list ReadOnly. Stop_requested is not confirmation;
+keep Stopping until worker completion.
+
+Draft tokens belong to native window/client epochs; no history is created for
+scope allocation. Bind successful drafts to saved conversations without changing
+resource IDs; keep failed drafts retryable, release abandoned empty drafts and
+reject active/foreign releases. Reload closes old client draft scopes, while
+saved scope mappings remain. Saved requests derive workspace/mode from metadata,
+ignoring conflicting frontend paths/modes. Model args never select another owner.
+Close deleted chat scopes and run app shutdown cleanup on background workers,
+with bounded deadlines and no new frontend native permissions. Resources/IDs are
+not persisted/restored after restart. Preserve Unix groups, signal before reaping
+leaders (WNOWAIT), and Windows suspended-start kill-on-close Jobs. Keep command
+text raw-quoted correctly for cmd.exe. MCP/OAuth ownership remains unchanged.
+
+The UI accesses all process operations only via atlas-api.ts; keep its disclosure,
+rows, focus and viewer output stable across background updates. Reject stale
+callbacks after navigation; do not let UI reads or UI Stop advance agent cursors.
+See docs/architecture/process-sessions.md and docs/guides/process-manager-demo.md.
 
 Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
 read-only tools automatically. Workspace also permits non-destructive structured

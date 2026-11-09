@@ -166,7 +166,12 @@ mod tests {
             "type_text",
         ];
         #[cfg(any(unix, windows))]
-        expected.extend(["exec_command", "read_process", "stop_process"]);
+        expected.extend([
+            "exec_command",
+            "list_processes",
+            "read_process",
+            "stop_process",
+        ]);
         expected.sort();
 
         assert_eq!(names, expected);

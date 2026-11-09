@@ -1,3 +1,4 @@
+import { createProcessesPanel } from "./processes-panel";
 import { createCompactionStatus } from "./compaction-status";
 import { taskUnavailableReason } from "./slash-commands";
 import { renderMemory } from "./memory-view";
@@ -240,7 +241,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     () => {void syncComposerRequest(() => store.retryCompaction());},
   );
   notices.before(compactionStatus.element);
-  chatScreen.append(composer.element, dialog);
+  const processes = createProcessesPanel(store);
+  chatScreen.append(processes.element, composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
   const isCompactSidebar = () =>
@@ -455,6 +457,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
   let pickerCleanups: Array<() => void> = [];
   const renderNow = (state: Readonly<ChatState>) => {
+    processes.updateContext(state.activeSessionId, state.screen === "chat");
     const focusedPickerLabel = document.activeElement?.closest(".composer-picker")
       ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
     const oldMemoryDisclosure = messages.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]");
@@ -568,31 +571,31 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       .addEventListener("click", () => void store.toggleFullscreen());
 
     const menuButton = header.querySelector<HTMLButtonElement>("[data-conversation-menu]")!;
-    menuButton.disabled = !metadata || isBusy;
+    menuButton.disabled = (!metadata && !state.messages.length) || isBusy;
     menuButton.addEventListener("click", () => {
       actionsOpen = !actionsOpen;
       renderNow(store.getState());
     });
     const menu = header.querySelector<HTMLElement>("[data-action-menu]")!;
-    if (actionsOpen && metadata) {
+    if (actionsOpen && (metadata || state.messages.length)) {
       menu.classList.add("open");
       const change = button("Change folder", "menu-item");
       change.addEventListener("click", () => void store.changeActiveWorkspace());
       const rename = button("Rename", "menu-item");
       rename.dataset.rename = "";
       rename.addEventListener("click", () => {
-        renameValue = metadata.title;
+        renameValue = metadata?.title ?? "New chat";
         renameOpen = true;
         actionsOpen = false;
         renderNow(store.getState());
         dialog.querySelector<HTMLInputElement>("[data-rename-input]")?.focus();
       });
-      const remove = button("Delete", "menu-item danger");
+      const remove = button(metadata ? "Delete" : "Close draft", "menu-item danger");
       remove.dataset.delete = "";
       remove.addEventListener("click", async () => {
         if (
           !window.confirm(
-            "Delete this conversation? Its history will be moved to Atlas trash.",
+            metadata ? "Delete this conversation and stop its processes? Its history will be moved to Atlas trash." : "Close this draft and stop its processes? No conversation history has been saved.",
           )
         )
           return;
@@ -601,7 +604,9 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         composer.replaceDraft(store.getState().draftText);
         focusComposer();
       });
-      menu.append(change, rename, remove);
+      menu.append(change);
+      if(metadata) menu.append(rename);
+      menu.append(remove);
     }
 
     notices.replaceChildren();
@@ -932,6 +937,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
   return () => {
     if (pendingFrame !== null) cancelFrame(pendingFrame);
     pickerCleanups.splice(0).forEach((cleanup) => cleanup());
+    processes.destroy();
     composer.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();

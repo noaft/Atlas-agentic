@@ -141,7 +141,7 @@ Built-in tools:
 | --- | --- |
 | Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
 | Manage files | `create_file`, `apply_patch`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
-| Open and execute | `open_file`, `open_application`, `exec_command`, `read_process`, `stop_process` |
+| Open and execute | `open_file`, `open_application`, `exec_command`, `list_processes`, `read_process`, `stop_process` |
 | Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 | Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
@@ -153,27 +153,34 @@ one atomic update. Source/result/input are bounded to 1 MiB, with up to 64 edits
 A file changed while approval is pending is rejected. Ask and Workspace modes
 require overwrite confirmation.
 
-Commands keep their existing synchronous behavior by default. For a longer job,
-Atlas can use `exec_command` with `yield_time_ms` (0–10000). A finished command
-returns its result; a running command returns an opaque `session_id` and its new
-output. `read_process` reads further output with an optional `wait_ms` (0–10000,
-default 1000); consumed output is never repeated. `stop_process` stops that owned
-process and its contained children, with the existing command confirmation rules.
-Run session programs in the foreground: remaining contained children stop when
-the shell finishes, even if their output was redirected.
-Stopping does not undo effects already performed. Unread output is capped at
-64 KiB per stream; overflow is reported explicitly.
+Desktop process tools share an app-owned manager with a scope for each chat.
+`exec_command` defaults to a request-local job. Set `yield_time_ms` to inspect a
+long-running session with `read_process`; when explicitly requested, use
+`lifetime: "background"` to keep a foreground service across messages in that chat.
+`list_processes` discovers existing resources; `stop_process` stops the selected
+owned group/Job with the current authorization policy. UI **Processes** shows
+status, cwd and output, with an explicit Stop button. Its viewer cursor does not
+consume agent output.
 
-Sessions belong to one agent request, across its tool calls. They do **not**
-survive the final answer, failure, application restart or a new user message.
-Atlas stops remaining sessions when that request exits. There are at most eight
-active sessions and 32 retained records per runtime. `timeout_ms` accepts
-1–600000; defaults are 30 seconds for synchronous commands and ten minutes for
-sessions. No interactive terminal/stdin or cross-turn background service is added.
+Job sessions default to ten minutes (max ten minutes); synchronous commands keep
+their 30-second default. Background defaults to one hour (max 24 hours). Desktop
+tracks synchronous commands too. Limits are eight active/32 retained per scope,
+32 active/128 retained per manager, 64 KiB per output stream. Session counts do
+not bound the total OS descendants or their CPU/RAM use. Jobs are cleaned on
+request exit; background ends on Stop, timeout, chat deletion or normal app
+shutdown. CLI stays request-local and rejects background. No process survives as
+restorable state after app restart, and there is no interactive stdin/PTY.
 
-For the session lifecycle, result fields and examples, see
-[Process sessions](docs/architecture/process-sessions.md). Project documentation
-and draft-review rules are listed in [docs](docs/README.md).
+Run a deterministic demo without provider credentials:
+
+```bash
+cargo run --example process_sessions
+```
+
+See [the demo and Tauri walkthrough](docs/guides/process-manager-demo.md),
+[session API](docs/architecture/process-sessions.md), and the
+[approved resource lifecycle design](docs/architecture/tool-resource-lifecycle.md).
+Project documentation and draft-review rules are listed in [docs](docs/README.md).
 
 ## Skills
 

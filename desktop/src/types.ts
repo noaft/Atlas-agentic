@@ -37,6 +37,7 @@ export interface Conversation {
 }
 
 export interface ConversationAskResult {
+  processWarning?: string | null;
   memory?: MemoryCheckpoint | null;
   answer: string;
   metadata: ConversationMetadata;

@@ -65,6 +65,15 @@ impl Runtime {
         self
     }
 
+    #[cfg(any(unix, windows))]
+    pub fn with_process_scope(
+        mut self,
+        workspace: &std::path::Path,
+        scope: crate::tools::ProcessScope,
+    ) -> Self {
+        crate::tools::register_process_tools_in_scope(&mut self.tools, workspace, scope);
+        self
+    }
     pub fn default_agent(&self) -> Result<&dyn crate::agents::Agent, String> {
         self.agents
             .default_agent()

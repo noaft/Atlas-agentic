@@ -45,6 +45,7 @@ pub struct DesktopState {
     automatic_workspace_resolver: AutomaticWorkspaceResolver,
     pending_approvals: Arc<PendingApprovals>,
     active_requests: Arc<ActiveRequests>,
+    pub(crate) processes: Arc<crate::process_commands::DesktopProcesses>,
 }
 
 impl DesktopState {
@@ -127,6 +128,7 @@ impl DesktopState {
             automatic_workspace_resolver,
             pending_approvals: Arc::new(PendingApprovals::default()),
             active_requests: Arc::new(ActiveRequests::default()),
+            processes: Arc::new(crate::process_commands::DesktopProcesses::default()),
         }
     }
 
@@ -171,6 +173,7 @@ impl DesktopState {
         )
     }
 
+    #[cfg(test)]
     fn ask_with_workspace_permission_authorizer_and_fallible_sink(
         &self,
         prompt: &str,
@@ -179,11 +182,50 @@ impl DesktopState {
         permission_mode: PermissionMode,
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResultDto, String> {
+        self.ask_with_process_scope(
+            prompt,
+            conversation_id,
+            workspace_path,
+            permission_mode,
+            callbacks,
+            None,
+        )
+    }
+
+    fn ask_with_process_scope(
+        &self,
+        prompt: &str,
+        conversation_id: Option<&ConversationId>,
+        workspace_path: Option<&Path>,
+        permission_mode: PermissionMode,
+        callbacks: AskCallbacks<'_>,
+        process_scope: Option<atlas_agentic::tools::ProcessScope>,
+    ) -> Result<ConversationAskResultDto, String> {
         let _request = self.active_requests.acquire(conversation_id)?;
+        let _process_lease = process_scope
+            .as_ref()
+            .map(|scope| self.processes.lease(scope))
+            .transpose()?;
+        let permission_mode = if process_scope.is_some() {
+            conversation_id
+                .map(|id| {
+                    self.store
+                        .load(id)
+                        .map(|saved| saved.metadata.permission_mode.unwrap_or_default())
+                })
+                .transpose()?
+                .unwrap_or(permission_mode)
+        } else {
+            permission_mode
+        };
         let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
-        ConversationService::new(&runtime, &self.store, effective.history_limit)
+        let runtime = match &process_scope {
+            Some(scope) => runtime.with_process_scope(&workspace, scope.clone()),
+            None => runtime,
+        };
+        let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
             .with_cancellation(&_request.cancelled)
             .ask_with_workspace_permission_authorizer_and_fallible_sink(
                 prompt,
@@ -192,7 +234,38 @@ impl DesktopState {
                 permission_mode,
                 callbacks,
             )
-            .map(Into::into)
+            .map(ConversationAskResultDto::from);
+        if let (Some(scope), Ok(result)) = (&process_scope, &mut result) {
+            if self
+                .processes
+                .bind(scope, &parse_id(&result.metadata.id)?)
+                .is_err()
+            {
+                let _ = scope.close(Duration::from_secs(3));
+                result.process_warning=Some("Background processes were stopped because ownership transfer failed. Check Processes before retrying a service.".into());
+                diagnostics::event(
+                    "WARN",
+                    "process.scope.transfer_failed",
+                    serde_json::json!({}),
+                );
+            }
+        }
+        result
+    }
+
+    pub(crate) fn validate_process_conversation(
+        &self,
+        id: Option<&ConversationId>,
+    ) -> Result<(), String> {
+        if let Some(id) = id {
+            self.store.load(id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shutdown_processes(&self) -> Result<(), String> {
+        self.active_requests.cancel_all();
+        self.processes.shutdown()
     }
 
     pub(crate) fn skills_store(
@@ -428,6 +501,8 @@ pub struct DeleteResult {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAskResultDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_warning: Option<String>,
     pub memory: Option<atlas_agentic::conversations::MemoryCheckpoint>,
     pub answer: String,
     pub metadata: ConversationMetadataDto,
@@ -440,6 +515,7 @@ pub struct ConversationAskResultDto {
 impl From<ConversationAskResult> for ConversationAskResultDto {
     fn from(result: ConversationAskResult) -> Self {
         Self {
+            process_warning: None,
             answer: result.answer,
             memory: result.memory,
             metadata: result.metadata.into(),
@@ -900,6 +976,8 @@ fn rename_impl(
 
 fn delete_impl(id: &str, state: &DesktopState) -> Result<DeleteResult, String> {
     let id = parse_id(id)?;
+    let _request = state.active_requests.acquire(Some(&id))?;
+    state.processes.delete(&id)?;
     state.store.delete(&id)?;
     Ok(DeleteResult { id: id.to_string() })
 }
@@ -1065,12 +1143,39 @@ struct DesktopAskCallbacks<A, F, E> {
     on_tool_event: E,
 }
 
+#[cfg(test)]
 async fn ask_in_background<A, F, E>(
     prompt: String,
     conversation_id: Option<String>,
     workspace_path: Option<String>,
     permission_mode: PermissionMode,
     state: DesktopState,
+    callbacks: DesktopAskCallbacks<A, F, E>,
+) -> Result<ConversationAskResultDto, String>
+where
+    A: ToolAuthorizer + Send + 'static,
+    F: FnMut(&str) -> Result<(), String> + Send + 'static,
+    E: FnMut(&ToolEvent) + Send + 'static,
+{
+    ask_in_background_scoped(
+        prompt,
+        conversation_id,
+        workspace_path,
+        permission_mode,
+        state,
+        None,
+        callbacks,
+    )
+    .await
+}
+
+async fn ask_in_background_scoped<A, F, E>(
+    prompt: String,
+    conversation_id: Option<String>,
+    workspace_path: Option<String>,
+    permission_mode: PermissionMode,
+    state: DesktopState,
+    process_scope: Option<atlas_agentic::tools::ProcessScope>,
     callbacks: DesktopAskCallbacks<A, F, E>,
 ) -> Result<ConversationAskResultDto, String>
 where
@@ -1089,7 +1194,7 @@ where
                     mut on_tool_event,
                 } = callbacks;
                 let conversation_id = conversation_id.as_deref().map(parse_id).transpose()?;
-                state.ask_with_workspace_permission_authorizer_and_fallible_sink(
+                state.ask_with_process_scope(
                     &prompt,
                     conversation_id.as_ref(),
                     workspace_path.as_deref().map(Path::new),
@@ -1099,6 +1204,7 @@ where
                         on_delta: &mut on_delta,
                         on_tool_event: &mut on_tool_event,
                     },
+                    process_scope,
                 )
             },
         )
@@ -1175,25 +1281,47 @@ pub async fn compact_conversation(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Preserve flat chat IPC; window, state and channel are native injections.
 pub async fn ask(
     prompt: String,
     conversation_id: Option<String>,
     workspace_path: Option<String>,
     permission_mode: PermissionMode,
     channel: Channel<ChatEvent>,
+    process_client: String,
+    process_scope_id: Option<String>,
+    window: tauri::WebviewWindow,
     state: State<'_, DesktopState>,
 ) -> Result<ConversationAskResultDto, String> {
+    let context = crate::process_commands::ProcessContext {
+        conversation_id: conversation_id.as_deref().map(parse_id).transpose()?,
+        scope_id: process_scope_id,
+    };
+    let process_state = state.inner().clone();
+    let label = window.label().to_string();
+    let (process_scope, conversation_id) = run_blocking("desktop.ask_process_scope", move || {
+        let context = process_state
+            .processes
+            .request_context(&label, &process_client, context)?;
+        process_state.validate_process_conversation(context.conversation_id.as_ref())?;
+        let scope = process_state
+            .processes
+            .resolve(&label, &process_client, &context)?;
+        Ok((scope, context.conversation_id.map(|id| id.to_string())))
+    })
+    .await?;
     let authorizer = DesktopAuthorizer {
         approvals: state.pending_approvals.clone(),
         channel: channel.clone(),
     };
     let delta_channel = channel.clone();
-    ask_in_background(
+    ask_in_background_scoped(
         prompt,
         conversation_id,
         workspace_path,
         permission_mode,
         state.inner().clone(),
+        Some(process_scope),
         DesktopAskCallbacks {
             authorizer,
             on_delta: move |delta: &str| {
@@ -1776,6 +1904,238 @@ mod tests {
         let store = ConversationStore::at(data.path().to_path_buf());
         let state = DesktopState::new(store.clone());
         (data, store, state)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_background_survives_saved_turns_and_delete_owns_cleanup() {
+        use super::{parse_id, AskCallbacks};
+        use crate::process_commands::ProcessContext;
+        let root = TempDir::new().unwrap();
+        let workspace = root.path().join("work");
+        std::fs::create_dir(&workspace).unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("config/settings.json")),
+            workspace.clone(),
+            vec![
+                FakeResponse {
+                    chunks: vec![
+                        r#"{"type":"tool_call","tool":"exec_command","args":{"command":"printf ready; sleep 20","lifetime":"background","yield_time_ms":50}}"#,
+                    ],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![r#"{"type":"final","content":"Server ready."}"#],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![r#"{"type":"tool_call","tool":"list_processes","args":{}}"#],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![r#"{"type":"final","content":"Same server."}"#],
+                    error: None,
+                },
+            ],
+            seen.clone(),
+        );
+        let client = state.processes.initialize("main").unwrap();
+        let scope = state
+            .processes
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let first = state
+            .ask_with_process_scope(
+                "Start background",
+                None,
+                Some(&workspace),
+                PermissionMode::FullAccess,
+                AskCallbacks {
+                    authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                    on_delta: &mut |_| Ok(()),
+                    on_tool_event: &mut |_| {},
+                },
+                Some(scope.clone()),
+            )
+            .unwrap();
+        let id = parse_id(&first.metadata.id).unwrap();
+        let original = scope.list().unwrap()[0].session_id.clone();
+        assert!(scope.list().unwrap()[0].running);
+        let restored = state
+            .processes
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: Some(id.clone()),
+                    scope_id: Some("untrusted-other-scope".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(restored.id(), scope.id());
+        let next = state
+            .ask_with_process_scope(
+                "Inspect existing",
+                Some(&id),
+                Some(Path::new("/not-the-saved-workspace")),
+                PermissionMode::FullAccess,
+                AskCallbacks {
+                    authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                    on_delta: &mut |_| Ok(()),
+                    on_tool_event: &mut |_| {},
+                },
+                Some(restored),
+            )
+            .unwrap();
+        assert!(!next.created);
+        assert_eq!(scope.list().unwrap()[0].session_id, original);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [workspace.clone(), workspace]
+        );
+        assert_eq!(store.load(&id).unwrap().messages.len(), 4);
+        delete_impl(&first.metadata.id, &state).unwrap();
+        assert!(scope.list().is_err());
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_tools_obey_saved_permissions_and_ignore_frontend_escalation() {
+        use super::AskCallbacks;
+        use crate::process_commands::ProcessContext;
+        struct Deny(std::cell::Cell<usize>);
+        impl atlas_agentic::permissions::ToolAuthorizer for Deny {
+            fn authorize(
+                &self,
+                _: &atlas_agentic::permissions::AuthorizationRequest,
+            ) -> Result<atlas_agentic::permissions::AuthorizationDecision, String> {
+                self.0.set(self.0.get() + 1);
+                Ok(atlas_agentic::permissions::AuthorizationDecision::Deny)
+            }
+        }
+        let root = TempDir::new().unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let saved = store
+            .create_turn_with_workspace("before", "answer", Some(root.path()))
+            .unwrap();
+        store
+            .set_permission_mode(&saved.id, PermissionMode::Ask)
+            .unwrap();
+        let state = state_with_responses_and_automatic(
+            store,
+            SettingsStore::at(root.path().join("config/settings.json")),
+            root.path().to_path_buf(),
+            vec![
+                FakeResponse {
+                    chunks: vec![
+                        r#"{"type":"tool_call","tool":"exec_command","args":{"command":"touch forbidden","lifetime":"background","yield_time_ms":0}}"#,
+                    ],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![r#"{"type":"final","content":"Request denied."}"#],
+                    error: None,
+                },
+            ],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let client = state.processes.initialize("main").unwrap();
+        let scope = state
+            .processes
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: Some(saved.id.clone()),
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let deny = Deny(std::cell::Cell::new(0));
+        state
+            .ask_with_process_scope(
+                "launch",
+                Some(&saved.id),
+                Some(Path::new("/wrong")),
+                PermissionMode::FullAccess,
+                AskCallbacks {
+                    authorizer: &deny,
+                    on_delta: &mut |_| Ok(()),
+                    on_tool_event: &mut |_| {},
+                },
+                Some(scope.clone()),
+            )
+            .unwrap();
+        assert_eq!(deny.0.get(), 1);
+        assert!(scope.list().unwrap().is_empty());
+        assert!(!root.path().join("forbidden").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_draft_background_remains_visible_until_client_reload() {
+        use super::AskCallbacks;
+        use crate::process_commands::ProcessContext;
+        let root = TempDir::new().unwrap();
+        let store = ConversationStore::at(root.path().join("data"));
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(root.path().join("config/settings.json")),
+            root.path().to_path_buf(),
+            vec![
+                FakeResponse {
+                    chunks: vec![
+                        r#"{"type":"tool_call","tool":"exec_command","args":{"command":"sleep 20","lifetime":"background","yield_time_ms":0}}"#,
+                    ],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![],
+                    error: Some("fake provider failure"),
+                },
+            ],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let client = state.processes.initialize("main").unwrap();
+        let scope = state
+            .processes
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let result = state.ask_with_process_scope(
+            "Start service",
+            None,
+            Some(root.path()),
+            PermissionMode::FullAccess,
+            AskCallbacks {
+                authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                on_delta: &mut |_| Ok(()),
+                on_tool_event: &mut |_| {},
+            },
+            Some(scope.clone()),
+        );
+        assert!(result.is_err());
+        assert!(store.list().unwrap().is_empty());
+        assert!(scope.list().unwrap()[0].running);
+        state.processes.initialize("main").unwrap();
+        assert!(scope.list().is_err());
     }
 
     #[test]

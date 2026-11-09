@@ -162,7 +162,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   line-height: 1.45;
 }
 
-.chat-main { display: grid; grid-template-rows: 62px auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
+.chat-main { display: grid; grid-template-rows: 62px auto minmax(0, 1fr) auto auto; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 
 .chat-header {
   display: grid;
@@ -681,3 +681,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .mcp-config-path { overflow-wrap: anywhere; }
 .mcp-list { display: grid; gap: 12px; }
 .mcp-editor > .mcp-toolbar:not([hidden]) { display: flex; }
+
+.processes-panel { flex: 0 0 auto; margin: 0 24px 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; }
+.processes-panel > summary, .process-row summary { cursor: pointer; }
+.processes-body, .process-list { display: grid; gap: 10px; }
+.processes-body { padding-top: 12px; max-height: 36vh; overflow: auto; }
+.processes-body > button { justify-self: start; }
+.process-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--border); }
+.process-row > p, .process-row > details { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
+.process-row > button { grid-column: 3; grid-row: 1; }
+.process-output { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: var(--surface); color: var(--ink); font-size: 11px; }
+@media (max-width: 600px) { .processes-panel { margin-inline: 12px; } }

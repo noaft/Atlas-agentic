@@ -1685,3 +1685,26 @@ test("chat model changes preserve an explicitly edited Settings model", async ()
   await store.selectModel("deepseek-v4-pro");store.openSettings();
   expect(store.getState().settingsDraft?.model).toBe("manual-choice");
 });
+
+test("empty draft process scopes are released on New chat without closing saved chats",async()=>{
+ const api=new FakeApi();const released:import("./process-types").ProcessContext[]=[];let issued=0;
+ api.openProcessScope=async context=>({scopeId:context.scopeId??`scope-${++issued}`});api.releaseProcessScope=async context=>{released.push(context);};
+ const store=new ChatStore(api);await store.initialize();for(let index=0;index<70;index++)await store.newChat();
+ expect(released).toHaveLength(70);expect(issued).toBe(71);expect(released.every(context=>context.conversationId===null)).toBe(true);
+});
+
+test("revisiting empty sessions releases their old scopes and same-owner selection is a no-op",async()=>{
+ const api=new FakeApi();const active=new Set<string>();let issued=0;
+ api.openProcessScope=async context=>{if(context.scopeId)return{scopeId:context.scopeId};if(active.size>=64)throw new Error("native scope capacity");const scopeId=`scope-${++issued}`;active.add(scopeId);return{scopeId};};
+ api.releaseProcessScope=async context=>{active.delete(context.scopeId!);};
+ const store=new ChatStore(api);await store.initialize();for(let i=0;i<70;i++)await store.newChat();
+ for(let i=1;i<=70;i++)await store.selectSession(`local-${i}`);
+ expect(active.size).toBe(1);const count=issued;await store.selectSession(store.getState().activeSessionId);expect(issued).toBe(count);
+});
+
+test("closing a failed draft releases its processes without deleting conversation history",async()=>{
+ const api=new FakeApi();const released:import("./process-types").ProcessContext[]=[];const deleted:string[]=[];
+ api.releaseProcessScope=async context=>{released.push(context);};api.deleteConversation=async id=>{deleted.push(id);};api.asks.push(async()=>{throw new Error("fake provider failure");});
+ const store=new ChatStore(api);await store.initialize();store.setDraft("start service");await store.send();expect(store.getState().activeConversationId).toBeNull();
+ const previous=store.getState().activeSessionId;await store.deleteActive();expect(released).toHaveLength(1);expect(deleted).toEqual([]);expect(store.getState().activeSessionId).not.toBe(previous);
+});

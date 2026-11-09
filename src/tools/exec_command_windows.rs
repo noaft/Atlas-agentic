@@ -59,6 +59,10 @@ impl ExecCommandTool {
             control: None,
         }
     }
+    pub(super) fn with_scope(mut self, scope: process_sessions::ProcessScope) -> Self {
+        self.sessions = Arc::new(ProcessSessions::for_scope(&self.workspace, scope));
+        self
+    }
     pub fn session_tools(&self) -> Vec<Box<dyn Tool>> {
         process_sessions::session_tools(self.sessions.clone())
     }
@@ -84,9 +88,14 @@ impl Tool for ExecCommandTool {
         Ok(ToolRisk::Command)
     }
 
+    fn summarize(&self, args: &serde_json::Value) -> String {
+        super::summarize_arguments(
+            &serde_json::json!({"command":args["command"], "lifetime":args.get("lifetime").cloned().unwrap_or_else(||serde_json::json!("job")), "workspace":self.workspace, "timeout_ms":args.get("timeout_ms")}),
+        )
+    }
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {
         let args = process_sessions::parse_exec(args)?;
-        if args.yield_time_ms.is_some() && self.control.is_none() {
+        if (args.yield_time_ms.is_some() || self.sessions.is_scoped()) && self.control.is_none() {
             return self.sessions.start(args);
         }
         if self
@@ -144,6 +153,9 @@ impl Tool for ExecCommandTool {
             return Err(format!(
                 "failed to resume exec_command process: NTSTATUS {resumed:#010x}"
             ));
+        }
+        if let Some(control) = &self.control {
+            control.mark_running();
         }
         let limit = self.output_limit;
         let stdout_control = self.control.clone();

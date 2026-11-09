@@ -74,6 +74,7 @@ describe("Tauri Atlas API", () => {
       created: true,
     };
     mockIPC((command, payload) => {
+      if (command === "initialize_process_client") return "test-client";
       expect(command).toBe("ask");
       const args = payload as {
         prompt: string;
@@ -99,6 +100,7 @@ describe("Tauri Atlas API", () => {
       (event) => {
         if (event.event === "delta") deltas.push(event.data.content);
       },
+      "scope",
     );
 
     expect(deltas).toEqual(["Hello", " desktop"]);
@@ -108,6 +110,7 @@ describe("Tauri Atlas API", () => {
   test("sends the permission mode and resolves streamed tool approvals", async () => {
     const commands: Array<{ command: string; payload: unknown }> = [];
     mockIPC((command, payload) => {
+      if (command === "initialize_process_client") return "test-client";
       commands.push({ command, payload });
       if (command === "ask") {
         const args = payload as { channel: Channel<ChatEvent> };
@@ -134,7 +137,7 @@ describe("Tauri Atlas API", () => {
       if (event.event === "approvalRequested") {
         await api.resolveToolApproval(event.data.request.id, false);
       }
-    });
+    }, "scope");
 
     expect(commands[0]).toMatchObject({
       command: "ask",
@@ -353,4 +356,14 @@ test("MCP onboarding passes typed settings, owned checks and approval IDs throug
  expect(calls.map(c=>c.command)).toEqual(["load_mcp_settings","add_mcp_server","inspect_mcp_server","resolve_mcp_inspection_approval","cancel_mcp_inspection"]);
  expect(calls[1].payload).toEqual({fingerprint:"version",name:"local",server:config});expect(calls[2].payload).toMatchObject({request});
  expect(calls[3].payload).toEqual({id:"operation",approvalId:"approval",allow:false});expect(events).toHaveLength(1);
+});
+
+test("process scope, independent output and explicit stop share one native client",async()=>{
+ const calls:Array<{command:string;payload:unknown}>=[];
+ mockIPC((command,payload)=>{calls.push({command,payload});if(command==="initialize_process_client")return "client";if(command==="open_process_scope")return {scopeId:"scope"};if(command==="list_processes")return [];return {};});
+ const api=createTauriAtlasApi(),context={conversationId:null,scopeId:"scope"};
+ await api.openProcessScope(context);await api.listProcesses(context);await api.readProcessOutput(context,"process",{stdout:10,stderr:0});await api.stopProcess(context,"process");await api.releaseProcessScope(context);
+ expect(calls.filter(call=>call.command==="initialize_process_client")).toHaveLength(1);
+ expect(calls.find(call=>call.command==="read_process_output")?.payload).toEqual({client:"client",context,sessionId:"process",cursor:{stdout:10,stderr:0}});
+ expect(calls.find(call=>call.command==="stop_process")?.payload).toEqual({client:"client",context,sessionId:"process"});
 });

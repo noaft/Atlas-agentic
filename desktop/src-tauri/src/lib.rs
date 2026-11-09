@@ -1,6 +1,7 @@
 mod commands;
 mod mcp_commands;
 mod mcp_inspection;
+mod process_commands;
 mod provider_settings;
 mod requests;
 mod skill_commands;
@@ -27,7 +28,7 @@ fn create_desktop_state(
 pub fn run() {
     load_dotenv();
     atlas_agentic::diagnostics::init("desktop");
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = ConversationStore::from_user_data().map_err(std::io::Error::other)?;
@@ -58,6 +59,12 @@ pub fn run() {
             mcp_commands::connect_mcp_server,
             mcp_commands::disconnect_mcp_server,
             mcp_commands::cancel_mcp_connection,
+            process_commands::initialize_process_client,
+            process_commands::open_process_scope,
+            process_commands::list_processes,
+            process_commands::release_process_scope,
+            process_commands::read_process_output,
+            process_commands::stop_process,
             commands::list_conversations,
             commands::load_conversation,
             commands::rename_conversation,
@@ -77,7 +84,7 @@ pub fn run() {
             commands::run_task,
             commands::ask
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|error| {
             atlas_agentic::diagnostics::event(
                 "ERROR",
@@ -86,6 +93,35 @@ pub fn run() {
             );
             panic!("failed to run Atlas desktop application: {error}");
         });
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    app.run(move |handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+            use std::sync::atomic::Ordering;
+            if shutdown.load(Ordering::SeqCst) == 2 {
+                return;
+            }
+            api.prevent_exit();
+            if shutdown
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let state = handle.state::<DesktopState>().inner().clone();
+                let handle = handle.clone();
+                let shutdown = shutdown.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if state.shutdown_processes().is_err() {
+                        atlas_agentic::diagnostics::event(
+                            "WARN",
+                            "process.shutdown.incomplete",
+                            serde_json::json!({}),
+                        );
+                    }
+                    shutdown.store(2, Ordering::SeqCst);
+                    handle.exit(code.unwrap_or(0));
+                });
+            }
+        }
+    });
     atlas_agentic::diagnostics::event("INFO", "application.stopped", serde_json::json!({}));
 }
 
