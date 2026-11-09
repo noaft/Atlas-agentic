@@ -39,8 +39,10 @@ Mở một chat, chọn folder rồi gửi yêu cầu tường minh, ví dụ tr
 > Sau khi khởi động, trả lời mã process session. Không khởi động thêm bản khác.
 
 Chọn Allow nếu đang dùng Ask/Workspace. Ngay dưới câu trả lời đang xử lý sẽ có
-khung tool dạng terminal: tên tool, trạng thái, command và output khi tool trả về.
-**Call details** mở thông tin thô. Sau final answer, mở **Activity** để xem lại.
+khung tool dạng terminal khi tool đang chờ/chạy: tên tool, trạng thái và command.
+Tool kết thúc (thành công, lỗi hoặc bị từ chối) thì khung tự ẩn ngay, kể cả khi
+agent còn viết câu trả lời. Sau final answer, mở **Activity** để xem output.
+**Call details** mở thông tin thô trong lúc tool còn hoạt động.
 Không có panel Processes riêng và UI không tự polling log.
 
 Gửi tin nhắn tiếp theo:
@@ -48,7 +50,7 @@ Gửi tin nhắn tiếp theo:
 > Liệt kê process của chat và đọc output mới của session vừa tạo. Không chạy lại lệnh.
 
 Session ID và số process không đổi. Kết quả `read_process` hiển thị tick mới trong
-terminal của lần gọi tool đó. Đổi sang chat khác rồi yêu cầu liệt kê: không thấy
+Activity của lần gọi tool đó sau khi lượt trả lời hoàn tất. Đổi sang chat khác rồi yêu cầu liệt kê: không thấy
 process của chat đầu. Quay lại chat đầu, gửi “Dừng process vừa tạo bằng
 stop_process”; duyệt nếu cần và kiểm tra kết quả đã stopped. Stop không rollback
 tác động trước đó.

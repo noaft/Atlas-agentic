@@ -116,7 +116,7 @@ function renderCurrentTool(
   for (let index = records.length - 1; index >= 0; index--) {
     if (records[index].kind === "tool") { current = records[index]; break; }
   }
-  if (!current) return null;
+  if (!current || current.status === "succeeded" || current.status === "failed" || current.status === "denied") return null;
   const card = document.createElement("section");
   card.className = "current-tool tool-terminal";
   card.dataset.currentTool = current.id;

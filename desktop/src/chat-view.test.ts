@@ -420,8 +420,7 @@ test("current tool has a status region while approvals stay prominent", async ()
   const finishedDisclosure = root.querySelector<HTMLElement>(
     "[data-current-tool]",
   );
-  expect(finishedDisclosure?.querySelector(".tool-terminal-header")?.textContent).toContain("Completed");
-  expect(finishedDisclosure?.textContent).toContain("Found 3 matches");
+  expect(finishedDisclosure).toBeNull();
   pending.resolve({ answer: "done", metadata, created: true, activities: [] });
   await sending;
 });
@@ -2020,9 +2019,7 @@ test("long tool runs show one current call and retain complete collapsed saved h
   expect(disclosure().open).toBe(true);
   api.eventSink!({event: "toolFinished", data: {sequence: 199, tool: "tool_199", success: false, summary: "Current failed", details: "current error"}});
   await flushStreaming();
-  expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("Failed");
-  expect(current().textContent).toContain("current error");
-  expect(disclosure().open).toBe(true);
+  expect(current()).toBeNull();
   api.eventSink!({event: "toolRequested", data: {sequence: 200, tool: "next_tool", arguments: "{}"}});
   await flushStreaming();
   expect(current().querySelector(".tool-terminal-header")?.textContent).toContain("next_tool");
@@ -2076,12 +2073,7 @@ test("tool execution appears inline as a terminal with readable command and outp
   expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("Waiting for output");
   api.eventSink!({event: "toolFinished", data: {sequence: 0, tool: "exec_command", success: false, summary: "Command exited", details: JSON.stringify({stdout: "Xin chào\n<img src=x>\n", stderr: "an error\n", exit_code: 1})}});
   await flushStreaming();
-  expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("Xin chào\n<img src=x>");
-  expect(card().querySelector(".tool-terminal-output")?.textContent).toContain("[stderr]\nan error");
-  expect(card().querySelector(".tool-terminal-output")?.textContent).not.toContain('"stdout"');
-  expect(card().querySelector("img")).toBeNull();
-  expect(card().querySelector(".tool-terminal-details")?.textContent).toContain('"stdout"');
-  expect(card().querySelector("[role=status]")?.textContent).toBe("Failed");
+  expect(card()).toBeNull();
   pending.resolve({answer: "Done", metadata, created: true}); await sending;
 });
 
@@ -2099,4 +2091,23 @@ test("saved tool output remains readable and preserves truncation and session me
   expect(output?.textContent).toContain("[Earlier output was truncated]");
   expect(output?.textContent).toContain("[session owned · running]");
   expect(root.querySelector<HTMLDetailsElement>("[data-activity]")?.open).toBe(false);
+});
+
+
+test.each(["succeeded", "failed", "denied"] as const)("terminal hides immediately after %s, before the answer completes", async outcome => {
+  const api = new ViewApi(); const pending = deferred<ConversationAskResult>();
+  api.askImpl = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize();
+  store.setDraft("run a tool"); const sending = store.send();
+  api.eventSink!({event: "toolRequested", data: {sequence: 0, tool: "exec_command", arguments: "{}"}});
+  api.eventSink!({event: "toolStarted", data: {sequence: 0, tool: "exec_command"}});
+  await flushStreaming(); expect(root.querySelector("[data-current-tool]")).not.toBeNull();
+  if (outcome === "denied") api.eventSink!({event: "toolDenied", data: {sequence: 0, tool: "exec_command", summary: "Denied"}});
+  else api.eventSink!({event: "toolFinished", data: {sequence: 0, tool: "exec_command", success: outcome === "succeeded", summary: "Finished", details: "output"}});
+  await flushStreaming(); expect(root.querySelector("[data-current-tool]")).toBeNull();
+  api.eventSink!({event: "delta", data: {content: "Here is the answer"}});
+  await flushStreaming(); expect(root.querySelector("[data-current-tool]")).toBeNull();
+  api.eventSink!({event: "toolRequested", data: {sequence: 1, tool: "read_process", arguments: "{}"}});
+  await flushStreaming(); expect(root.querySelector("[data-current-tool]")?.textContent).toContain("read_process");
+  pending.resolve({answer: "Done", metadata, created: true}); await sending;
 });

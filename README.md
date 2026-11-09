@@ -159,7 +159,8 @@ long-running session with `read_process`; when explicitly requested, use
 `lifetime: "background"` to keep a foreground service across messages in that chat.
 `list_processes` discovers existing resources; `stop_process` stops the selected
 owned group/Job with the current authorization policy. Tool calls appear inline
-as terminal cards with the command, status and scrollable output. Raw call details
+as terminal cards while requested, awaiting approval or running. The card hides
+immediately on completion, failure or denial. Raw call details
 are collapsed; completed turns retain output in Activity. There is no separate
 Processes panel or automatic UI polling; ask Atlas to read or stop a session.
 

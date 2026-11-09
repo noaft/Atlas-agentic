@@ -443,7 +443,10 @@ During desktop requests, show one current tool row below the pending assistant
 message, using the newest requested tool rather than the most recently received
 event. Older call results must not replace it. Keep status and expandable details
 on that row, preserve its expansion across updates to the same session/call, and
-collapse details when the call changes. Runtime statuses do not create tool rows.
+collapse details when the call changes. Hide the live terminal immediately when
+the newest tool succeeds, fails or is denied, including while the answer is still
+streaming; never fall back to an older call. Keep the records for saved Activity.
+Runtime statuses do not create tool rows.
 Do not duplicate live activity in notices or render a growing live timeline. Keep
 all session activity and saved records intact; the final answer replaces the live
 row and retains the complete collapsed Activity disclosure.
