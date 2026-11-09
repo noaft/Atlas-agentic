@@ -608,6 +608,27 @@ CLI binary tests isolate their workspace and `ATLAS_DATA_DIR`, use child-only
 environment configuration, and serve fake DeepSeek responses over loopback TCP.
 Do not use real API keys or external model services in tests.
 
+## Documentation and Workflow Drafts
+
+Keep project reference documentation and explicitly user-approved designs under
+`docs/`. Document implemented behavior as implemented; distinguish it from future
+proposals. Do not mark a design approved merely because the user asked to write
+it, or because its wording looks complete.
+
+Superpowers design drafts, plans, execution ledgers, research scratch, previews,
+screenshots and test logs belong under `.superpowers/` and are Git-ignored. This
+repository rule overrides skill defaults that would write to `docs/superpowers/`.
+That old location and local `.worktrees/` are also ignored. Do not force-add these
+artifacts or ignore runtime skills/agent definitions as workflow scratch.
+
+When the user explicitly approves a design, promote a curated copy from
+`.superpowers/specs/` to `docs/architecture/` (or a relevant docs section), record
+its approval and implementation status, update `docs/README.md` and links, and
+commit the reviewed document. Keep local plans/logs out of that promotion. Pending
+drafts stay local until approved. Older workflow documents are preserved locally
+under `.superpowers/archive/2026-11-09-docs/`; their prior versions also remain in
+Git history. Do not infer approval from their presence in that archive.
+
 ## Commit Traceability Rule
 
 After completing and verifying each feature, bug fix, or requested documentation

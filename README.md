@@ -51,7 +51,7 @@ See the [official UniKey Unicode-input FAQ](https://www.unikey.org/support/ukfaq
 
 A native Windows Tauri build uses a different input path from the Linux app
 shown through WSLg. Passing browser IME tests does not verify Windows UniKey
-through WSLg. See the [native reproduction notes](docs/superpowers/specs/2026-11-07-wslg-unikey-reproduction.md).
+through WSLg. See the [native reproduction notes](docs/platforms/wslg-unikey.md).
 
 ## CLI
 
@@ -170,6 +170,10 @@ Atlas stops remaining sessions when that request exits. There are at most eight
 active sessions and 32 retained records per runtime. `timeout_ms` accepts
 1–600000; defaults are 30 seconds for synchronous commands and ten minutes for
 sessions. No interactive terminal/stdin or cross-turn background service is added.
+
+For the session lifecycle, result fields and examples, see
+[Process sessions](docs/architecture/process-sessions.md). Project documentation
+and draft-review rules are listed in [docs](docs/README.md).
 
 ## Skills
 
