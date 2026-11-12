@@ -6,6 +6,7 @@ không đồng nghĩa với đã có trong sản phẩm.
 
 | Tài liệu | Trạng thái |
 | --- | --- |
+| [Atlas reference](guides/reference.md) | Hướng dẫn chi tiết về cấu hình và các tính năng hiện tại |
 | [Tool/resource lifecycle](architecture/tool-resource-lifecycle.md) | User duyệt triển khai 2026-11-09; process scope desktop đã triển khai |
 | [Demo và cách thử trên Tauri](guides/process-manager-demo.md) | Demo local không cần API key và hướng dẫn UI |
 | [Process sessions](architecture/process-sessions.md) | Tham chiếu hành vi hiện tại, 2026-11-09 |

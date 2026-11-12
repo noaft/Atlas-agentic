@@ -1,18 +1,20 @@
 # Atlas Agentic
 
-A desktop-first AI assistant for conversation, files, applications, computer
-control, and coding. The Tauri desktop app and Rust CLI share the same agent,
-tools, and local conversation history. Supports DeepSeek, OpenAI, Anthropic,
-Google Gemini, and custom OpenAI-compatible endpoints. Multi-agent routing is planned.
+A desktop-first AI assistant for chat, files, shell commands, computer control,
+and coding. The Tauri desktop app and Rust CLI share a Rust runtime and local
+conversation history.
 
-## Quick start
+**Status:** one default Atlas agent is implemented. Multi-agent routing is planned.
 
-Install Rust and Node.js/npm, plus the platform dependencies in the
-[Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
-Linux also needs `libxcb`, `libxrandr`, and `dbus`
-(Debian/Ubuntu: `libxcb1 libxrandr2 libdbus-1-3`).
-Building the credential-store integration also needs `libdbus-1-dev` and
-`pkg-config` on Debian/Ubuntu.
+## Run the desktop app
+
+Install Rust, Node.js/npm, and the
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+On Debian/Ubuntu, also install:
+
+```bash
+sudo apt install libxcb1 libxrandr2 libdbus-1-3 libdbus-1-dev pkg-config
+```
 
 From the repository root:
 
@@ -21,510 +23,75 @@ npm ci --prefix desktop
 npm --prefix desktop run tauri dev
 ```
 
-Open **Settings**, choose a provider, add its API key, and refresh the model list
-or enter a model ID. New chats use
-an automatically created `Atlas` folder in your home directory; choose another
-folder per chat or set a default in Settings.
+Open **Settings → Models & providers**, choose a provider, add its API key, and
+select or enter a model ID. New chats start in an automatically created `Atlas`
+folder in your home directory; you can choose another folder per chat.
 
-Chats can run independently, with their own drafts, activity, and approvals.
-History is saved after successful replies; unsaved drafts and unfinished requests
-do not survive an app restart.
+## Features
 
-The chat box uses your operating system's input method for Vietnamese and other
-languages. Atlas does not convert Telex itself. Enter sends after composition is
-finished; Shift+Enter inserts a newline. IME confirmation keys do not send the
-unfinished draft.
-
-### Vietnamese input when using WSLg
-
-If Vietnamese works in a Windows browser but typing into **Atlas (Ubuntu-...)**
-erases letters, check the Windows UniKey → WSLg input path before changing the
-chat editor. This was reproduced in both Atlas and a plain GTK input with no
-Atlas JavaScript: backspaces arrived, but the replacement Unicode text did not.
-
-For this case, open UniKey with **Ctrl+Shift+F5**, choose **Mở rộng**, enable
-**Luôn sử dụng clipboard cho Unicode**, then choose **Đóng**. Keep Unicode and
-Telex selected. Direct typing was verified in the Tauri window after enabling
-this option. It is a global UniKey preference and can replace clipboard contents
-while typing; turn it off when that compatibility mode is no longer needed.
-See the [official UniKey Unicode-input FAQ](https://www.unikey.org/support/ukfaq.html).
-
-A native Windows Tauri build uses a different input path from the Linux app
-shown through WSLg. Passing browser IME tests does not verify Windows UniKey
-through WSLg. See the [native reproduction notes](docs/platforms/wslg-unikey.md).
+- **Chat:** streaming replies, independent conversations, local history and Activity.
+- **Models:** DeepSeek, OpenAI, Anthropic, Gemini, and OpenAI-compatible endpoints.
+- **Files and coding:** search, read, create, patch, move, copy, and delete files.
+- **Commands:** run shell commands, inspect output, and manage per-chat background
+  processes on desktop. Active tools appear inline as terminal cards.
+- **Computer control:** open applications, capture the screen, and use mouse/keyboard.
+- **Skills:** Personal and Project libraries; import from GitHub, folders, or files;
+  preview, edit, search, and enable/disable skills.
+- **MCP:** local stdio and remote HTTP servers, OAuth sign-in, and explicit tool checks.
+- **Context:** token-usage display and automatic/manual conversation compaction.
 
 ## CLI
 
-Set your API key in the environment or a local `.env` file (see
-[.env.example](.env.example)), then send a request:
+Set a provider API key in your environment or a local `.env` file
+(see [.env.example](.env.example)):
 
 ```bash
 export DEEPSEEK_API_KEY="your_api_key_here"
 cargo run -- ask "hello atlas"
 ```
 
-Replies stream by default. Each request starts a new conversation unless you
-pass the ID printed after a previous answer:
+Replies stream by default. Each request starts a new conversation; use the ID
+printed after a reply to continue it:
 
 ```bash
-cargo run -- ask --conversation <id> "continue our discussion"
+cargo run -- ask --conversation <id> "continue"
 cargo run -- conversation list
-cargo run -- conversation show <id>
-cargo run -- conversation rename <id> "My project"
 cargo run -- conversation compact <id>
-cargo run -- conversation delete <id>
+cargo run -- help
 ```
 
-`cargo run -- help` and conversation management (except compaction) work without
-an API key. The CLI uses your current directory as its starting folder.
+Help works without an API key. The CLI starts in your current directory.
 
-## Settings and access
+## Permissions and storage
 
-Desktop Settings saves separate credentials, endpoint, model, and model limits for
-each provider. Its sidebar separates **Models & providers**, **MCP connections**, **Skills**,
-**Workspace**, and **Permissions**. Switching categories or choosing **Back to chat**
-keeps unsaved edits in memory. **Save changes** saves them and stays on the current
-page; **Discard** resets all Settings edits. These drafts do not survive an app
-restart. Refresh models also works before selecting a model; discovery failure
-does not prevent using a manually entered ID.
-
-`ATLAS_PROVIDER` overrides the saved provider; otherwise the agent's provider is
-the fallback. Each provider's environment fields override its saved profile:
-
-| Provider | Environment prefix | Protocol |
-| --- | --- | --- |
-| DeepSeek | `DEEPSEEK` | Chat Completions |
-| OpenAI | `OPENAI` | Responses |
-| Anthropic | `ANTHROPIC` | Messages |
-| Google Gemini | `GEMINI` | generateContent |
-| OpenAI-compatible | `ATLAS_COMPATIBLE` | Chat Completions |
-
-Append `_API_KEY`, `_BASE_URL`, or `_MODEL` to the prefix. Provider IDs for
-`ATLAS_PROVIDER` are `deepseek`, `openai`, `anthropic`, `gemini`, and
-`openai-compatible`. For example:
-
-```bash
-export ATLAS_PROVIDER="openai"
-export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_MODEL="your_model_id"
-cargo run -- ask "hello atlas"
-```
-
-Custom endpoints require a base URL. Settings offers keyless access for local
-endpoints and optional JSON mode, streamed usage, image support, and sampling
-parameters under **Advanced model options**. Compatibility depends on the
-endpoint and selected model. Unknown optional sampling parameters are omitted.
-The configurable default output budget is a request limit, not model capacity.
-
-Settings v1 migrates in memory; the next explicit settings update saves v2.
-Existing DeepSeek credentials, selected models, and history remain usable.
-The default agent is configured in [agents/atlas.toml](agents/atlas.toml).
-Saved API keys are plaintext in the user-local `settings.json`, protected by
-private filesystem permissions where supported. Never commit credentials.
-
-| Mode | Tools allowed without confirmation |
+| Mode | Allowed without confirmation |
 | --- | --- |
-| **Ask** | Ordinary workspace reads |
-| **Workspace** | Reads and non-destructive structured workspace changes |
-| **Full access** | All registered tools, within your OS-user permissions |
+| Ask | Ordinary workspace reads |
+| Workspace | Reads and non-destructive structured workspace changes |
+| Full access | All registered tools within your OS-user permissions |
 
-Ask and Workspace require approval for commands, application launches, desktop
-observation/control, and searches outside the workspace. The starting folder is
-not a shell sandbox: approved shell commands can access paths outside it.
-Computer control requires X11 on Linux and Accessibility permission on macOS;
-macOS screen capture also requires Screen Recording permission. Screenshots stay
-in memory for the current turn and may be sent to the model provider.
+The starting folder is not a shell sandbox. Commands can access other paths with
+normal OS permissions. Desktop observation/control requires approval in Ask and
+Workspace modes. Screenshots stay in memory for the turn and may be sent to your
+model provider.
 
-Built-in tools:
-
-| Purpose | Tools |
-| --- | --- |
-| Inspect and search | `current_time`, `pwd`, `ls`, `read_file`, `ripgrep`, `search_files` |
-| Manage files | `create_file`, `apply_patch`, `create_directory`, `copy_file`, `move_file`, `delete_file` |
-| Open and execute | `open_file`, `open_application`, `exec_command`, `list_processes`, `read_process`, `stop_process` |
-| Control the desktop | `mouse_move`, `mouse_click`, `mouse_scroll`, `type_text`, `key_press` |
-| Observe the desktop | `get_ui_state`, `capture_screen` |
-| Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
-
-`apply_patch` edits an existing UTF-8 file with exact replacements:
-`{"path":"src/example.rs","edits":[{"old_text":"old code","new_text":"new code"}]}`.
-Each old segment must occur exactly once; all edits must fit before Atlas publishes
-one atomic update. Source/result/input are bounded to 1 MiB, with up to 64 edits.
-A file changed while approval is pending is rejected. Ask and Workspace modes
-require overwrite confirmation.
-
-Desktop process tools share an app-owned manager with a scope for each chat.
-`exec_command` defaults to a request-local job. Set `yield_time_ms` to inspect a
-long-running session with `read_process`; when explicitly requested, use
-`lifetime: "background"` to keep a foreground service across messages in that chat.
-`list_processes` discovers existing resources; `stop_process` stops the selected
-owned group/Job with the current authorization policy. Tool calls appear inline
-as terminal cards while requested, awaiting approval or running. The card hides
-immediately on completion, failure or denial. Raw call details
-are collapsed; completed turns retain output in Activity. There is no separate
-Processes panel or automatic UI polling; ask Atlas to read or stop a session.
-
-Job sessions default to ten minutes (max ten minutes); synchronous commands keep
-their 30-second default. Background defaults to one hour (max 24 hours). Desktop
-tracks synchronous commands too. Limits are eight active/32 retained per scope,
-32 active/128 retained per manager, 64 KiB per output stream. Session counts do
-not bound the total OS descendants or their CPU/RAM use. Jobs are cleaned on
-request exit; background ends on Stop, timeout, chat deletion or normal app
-shutdown. CLI stays request-local and rejects background. No process survives as
-restorable state after app restart, and there is no interactive stdin/PTY.
-
-Run a deterministic demo without provider credentials:
-
-```bash
-cargo run --example process_sessions
-```
-
-See [the demo and Tauri walkthrough](docs/guides/process-manager-demo.md),
-[session API](docs/architecture/process-sessions.md), and the
-[approved resource lifecycle design](docs/architecture/tool-resource-lifecycle.md).
-Project documentation and draft-review rules are listed in [docs](docs/README.md).
-
-## Skills
-
-A skill is a folder containing `SKILL.md` and optional references, scripts or
-assets. It needs no GitHub account or remote source metadata. **Settings → Skills**
-shows a compact library with an **Add skill** button at the top. Choose
-**All projects** (Personal) or **This project** (Project). Click **Add skill** and
-choose a GitHub link, local folder, or `SKILL.md` file; only the selected source's
-controls appear. Preview the instructions, then add the selected skill.
-The **Installed skills** section shows names, short descriptions, search and
-on/off switches. Expand a skill's **Details** to view/edit instructions or preview
-an update. **Library options** contains refresh and other installation methods.
-Skills that could not load are grouped in one collapsed warning with details.
-Enabled descriptions are available to Atlas on its next request; full instructions
-load only when needed. Skills changes apply immediately, independently of model
-Settings Save/Discard. **Install all** submits
-the previewed GitHub selections as one backend batch and reports each failure
-without undoing successful installs or overwriting existing skills. Installing one
-skill keeps the other candidates available; only the selected card shows progress.
-The backend verifies the saved package before reporting success. The Create form stays
-removed; ask Atlas to save a skill instead.
-
-To create a skill, ask Atlas: “Save this workflow as a Personal skill named
-project-review.” The `create_skill` tool creates one folder per skill and never
-overwrites an existing skill. Personal creation asks for approval in Ask and
-Workspace modes; Project creation follows ordinary workspace-write permissions.
-Newly created skills become available to the model on the next request.
-
-You can also ask Atlas: “Install the skill at this public GitHub URL as a Project
-skill.” The `preview_skill` tool downloads pinned packages as data, then
-`install_skill` saves the exact reviewed bytes using a preview token. Preview
-requires approval in Ask and Workspace; installation follows Project/Personal
-write permissions. Neither tool executes scripts, installs dependencies or
-overwrites an existing skill. Tokens last for the current request and are replaced
-by a new successful preview; if you continue in a later turn, Atlas must preview
-again. Runtime preview is limited to 8 candidates, 8 MiB of package data and
-64 KiB of preview text; use a specific skill folder or Settings for larger sources.
-
-Use **Search skills** to rank installed skills locally with BM25 across their
-names, titles, summaries, and instructions. Search stays within the selected scope
-and includes disabled skills. No search content is sent to a remote service.
-
-**View instructions** opens the document; **Close instructions** hides it.
-Use **Edit skill** to edit the full document. Saving preserves supporting files
-and enabled state, rejects renames, and detects changes since the document was
-opened. **Reload skill from disk** recovers from a conflict. Editing a GitHub
-import creates a local fork, removing its remote update association.
-
-Both CLI and desktop discover:
-
-- Project: `<starting folder>/.agents/skills/<name>/SKILL.md`.
-- Personal creation: `$XDG_CONFIG_HOME/agents/skills/<name>/SKILL.md`, falling back
-  to `~/.config/agents/skills/` when XDG_CONFIG_HOME is absent or not absolute.
-- Additional Personal discovery: `~/.agents/skills/` (the skills CLI's canonical
-  global copy), then `skills/` beside Atlas's old user-local `settings.json`.
-  Duplicate Personal names prefer the primary shared folder, then those fallbacks.
-- Explicit `ATLAS_CONFIG_DIR`: isolates Personal storage/discovery to its `skills/`
-  folder. Existing files are never automatically moved or deleted.
-
-Atlas reads ordinary skill folders installed by other tools. For example, the
-[skills CLI](https://github.com/vercel-labs/skills/blob/HEAD/docs/commands.md)
-supports local directories, GitLab, and other Git sources:
-
-```bash
-# Run in your project; replace <source> with a local directory or supported source.
-npx skills add <source> --agent universal --copy
-# Personal/global install:
-npx skills add <source> --agent universal --copy --global
-```
-
-Atlas validates regular files and directories; use `--copy` with that installer.
-Atlas does not run this installer automatically. You can also copy a skill folder
-into one of the discovery locations above, then choose **Refresh skills**.
-
-A minimal skill uses the [Agent Skills format](https://agentskills.io/specification):
-
-```markdown
----
-name: project-review
-description: Review project changes and their relevant tests.
-metadata:
-  title: Project review
----
-Read project instructions and inspect affected code before suggesting changes.
-Verify findings with relevant tests or direct checks.
-```
-
-The model initially sees enabled skill IDs, names, titles, and descriptions.
-Keep descriptions concise (roughly 30 tokens explaining when to use the skill);
-put detailed steps in the instructions and supporting files. The runtime admits
-up to 128 enabled skills within 64 KiB of metadata and a 32 MiB package snapshot;
-Settings reports when limits omit packages. These are bounds, not an exact model
-token estimate. Standard skill folders remain the source of truth; ratings and
-a separate database are not required. Atlas requests full instructions, their folder and resource list through `load_skill`,
-optionally loading a relative UTF-8 supporting file. Personal and Project IDs stay
-distinct, even when names match. A running request retains its original snapshot;
-subsequent requests discover changes. Invalid packages appear as issues in Settings.
-
-Creation, import, and loading never execute scripts or install dependencies.
-Later commands still use normal Atlas permissions. Skill actions apply immediately,
-independently of model Settings Save/Discard.
-
-## MCP connections
-
-Atlas can connect to local MCP servers over stdio and remote servers over
-Streamable HTTP from both CLI and desktop.
-Open **Settings → MCP connections → Add connection**. Enter a name and server
-URL, or choose **Local program (stdio)** and enter the executable and one argument
-per line. Advanced options include timeout and optional browser sign-in (OAuth).
-**Save connection** adds a new server without contacting it or starting a program.
-Existing names cannot be overwritten; edit existing entries in the file manually.
-
-You can also create `mcp.toml` beside your user-local `settings.json` (normally
-`~/.config/atlas/mcp.toml` on Linux), or set `ATLAS_MCP_CONFIG` to a configuration
-file. `ATLAS_CONFIG_DIR` also relocates the default MCP configuration directory.
-Atlas never automatically reads MCP configuration from a project folder.
-
-```toml
-[servers.my_tools]
-command = "/absolute/path/to/your-mcp-server"
-args = []
-timeout_ms = 30000
-```
-
-Use the executable and argument list specified by your MCP server. Commands run
-directly, without a shell; install the server separately. Relative arguments are
-resolved from the chat's starting directory. Servers inherit Atlas's environment,
-so provide required credentials there rather than putting secrets in command
-arguments. Only configure servers you trust to run with your OS-user permissions.
-The timeout applies to each protocol request and must be between 1 and 300000 ms.
-
-For a remote server with OAuth, add a URL and an OAuth table instead of a command:
-
-```toml
-[servers.remote]
-url = "https://your-service.example/mcp"
-timeout_ms = 30000
-
-[servers.remote.oauth]
-# client_id = "your-registered-public-client-id"
-# redirect_port = 8765
-# scopes = ["files:read"]
-```
-
-Use the MCP URL provided by your service. Open **Settings → MCP connections**,
-click **Sign in** beside the server. Your default
-browser opens for sign-in and consent; Atlas receives the callback locally and
-saves credentials in the OS credential store. You can cancel a pending sign-in.
-Connections apply immediately, independently of the model Settings Save button.
-
-**Authorized** means sign-in credentials are available. Use **Check tools** to
-initialize the server and inspect its tool list, then expand **Tool details**.
-Ask and Workspace modes require a separate confirmation before this check;
-Full access skips that confirmation. Checks use the current chat’s starting folder
-and permissions, with saved chat metadata taking precedence. They call no business
-tools and close their connections afterward. Each check RPC has a timeout capped
-at 30 seconds. Cancelling lets the current RPC finish, stops further discovery
-requests, and discards its result. Switching chats or changing the folder,
-permissions or configuration invalidates prior checks. Saving or refreshing
-configuration never checks servers automatically.
-
-Both desktop and CLI use the saved sign-in from the same configuration and OS
-account. Chat requests never open a sign-in window automatically.
-
-When `client_id` is omitted, Atlas attempts dynamic public-client registration.
-If the service requires preregistration, register Atlas as a public/native client
-using Authorization Code with PKCE and enter its client ID. If it requires a fixed
-callback port, set `redirect_port` and register exactly
-`http://127.0.0.1:8765/callback` (substituting that port). Otherwise Atlas chooses
-an available port. Do not configure an embedded client secret. By default scopes
-come from the service's authorization challenge or protected-resource metadata;
-an explicit `scopes` list overrides that selection.
-
-OAuth uses state validation, S256 PKCE and resource-bound tokens following the
-[MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
-Authorization endpoints require HTTPS. Access and refresh tokens stay in macOS
-Keychain, Windows Credential Manager or Linux Secret Service; they are never put
-in `mcp.toml`, model context or frontend state. Linux/WSL needs an available,
-unlocked Secret Service session (such as GNOME Keyring or KWallet). There is no
-plaintext fallback. Atlas refreshes known-expired tokens before an approved
-request; rejected refreshes require reconnecting. If the service rejects an
-otherwise unexpired sign-in, disconnect and connect again. For insufficient
-permissions, set the required scopes before reconnecting.
-
-**Disconnect** removes local credentials and invalidates pending sign-ins; revoke
-the provider-side grant separately in the service's account settings if desired.
-It cannot retract a request already sent. HTTP transport disables redirects and
-automatic retries. A failed request is never automatically replayed after login
-or refresh. Plain HTTP is supported only for literal-loopback MCP endpoints;
-remote connections use HTTPS. Leave out the OAuth table for an unauthenticated
-HTTP server.
-
-Then ask Atlas to “list my MCP servers,” “show the tools on my_tools,” or use one
-of the discovered tools. When configuration contains servers, Atlas gains:
-
-| Tool | Purpose |
-| --- | --- |
-| `mcp_list_servers` | List configured names without starting a process |
-| `mcp_list_tools` | Connect and discover a server's tools and input schemas |
-| `mcp_call_tool` | Call a server tool with an argument object |
-
-Ask and Workspace require approval for discovery and every external call, even
-when a server labels a tool read-only. Full access skips Atlas confirmations.
-Tool connections start lazily and are reused within a runtime request. Local
-server processes close when that runtime is dropped. A failed call is never automatically replayed;
-a timeout can leave the action's outcome unknown. Configuration changes apply
-to the next chat request; running requests keep their original configuration.
-
-This version implements the
-[MCP stdio and Streamable HTTP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-with the 2025-11-25 initialization handshake and supports negotiated versions
-2025-06-18 and 2025-03-26. Tool catalogs are bounded to 256 tools, 16 pages and
-1 MiB total; individual protocol messages are limited to 1 MiB. Tool results
-support text and structured JSON. Non-text content returns an explicit error
-and is not passed through as an attachment or saved as screenshot data. Server
-stderr and protocol-error bodies are not forwarded into Atlas errors or logs.
-Resources, prompts, sampling, elicitation, hosted client metadata documents and
-confidential-client OAuth are not implemented. HTTP sessions support JSON and
-SSE POST responses; persistent GET streams, stream resumption, automatic session
-restart and explicit session DELETE are not implemented. Cleanup terminates owned server process groups on Unix and process
-trees through a kill-on-close Job Object on Windows.
-
-## History and memory
-
-Conversations are stored locally outside the repository. Atlas keeps original
-history and compacts older context when usable model limits are available. Set
-missing combined context/output limits in Settings. Overrides belong to a model
-and provider endpoint; changing endpoints does not reuse old limits. Providers
-that report only an input limit do not establish a combined context capacity.
-Summary requests consume model tokens.
-
-The ring beside Send shows the latest chat-model call's input plus output usage,
-with exact token details on hover, focus, or tap. It excludes title and summary
-requests and does not add repeated tool calls together. Cached/reasoning tokens
-are counted once according to each provider's usage fields. Missing usage,
-unknown combined capacity, or a different selected provider/model shows an em
-dash. Older saved readings without provider identity load but remain unattributed.
-
-For manual compaction, type `/` in the desktop composer and select **/compact**,
-or use the CLI command above. **Send always sends ordinary chat text**, including
-literal `/compact`; selecting the task runs compaction. Recent exchanges remain
-intact. Deleted conversations move to local trash for manual recovery.
-
-For tasks with multiple steps, Atlas includes a brief user-facing message with
-its next tool request to explain the action and its purpose. This uses an optional
-top-level `message` on the ordinary `tool_call` response, without a separate
-progress tool or model round trip. The default agent asks for these updates before
-multi-step work and when the next meaningful step changes, in the user's language.
-Simple direct answers need no update; model compliance is not enforced.
-The desktop streams the message in the existing assistant bubble and the final
-answer replaces it. Invalid or interrupted previews are cleared. Ordinary tool
-arguments are never shown as commentary. Only complete, validated messages on
-valid tool requests become committed updates before tool approval or execution.
-A message describes intent, not proof that the tool succeeded or that the user
-approved execution.
-Successful turns save updates in activity JSONL and collapsed Activity details;
-later turns receive them through the existing bounded context and compaction
-path. Failed turns save neither chat messages nor activity. The automatic
-"Preparing answer" label stays hidden. The CLI writes committed updates to stderr
-and the final answer to stdout.
-During a request, the desktop shows only the latest requested tool in one compact
-row beneath the assistant message. The row updates as that call waits for approval,
-runs, completes, fails, or is denied; expand it to inspect that call's details.
-Each new call replaces the previous row. After completion, the live row disappears
-and the complete saved record remains in the collapsed Activity view.
-
-When a chat response does not match Atlas's tool protocol, the runtime sends the
-validation error and invalid reply back to the model and keeps repairing within
-the same request. Completed tool results stay available and are not re-executed
-by the repair loop. Only the latest invalid reply is included; repair envelopes
-do not nest or accumulate. Each retry still goes through normal context budgeting.
-The desktop clears any discarded partial answer before retrying; the CLI marks
-where a partial answer was discarded and restarts the answer on a new line.
-Protocol repair has no Atlas-imposed limit by default. To cap consecutive repairs,
-set a positive `max_protocol_repairs` in the agent TOML (for example,
-`max_protocol_repairs = 3`); a valid response resets that count. The same loop
-also repairs DeepSeek generation outcomes explicitly classified by its adapter:
-empty or reasoning-only answers, output-limit truncation, missing completion
-markers, resource interruptions, aborted generation, or unsupported native tool
-call output. Partial output is never executed as a tool call or accepted as a
-finished answer. Authentication, connection, filtered responses, unknown provider
-failures, and context-budget failures still fail the request. Backend logs record
-each repair as `protocol.repair`, with a sanitized reason and attempt number.
-DeepSeek's `model.stream_ended` entries include a known finish reason, completion
-marker status, content byte count, and a reasoning-presence flag. They never
-include answer or reasoning text.
-
-## Backend logs
-
-The desktop app and CLI create a local backend log at startup, including when a
-request fails before conversation history can be saved. Logs contain UTC timestamps,
-request IDs, provider/model names, operation durations, tool names/outcomes, and
-sanitized errors. Response-derived validation details are omitted from parser
-errors; protocol errors retain safe failure reasons and parser line/column positions.
-Logs do not record prompts, response bodies, tool arguments or output,
-screenshots, or API keys.
-
-The default file is `logs/atlas.jsonl` inside the Atlas data directory:
-
-- Linux/WSL: `${XDG_DATA_HOME:-~/.local/share}/atlas/logs/atlas.jsonl`
-- macOS: `~/Library/Application Support/atlas/logs/atlas.jsonl`
-- Windows: `%LOCALAPPDATA%\atlas\logs\atlas.jsonl`
-
-`ATLAS_DATA_DIR` also relocates the logs. Set `ATLAS_LOG_DIR` to override just the
-log directory. Each entry is one JSON line, written immediately. Files rotate at
-5 MiB with three backups (`atlas.1.jsonl` through `atlas.3.jsonl`). New log files
-and directories use private permissions on Unix. A log-write failure warns on
-stderr and does not prevent normal app use. Lock acquisition waits at most 50 ms;
-a contended write is skipped so another process cannot stall Atlas.
-
-Follow the backend live on Linux with the default location:
-
-```bash
-tail -F "${XDG_DATA_HOME:-$HOME/.local/share}/atlas/logs/atlas.jsonl"
-```
-
-To also show the same entries in the terminal while developing:
-
-```bash
-ATLAS_LOG_STDERR=1 npm --prefix desktop run tauri dev
-```
-
-Find an `operation.failed` entry and use its `requestId` to follow the related
-operations and model calls. This diagnostic log is separate from saved chat
-activity; failed requests are logged even though they are not saved as messages.
-An app already running needs a restart to use the new logging behavior.
+History stays local. Saved model API keys are plaintext in a private user-local
+settings file; MCP OAuth credentials use the OS credential store.
 
 ## Development
-
-Run the core checks:
 
 ```bash
 cargo fmt --check
 cargo test
+npm --prefix desktop test
+npm --prefix desktop run build
 ```
 
-Build a desktop debug executable:
+## Documentation
 
-```bash
-npm --prefix desktop run tauri -- build --debug --no-bundle
-```
-
-See [AGENTS.md](AGENTS.md) for repository structure, storage paths, configuration
-details, and the full verification commands; [RULE.md](RULE.md) for architecture
-rules; and [VISION.md](VISION.md) for product direction.
+- [Detailed reference](docs/guides/reference.md): provider configuration, tools,
+  Skills, MCP, memory, storage paths, and logs.
+- [Process demo](docs/guides/process-manager-demo.md): try command sessions without
+  provider credentials.
+- [Documentation index](docs/README.md), including the Vietnamese input fix for WSLg.
+- [Repository guide](AGENTS.md) · [Coding rules](RULE.md) · [Product vision](VISION.md).
