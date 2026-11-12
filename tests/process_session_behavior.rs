@@ -255,3 +255,111 @@ fn continuously_ready_output_does_not_block_stop() {
     assert_eq!(stopped["running"], false);
     assert_eq!(stopped["stopped"], true);
 }
+
+#[test]
+fn tail_reads_last_lines_per_stream_without_consuming_incremental_output() {
+    let root = tempfile::tempdir().unwrap();
+    let tools = tools(root.path());
+    let first = run(&tools, "exec_command", json!({
+        "command":"printf 'one\\r\\ntwo\\nthree'; printf 'warn1\\nwarn2\\n' >&2", "yield_time_ms":0
+    })).unwrap();
+    let id = first["session_id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let snapshot = run(
+            &tools,
+            "read_process",
+            json!({"session_id":id,"cursor":{"stdout":0,"stderr":0},"wait_ms":100}),
+        )
+        .unwrap();
+        if snapshot["running"] == false {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let tail = run(
+        &tools,
+        "read_process",
+        json!({"session_id":id,"tail_lines":1,"wait_ms":0}),
+    )
+    .unwrap();
+    assert_eq!(tail["stdout"], "three");
+    assert_eq!(tail["stderr"], "warn2\n");
+    assert_eq!(tail["tail_lines"], 1);
+    let other_root = tempfile::tempdir().unwrap();
+    let mut other = ToolRegistry::empty();
+    register_process_tools(&mut other, other_root.path());
+    assert!(other
+        .authorization("read_process", &json!({"session_id":id,"tail_lines":1}))
+        .is_err());
+    assert_eq!(tail["stdout_view"]["start_line"], 3);
+    assert_eq!(tail["stdout_view"]["end_line"], 3);
+    assert_eq!(tail["stdout_view"]["total_lines"], 3);
+    assert_eq!(tail["stdout_view"]["lines_after"], 0);
+    assert_eq!(tail["stdout_view"]["start_byte"], 9);
+    assert_eq!(tail["stdout_view"]["end_byte"], 14);
+    assert_eq!(tail["stdout_view"]["has_more"], false);
+    assert_eq!(tail["stdout_truncated"], false);
+    let incremental = run(&tools, "read_process", json!({"session_id":id,"wait_ms":0})).unwrap();
+    assert_eq!(
+        format!(
+            "{}{}",
+            first["stdout"].as_str().unwrap(),
+            incremental["stdout"].as_str().unwrap()
+        ),
+        "one\r\ntwo\nthree"
+    );
+    assert_eq!(
+        format!(
+            "{}{}",
+            first["stderr"].as_str().unwrap(),
+            incremental["stderr"].as_str().unwrap()
+        ),
+        "warn1\nwarn2\n"
+    );
+    assert_eq!(
+        run(
+            &tools,
+            "read_process",
+            json!({"session_id":id,"tail_lines":2,"wait_ms":0})
+        )
+        .unwrap()["stdout"],
+        "two\nthree"
+    );
+}
+
+#[test]
+fn tail_arguments_are_validated_before_execution() {
+    let root = tempfile::tempdir().unwrap();
+    let tools = tools(root.path());
+    let first = run(
+        &tools,
+        "exec_command",
+        json!({"command":"printf ok","yield_time_ms":1000}),
+    )
+    .unwrap();
+    let id = first["session_id"].as_str().unwrap();
+    for extra in [
+        json!({"tail_lines":0}),
+        json!({"tail_lines":1001}),
+        json!({"tail_lines":-1}),
+        json!({"tail_lines":1,"cursor":{"stdout":0,"stderr":0}}),
+    ] {
+        let mut args = extra;
+        args["session_id"] = id.into();
+        assert!(
+            tools.authorization("read_process", &args).is_err(),
+            "accepted {args}"
+        );
+    }
+    let args = json!({"session_id":id,"tail_lines":1000,"wait_ms":0});
+    assert_eq!(
+        tools.authorization("read_process", &args).unwrap().risk(),
+        ToolRisk::ReadOnly
+    );
+    let result = run(&tools, "read_process", args).unwrap();
+    assert_eq!(result["stdout"], "ok");
+    assert_eq!(result["stderr_view"]["total_lines"], 0);
+    assert!(result["stderr_view"]["start_line"].is_null());
+}

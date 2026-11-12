@@ -183,7 +183,7 @@ impl ActivityCollector {
             return None;
         }
         let limit = remaining.min(RESULT_DETAIL_LIMIT);
-        let bounded = truncate_chars(details, limit);
+        let bounded = bounded_result(details, limit);
         self.detail_characters += bounded.chars().count();
         Some(bounded)
     }
@@ -201,7 +201,66 @@ pub fn sanitize_arguments(args: &Value) -> String {
 }
 
 pub fn sanitize_result(result: &str) -> String {
-    truncate_chars(result, RESULT_DETAIL_LIMIT)
+    bounded_result(result, RESULT_DETAIL_LIMIT)
+}
+
+fn bounded_result(result: &str, limit: usize) -> String {
+    if result.chars().count() <= limit {
+        return result.to_string();
+    }
+    bounded_process_details(result, limit).unwrap_or_else(|| truncate_chars(result, limit))
+}
+
+fn bounded_process_details(result: &str, limit: usize) -> Option<String> {
+    // Preserve the positions/status of process reads when shortening their displayed logs.
+    // Other results retain the existing plain-text truncation contract.
+    if result.len() > 1024 * 1024 {
+        return None;
+    }
+    let mut value: Value = serde_json::from_str(result).ok()?;
+    let object = value.as_object_mut()?;
+    if !object.get("session_id")?.is_string()
+        || !object.get("stdout_view")?.is_object()
+        || !object.get("stderr_view")?.is_object()
+    {
+        return None;
+    }
+    let stdout = object.get("stdout")?.as_str()?.to_string();
+    let stderr = object.get("stderr")?.as_str()?.to_string();
+    object.insert("display_truncated".into(), true.into());
+    let mut out_budget = stdout.chars().count();
+    let mut err_budget = stderr.chars().count();
+    loop {
+        object.insert("stdout".into(), display_tail(&stdout, out_budget).into());
+        object.insert("stderr".into(), display_tail(&stderr, err_budget).into());
+        let rendered = serde_json::to_string(&object).ok()?;
+        if rendered.chars().count() <= limit {
+            return Some(rendered);
+        }
+        if out_budget == 0 && err_budget == 0 {
+            return None;
+        }
+        if out_budget >= err_budget && out_budget > 0 {
+            out_budget /= 2;
+        } else {
+            err_budget /= 2;
+        }
+    }
+}
+
+fn display_tail(value: &str, budget: usize) -> String {
+    if value.chars().count() <= budget {
+        return value.to_string();
+    }
+    let tail: String = value
+        .chars()
+        .rev()
+        .take(budget)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("[Display shortened]\n{tail}")
 }
 
 pub fn render_activity_context(turns: &[ActivityTurn]) -> String {
@@ -235,6 +294,9 @@ fn truncate_chars(value: &str, limit: usize) -> String {
         return value.to_string();
     }
     let suffix_length = TRUNCATION_SUFFIX.chars().count();
+    if limit < suffix_length {
+        return TRUNCATION_SUFFIX.chars().take(limit).collect();
+    }
     let mut bounded = value
         .chars()
         .take(limit.saturating_sub(suffix_length))

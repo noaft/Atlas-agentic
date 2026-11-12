@@ -58,7 +58,7 @@ pub use platform::{application_command, file_command, CommandSpec, Platform, Pro
 #[cfg(any(unix, windows))]
 pub use process_sessions::{
     register_process_tools, register_process_tools_in_scope, ProcessCursor, ProcessInfo,
-    ProcessLifetime, ProcessManager, ProcessRead, ProcessScope,
+    ProcessLifetime, ProcessManager, ProcessOutputView, ProcessRead, ProcessScope,
 };
 pub use pwd::PwdTool;
 pub use read_file::ReadFileTool;

@@ -73,7 +73,7 @@ The built-in runtime tools are:
 - `open_application`: launch an application
 - `exec_command`: execute an unrestricted platform shell command from the workspace
 - `list_processes`: discover resources owned by this runtime/chat scope
-- `read_process`: read new or explicit-cursor output/status from an owned session
+- `read_process`: read new, explicit-cursor, or last-N-line output/status from an owned session
 - `stop_process`: stop an owned command session and its contained descendants
 - `mouse_move`: move the pointer with absolute or relative coordinates
 - `mouse_click`: click left, middle, right, back, or forward in the active application
@@ -187,7 +187,16 @@ before reusing a service. No automatic retries/restarts, stdin/PTY or daemon.
 Limit active sessions to8/scope32/app and retained records32/scope128/app. These
 are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
 rings with absolute offsets, per-chat default agent cursor and independent UI
-cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms.
+cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms. `read_process` also accepts `tail_lines`1–1000,
+exclusive with `cursor`, for the latest retained LF-delimited lines per stream.
+Tail never advances any reader cursor. Preserve CRLF, incomplete UTF-8 tails and
+partial oldest-line warnings; a trailing LF does not invent an empty line.
+`stdout_view`/`stderr_view` carry absolute byte/line ranges, totals, returned-line
+counts, lines after the range, partial-first-line, retention-loss and pending-byte
+flags at snapshot time. Keep cursor-gap flags distinct from intentional tail
+selection and ring-buffer loss. Activity shortening must retain process JSON
+metadata when budget permits, label `display_truncated`, and show positions as
+captured rather than current; retain the last displayed log text within budgets.
 The retained native Stop endpoint requires explicit user intent and native
 ownership checks. The current UI uses agent tool calls to stop resources. Agent
 Start/Stop use Command risk, reads/list ReadOnly. Stop_requested is not

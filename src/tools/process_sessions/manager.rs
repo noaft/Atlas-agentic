@@ -162,6 +162,14 @@ impl ProcessScope {
             c.read_agent(id, Duration::from_millis(wait_ms), false)
         }
     }
+    /// Inspect the latest retained lines without advancing any reader's cursor.
+    pub fn read_tail(&self, id: &str, lines: usize, wait_ms: u64) -> Result<ProcessRead, String> {
+        if !(1..=1000).contains(&lines) || wait_ms > 10_000 {
+            return Err("tail_lines must be 1–1000; wait_ms must be 0–10000".into());
+        }
+        self.control(id)?
+            .tail_snapshot(id, lines, Duration::from_millis(wait_ms))
+    }
     pub fn stop(&self, id: &str) -> Result<ProcessRead, String> {
         let c = self.control(id)?;
         if !c.is_done() {
@@ -346,6 +354,14 @@ impl ProcessSessions {
         wait: u64,
     ) -> Result<ProcessRead, String> {
         self.scope.read(id, cursor, wait)
+    }
+    pub(crate) fn read_tail(
+        &self,
+        id: &str,
+        lines: usize,
+        wait_ms: u64,
+    ) -> Result<ProcessRead, String> {
+        self.scope.read_tail(id, lines, wait_ms)
     }
     pub(crate) fn stop(&self, id: &str) -> Result<ProcessRead, String> {
         self.scope.stop_agent(id)

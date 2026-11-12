@@ -42,7 +42,7 @@ client cũ; saved chat có thể gắn lại background trong backend còn sốn
 | --- | --- | --- |
 | `exec_command` | `command`, tùy chọn `yield_time_ms`, `timeout_ms`, `lifetime` | Command |
 | `list_processes` | Object rỗng | ReadOnly |
-| `read_process` | `session_id`, tùy chọn `wait_ms`, `cursor` | ReadOnly |
+| `read_process` | `session_id`, tùy chọn `wait_ms`, `cursor` hoặc `tail_lines` | ReadOnly |
 | `stop_process` | `session_id` | Command |
 
 Ask/Workspace xác nhận start và tool Stop; Full access giữ semantics bỏ qua xác
@@ -90,6 +90,34 @@ hiển thị kết quả tool inline, không có viewer polling riêng. Cursor t
 {"stdout":0,"stderr":0}
 ```
 
+Để xem những dòng cuối, gọi:
+
+```json
+{"session_id":"<id đã nhận>","tail_lines":50,"wait_ms":0}
+```
+
+`tail_lines` nhận 1–1000, lấy tối đa N dòng cuối **riêng cho stdout và stderr**,
+không ghép thứ tự hai luồng. Không kết hợp với `cursor`; không làm dịch cursor
+mặc định hay cursor UI. Giữ `wait_ms` 0–10000: có log đọc được thì trả ngay;
+chưa có thì chờ output hoặc kết thúc trong deadline. Một dòng kết thúc bằng LF;
+LF cuối không tạo thêm dòng rỗng, dòng chưa có LF vẫn được tính, CRLF giữ nguyên.
+Tail chỉ lấy phần còn trong ring 64 KiB mỗi luồng, có thể bắt đầu giữa dòng.
+
+Mỗi kết quả có `stdout_view` / `stderr_view`: `start_byte`, `end_byte` (exclusive),
+`total_bytes`, `start_line` / `end_line` (null khi không có text), `total_lines`,
+`returned_lines`, `lines_after`, `starts_mid_line`, `older_output_dropped`, `has_more`.
+Số dòng tuyệt đối là 1-based, vẫn tính các LF đã bị bỏ khỏi buffer. `has_more` báo
+byte chưa trả tại snapshot (ví dụ UTF-8 chưa đủ byte), không dự đoán output tương lai.
+`older_output_dropped` phân biệt mất log do ring overflow với chủ động chọn tail;
+`stdout_truncated` / `stderr_truncated` vẫn chỉ báo gap của cursor được yêu cầu.
+Metadata phản ánh lúc đọc, không phải phần trăm hoàn thành của công việc.
+
+Terminal và Activity hiển thị khoảng dòng/byte, tail và các cảnh báo trên. Khi
+phần output quá dài cho ngân sách Activity, giữ JSON hợp lệ và metadata, rút
+ngắn phần text về cuối rồi ghi `display_truncated`; khoảng dòng mô tả toàn bộ
+output đã chụp, không chỉ preview. Khi hết ngân sách cả turn, details vẫn có thể
+bị bỏ/cắt như trước. Không có polling hoặc panel process riêng.
+
 Đọc explicit cursor không thay cursor mặc định. Kết quả trả `next_cursor` để lần
 sau tiếp tục và `oldest_cursor` để nhận biết phần còn giữ. Nếu cursor cũ bị buffer
 vượt qua, `stdout_truncated`/`stderr_truncated` báo mất dữ liệu. Đọc log không chạy
@@ -100,6 +128,8 @@ lại lệnh. Một lần đọc có thể không có output mà process vẫn �
 | `session_id`, `running` | Resource được đọc và worker còn đang chạy/cleanup hay không. |
 | `stdout`, `stderr` | Phần output từ cursor của reader, giới hạn theo buffer byte. |
 | `next_cursor`, `oldest_cursor` | Offset tiếp theo và offset cũ nhất còn giữ. |
+| `tail_lines` | Số dòng tail được yêu cầu; null với read thông thường. |
+| `stdout_view`, `stderr_view` | Vị trí output và tình trạng retention tại thời điểm đọc. |
 | `stdout_truncated`, `stderr_truncated` | Có gap; không được báo log là đầy đủ. |
 | `exit_code` | Mã thoát nếu có; `null` không chứng minh thành công. |
 | `timed_out`, `stopped` | Worker đã xác nhận timeout hoặc dừng. |

@@ -172,3 +172,46 @@ fn capture_screen_record_drops_image_payload_details() {
         .unwrap()
         .contains("PRIVATEPIXELS"));
 }
+
+#[test]
+fn large_process_details_keep_position_metadata_in_valid_bounded_json() {
+    let details = json!({
+        "session_id":"owned", "running":true, "tail_lines":50,
+        "stdout":format!("old\n{}\nlatest\n", "🌍\"".repeat(10_000)),
+        "stderr":"warning\n", "stdout_truncated":false,
+        "stdout_view":{"start_byte":100,"end_byte":50112,"start_line":8,"end_line":10,"older_output_dropped":true},
+        "stderr_view":{"start_byte":0,"end_byte":8,"start_line":1,"end_line":1,"older_output_dropped":false}
+    });
+    let bounded = sanitize_result(&details.to_string());
+    assert!(bounded.chars().count() <= 8192);
+    let parsed: serde_json::Value = serde_json::from_str(&bounded).unwrap();
+    assert_eq!(parsed["stdout_view"], details["stdout_view"]);
+    assert_eq!(parsed["stderr_view"], details["stderr_view"]);
+    assert_eq!(parsed["display_truncated"], true);
+    assert!(parsed["stdout"].as_str().unwrap().ends_with("latest\n"));
+    assert_eq!(parsed["stderr"], "warning\n");
+    let mut collector = ActivityCollector::new();
+    collector.tool_finished("read_process", true, "Read process", &details.to_string());
+    let turn = collector.into_turn("tail", 1);
+    let saved: serde_json::Value =
+        serde_json::from_str(turn.records[0].details.as_ref().unwrap()).unwrap();
+    assert_eq!(saved["stdout_view"], details["stdout_view"]);
+}
+
+#[test]
+fn process_metadata_fallback_respects_even_a_one_character_remaining_turn_budget() {
+    let mut collector = ActivityCollector::new();
+    for size in [8192, 8192, 8192, 8191] {
+        collector.tool_finished("exec_command", true, "Read output", &"a".repeat(size));
+    }
+    let details = json!({"session_id":"owned","stdout":"latest\n","stderr":"", "stdout_view":{},"stderr_view":{}});
+    collector.tool_finished("read_process", true, "Read process", &details.to_string());
+    let turn = collector.into_turn("budget", 1);
+    let count: usize = turn
+        .records
+        .iter()
+        .filter_map(|record| record.details.as_ref())
+        .map(|text| text.chars().count())
+        .sum();
+    assert!(count <= 32768, "stored {count} characters");
+}

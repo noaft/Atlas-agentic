@@ -187,6 +187,13 @@ Desktop process tools share an app-owned manager with a scope for each chat.
 `exec_command` defaults to a request-local job. Set `yield_time_ms` to inspect a
 long-running session with `read_process`; when explicitly requested, use
 `lifetime: "background"` to keep a foreground service across messages in that chat.
+`read_process` accepts `tail_lines` (1–1000) to inspect the last retained lines
+per stdout/stderr without moving the normal reader cursor; it cannot combine
+with `cursor`. For example: `{"session_id":"<id>","tail_lines":50,"wait_ms":0}`.
+Its per-stream metadata reports absolute line/byte positions and whether older
+log was lost or a first line is partial. Terminal output and saved Activity show
+these positions at capture time; shortened display text is labeled separately.
+This describes log position, not a percentage of task completion.
 `list_processes` discovers existing resources; `stop_process` stops the selected
 owned group/Job with the current authorization policy. Tool calls appear inline
 as terminal cards while requested, awaiting approval or running. The card hides
