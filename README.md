@@ -34,7 +34,8 @@ folder in your home directory; you can choose another folder per chat.
 - **Files and coding:** search, read by line range, paginate directory listings,
   create, patch, move, copy, and delete files.
 - **Commands:** run shell commands, inspect output, and manage per-chat background
-  processes on desktop. Active tools appear inline as terminal cards.
+  processes on desktop. Inspect the last N log lines and their positions.
+  Active tools appear inline as terminal cards.
 - **Computer control:** open applications, capture the screen, and use mouse/keyboard.
 - **Skills:** Personal and Project libraries; import from GitHub, folders, or files;
   preview, edit, search, and enable/disable skills.

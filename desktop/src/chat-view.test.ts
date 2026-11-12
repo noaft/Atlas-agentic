@@ -2111,3 +2111,47 @@ test.each(["succeeded", "failed", "denied"] as const)("terminal hides immediatel
   await flushStreaming(); expect(root.querySelector("[data-current-tool]")?.textContent).toContain("read_process");
   pending.resolve({answer: "Done", metadata, created: true}); await sending;
 });
+
+test("saved process tails show per-stream line positions and retention loss as plain text", async () => {
+  const api = new ViewApi();
+  api.load = async (): Promise<Conversation> => ({...conversation(), activities: [{turnId: "tail", assistantMessageIndex: 1, records: [{
+    sequence: 0, kind: "toolResult", tool: "read_process", arguments: '{"session_id":"owned","tail_lines":2}',
+    outcome: "succeeded", summary: "Read process", createdAt: metadata.updatedAt,
+    details: JSON.stringify({
+      session_id: "owned", running: true, tail_lines: 2, display_truncated: true,
+      stdout: "partial\n<img src=x>\n", stderr: "warning\n",
+      stdout_view: {start_byte: 100, end_byte: 120, total_bytes: 120, start_line: 8, end_line: 9, total_lines: 9, returned_lines: 2, lines_after: 0, starts_mid_line: true, older_output_dropped: true, has_more: false},
+      stderr_view: {start_byte: 0, end_byte: 8, total_bytes: 8, start_line: 1, end_line: 1, total_lines: 1, returned_lines: 1, lines_after: 0, starts_mid_line: false, older_output_dropped: false, has_more: false},
+    }),
+  }]}]});
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const output = root.querySelector("[data-activity] .tool-terminal-output")!;
+  expect(output.textContent).toContain("Tail: up to 2 lines per stream");
+  expect(output.textContent).toContain("Display shortened; positions describe full captured output");
+  expect(output.textContent).toContain("stdout · captured lines 8–9 of 9");
+  expect(output.textContent).toContain("bytes 100–120 of 120");
+  expect(output.textContent).toContain("Latest readable output at capture");
+  expect(output.textContent).toContain("Older stdout output was dropped from the buffer");
+  expect(output.textContent).toContain("First stdout line is partial");
+  expect(output.textContent).toContain("stderr · captured lines 1–1 of 1");
+  expect(output.textContent).toContain("<img src=x>");
+  expect(output.querySelector("img")).toBeNull();
+  expect(root.querySelector(".processes-panel")).toBeNull();
+});
+
+test("process position labels distinguish pending bytes from an empty completed stream", async () => {
+  const api = new ViewApi();
+  api.load = async (): Promise<Conversation> => ({...conversation(), activities: [{turnId: "pending-tail", assistantMessageIndex: 1, records: [{
+    sequence: 0, kind: "toolResult", tool: "read_process", arguments: '{}', outcome: "succeeded", summary: "Read process", createdAt: metadata.updatedAt,
+    details: JSON.stringify({session_id: "owned", running: true, stdout: "one\n", stderr: "",
+      stdout_view: {start_byte: 0, end_byte: 4, total_bytes: 6, start_line: 1, end_line: 1, total_lines: 2, returned_lines: 1, lines_after: 1, starts_mid_line: false, older_output_dropped: false, has_more: true},
+      stderr_view: {start_byte: 0, end_byte: 0, total_bytes: 0, start_line: null, end_line: null, total_lines: 0, returned_lines: 0, lines_after: null, starts_mid_line: false, older_output_dropped: false, has_more: false},
+    }),
+  }]}]});
+  const {root, store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const output = root.querySelector("[data-activity] .tool-terminal-output")!;
+  expect(output.textContent).toContain("stdout · captured lines 1–1 of 2");
+  expect(output.textContent).toContain("1 line(s) after this range");
+  expect(output.textContent).toContain("Pending bytes at capture");
+  expect(output.textContent).toContain("stderr · no readable lines at capture");
+});

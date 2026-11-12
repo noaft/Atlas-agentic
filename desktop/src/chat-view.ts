@@ -1,3 +1,4 @@
+import type { ProcessOutputView } from "./process-types";
 import { createCompactionStatus } from "./compaction-status";
 import { taskUnavailableReason } from "./slash-commands";
 import { renderMemory } from "./memory-view";
@@ -184,8 +185,18 @@ function terminalOutput(details: string | null, fallback: string): HTMLPreElemen
       const result = JSON.parse(details);
       if (result && typeof result === "object" &&
           (typeof result.stdout === "string" || typeof result.stderr === "string")) {
-        const lines = [result.stdout ?? ""];
-        if (typeof result.stderr === "string" && result.stderr) lines.push(`[stderr]\n${result.stderr}`);
+        const lines: string[] = [];
+        if (Number.isSafeInteger(result.tail_lines) && result.tail_lines > 0 && result.tail_lines <= 1000) {
+          lines.push(`[Tail: up to ${result.tail_lines} lines per stream]`);
+        }
+        if (result.display_truncated === true) lines.push("[Display shortened; positions describe full captured output]");
+        lines.push(...processPosition("stdout", result.stdout_view));
+        if (typeof result.stdout === "string") lines.push(result.stdout);
+        const stderrPosition = processPosition("stderr", result.stderr_view);
+        lines.push(...stderrPosition);
+        if (typeof result.stderr === "string" && result.stderr) {
+          lines.push(`${stderrPosition.length ? "" : "[stderr]\n"}${result.stderr}`);
+        }
         if (result.stdout_truncated || result.stderr_truncated) lines.push("[Earlier output was truncated]");
         if (typeof result.error === "string" && result.error) lines.push(result.error);
         if (result.exit_code != null) lines.push(`[exit ${result.exit_code}]`);
@@ -196,6 +207,26 @@ function terminalOutput(details: string | null, fallback: string): HTMLPreElemen
   }
   pre.textContent = text;
   return pre;
+}
+
+function processPosition(stream: "stdout" | "stderr", value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  const view = value as ProcessOutputView;
+  const nonnegative = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  if (![view.start_byte, view.end_byte, view.total_bytes, view.total_lines, view.returned_lines].every(nonnegative)
+      || view.start_byte > view.end_byte || view.end_byte > view.total_bytes
+      || typeof view.has_more !== "boolean" || typeof view.older_output_dropped !== "boolean"
+      || typeof view.starts_mid_line !== "boolean") return [];
+  const empty = view.start_line === null && view.end_line === null && view.returned_lines === 0;
+  if (!empty && (!nonnegative(view.start_line) || !nonnegative(view.end_line)
+      || view.start_line < 1 || view.end_line < view.start_line || view.end_line > view.total_lines)) return [];
+  const range = empty ? "no readable lines at capture" : `captured lines ${view.start_line}–${view.end_line} of ${view.total_lines}`;
+  const lines = [`[${stream} · ${range} · bytes ${view.start_byte}–${view.end_byte} of ${view.total_bytes} (end exclusive)]`];
+  if (nonnegative(view.lines_after) && view.lines_after > 0) lines.push(`[${view.lines_after} line(s) after this range]`);
+  lines.push(view.has_more ? "[Pending bytes at capture]" : "[Latest readable output at capture]");
+  if (view.older_output_dropped) lines.push(`[Older ${stream} output was dropped from the buffer]`);
+  if (view.starts_mid_line) lines.push(`[First ${stream} line is partial]`);
+  return lines;
 }
 
 function renderMessage(message: DisplayMessage): HTMLElement {
