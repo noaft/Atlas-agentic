@@ -574,6 +574,13 @@ metadata instead. If a malformed response already emitted text, send a
 `responseReset` event before retrying: clear only that session's pending assistant
 text in the desktop and explicitly mark the restarted answer in CLI output.
 
+Use the pinned Rust toolchain in `rust-toolchain.toml` (including rustfmt/clippy)
+and Node version in `.node-version`. CI independently validates workflows,
+frontend tests/build, Rust core, and the native desktop bridge/build. Keep action
+references pinned to reviewed commit SHAs and preserve locked dependency checks.
+Frontend CI also rejects high/critical npm advisories; use compatible reviewed
+dependency updates rather than forcing unrelated major upgrades.
+
 Format and test the repository:
 
 ```bash

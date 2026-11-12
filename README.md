@@ -8,9 +8,10 @@ conversation history.
 
 ## Run the desktop app
 
-Install Rust, Node.js/npm, and the
+Install Rust (rustup), Node.js/npm, and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
-On Debian/Ubuntu, also install:
+Use the versions in [rust-toolchain.toml](rust-toolchain.toml) and
+[.node-version](.node-version) to match CI. On Debian/Ubuntu, also install:
 
 ```bash
 sudo apt install libxcb1 libxrandr2 libdbus-1-3 libdbus-1-dev pkg-config
@@ -86,6 +87,7 @@ settings file; MCP OAuth credentials use the OS credential store.
 cargo fmt --check
 cargo test
 npm --prefix desktop test
+npm audit --prefix desktop --audit-level=high
 npm --prefix desktop run build
 ```
 
