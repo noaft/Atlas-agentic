@@ -31,7 +31,8 @@ folder in your home directory; you can choose another folder per chat.
 
 - **Chat:** streaming replies, independent conversations, local history and Activity.
 - **Models:** DeepSeek, OpenAI, Anthropic, Gemini, and OpenAI-compatible endpoints.
-- **Files and coding:** search, read, create, patch, move, copy, and delete files.
+- **Files and coding:** search, read by line range, paginate directory listings,
+  create, patch, move, copy, and delete files.
 - **Commands:** run shell commands, inspect output, and manage per-chat background
   processes on desktop. Active tools appear inline as terminal cards.
 - **Computer control:** open applications, capture the screen, and use mouse/keyboard.

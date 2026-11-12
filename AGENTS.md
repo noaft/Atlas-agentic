@@ -60,7 +60,7 @@ The built-in runtime tools are:
 - `install_skill`: install exact previewed bytes into Personal or Project storage without overwriting
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
-- `ls`: list files and directories inside the workspace
+- `ls`: list bounded, sorted directory pages inside the workspace
 - `read_file`: safely read bounded UTF-8 text, inclusive line ranges, or byte-cursor pages inside the workspace
 - `ripgrep`: search file contents with compiled-in ripgrep matching, including
   approved paths outside the workspace
@@ -82,6 +82,15 @@ The built-in runtime tools are:
 - `key_press`: press named or Unicode keys with optional modifiers
 - `get_ui_state`: read pointer, primary-display, and active-window metadata
 - `capture_screen`: capture the primary display as an in-memory PNG for model vision
+
+`ls` defaults to 100 entries per page (1–1000), accepts `offset` up to 100000,
+and bounds text/JSON output to 64 KiB. `format: "json"` uses the same
+`{data,truncated,next_cursor}` envelope as `read_file`, with typed file/directory/
+symlink/other entries. Merge its cursor with the same directory `path`. Child
+symlinks are classified without following them. Pagination reflects the current
+directory rather than a snapshot. Beyond the offset cap, a truncated JSON page
+sets `data.pagination_limit_reached` and has no next cursor; narrow the directory
+or search instead. Retain only the smallest offset+limit+1 names while scanning.
 
 `read_file` keeps plain text by default. Optional `start_line`/`end_line` select
 inclusive 1-based lines; `line_numbers` adds labels. `format: "json"` returns

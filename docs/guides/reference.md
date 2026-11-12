@@ -146,6 +146,21 @@ Built-in tools:
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 | Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
 
+`ls` lists sorted pages: `limit` defaults to 100 (max 1000), with `offset`
+from 0 to 100000. Small default text listings keep their original path-per-line
+format. JSON uses the same `{data, truncated, next_cursor}` page envelope:
+
+```json
+{"path":"src","limit":50,"format":"json"}
+```
+
+Entries include a `path` and `kind` (`file`, `directory`, `symlink`, or `other`).
+Merge `next_cursor` with the same directory `path` to continue. Text pages show
+continuation offsets when truncated. Output is capped at 64 KiB including JSON
+escaping. Pages reflect the current directory; restart if it changes. At the
+maximum offset, `data.pagination_limit_reached` reports when further pagination
+is unavailable; narrow the directory or use search.
+
 `read_file` accepts optional inclusive `start_line` / `end_line` and
 `line_numbers`. Its default output remains plain text. Choose `format: "json"`
 for a page shaped as `{data, truncated, next_cursor}`:
