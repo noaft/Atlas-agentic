@@ -2024,3 +2024,48 @@ fn runtime_sessions_continue_between_tools_and_are_cleaned_on_final_or_error() {
         assert!(!workspace.path().join("leaked").exists());
     }
 }
+
+#[test]
+fn runtime_returns_structured_inspection_pages_to_the_model() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(workspace.path().join("note.txt"), "first\nsecond\nthird\n").unwrap();
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let model = HistoryCapturingStreamingModel::new(
+        [
+            vec![r#"{"type":"tool_call","tool":"ls","args":{"format":"json"}}"#],
+            vec![
+                r#"{"type":"tool_call","tool":"read_file","args":{"path":"note.txt","start_line":2,"end_line":2,"format":"json"}}"#,
+            ],
+            vec![r#"{"type":"final","content":"Read second line."}"#],
+        ],
+        Rc::clone(&requests),
+    );
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition(),
+        Box::new(model),
+    ))]))
+    .with_tools(ToolRegistry::new(vec![
+        Box::new(ListDirTool::new(workspace.path())),
+        Box::new(ReadFileTool::new(workspace.path())),
+    ]));
+    assert_eq!(
+        runtime.ask_stream("read second line", &mut |_| {}).unwrap(),
+        "Read second line."
+    );
+    let requests = requests.borrow();
+    let continuation: serde_json::Value = serde_json::from_str(&requests[2].user_prompt).unwrap();
+    let records = continuation["tool_results"].as_array().unwrap();
+    assert!(records.iter().all(|record| record["success"] == true));
+    let listing: serde_json::Value =
+        serde_json::from_str(records[0]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        listing["data"]["entries"][0],
+        serde_json::json!({"path":"note.txt","kind":"file"})
+    );
+    let reading: serde_json::Value =
+        serde_json::from_str(records[1]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(reading["data"]["content"], "second\n");
+    assert_eq!(reading["data"]["start_byte"], 6);
+    assert_eq!(reading["truncated"], false);
+    assert!(reading["next_cursor"].is_null());
+}

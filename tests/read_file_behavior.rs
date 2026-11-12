@@ -342,3 +342,27 @@ fn range_scanning_is_bounded_with_actionable_error() {
         .unwrap();
     assert!(error.contains("byte_offset"), "{error}");
 }
+
+#[test]
+fn byte_cursor_preserves_the_end_of_a_truncated_line_range() {
+    let workspace = TempDir::new().unwrap();
+    let expected = format!("{}\nsecond\n", "🌍".repeat(20_000));
+    fs::write(
+        workspace.path().join("range.txt"),
+        format!("{expected}excluded\n"),
+    )
+    .unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    let mut args = serde_json::json!({"path":"range.txt","end_line":2,"format":"json"});
+    let mut recovered = String::new();
+    loop {
+        let result = json_read(&tool, args);
+        recovered.push_str(result["data"]["content"].as_str().unwrap());
+        if !result["truncated"].as_bool().unwrap() {
+            break;
+        }
+        args = result["next_cursor"].clone();
+        args["path"] = "range.txt".into();
+    }
+    assert_eq!(recovered, expected);
+}
