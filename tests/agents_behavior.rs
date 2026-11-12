@@ -206,8 +206,8 @@ fn default_atlas_prompt_guides_general_computer_work_without_embedding_tool_prot
 }
 
 #[test]
-fn readme_documents_the_complete_default_toolset_and_permission_modes() {
-    let readme = std::fs::read_to_string("README.md").unwrap();
+fn reference_documents_the_complete_default_toolset_and_permission_modes() {
+    let reference = std::fs::read_to_string("docs/guides/reference.md").unwrap();
     for tool_name in [
         "current_time",
         "pwd",
@@ -234,14 +234,14 @@ fn readme_documents_the_complete_default_toolset_and_permission_modes() {
         "get_ui_state",
     ] {
         assert!(
-            readme.contains(&format!("`{tool_name}`")),
-            "README is missing default tool `{tool_name}`"
+            reference.contains(&format!("`{tool_name}`")),
+            "Reference is missing default tool `{tool_name}`"
         );
     }
     for mode in ["Ask", "Workspace", "Full access"] {
         assert!(
-            readme.contains(&format!("**{mode}**")),
-            "README is missing permission mode `{mode}`"
+            reference.contains(&format!("**{mode}**")),
+            "Reference is missing permission mode `{mode}`"
         );
     }
 }
