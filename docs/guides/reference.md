@@ -146,6 +146,21 @@ Built-in tools:
 | Observe the desktop | `get_ui_state`, `capture_screen` |
 | Manage skills | `create_skill`, `preview_skill`, `install_skill`, `load_skill` (when enabled skills are available) |
 
+`read_file` accepts optional inclusive `start_line` / `end_line` and
+`line_numbers`. Its default output remains plain text. Choose `format: "json"`
+for a page shaped as `{data, truncated, next_cursor}`:
+
+```json
+{"path":"src/runtime.rs","start_line":100,"end_line":160,"line_numbers":true,"format":"json"}
+```
+
+`data` contains `path`, `content`, `start_byte`, `end_byte` (exclusive), and
+`start_line` (null for byte reads). Output, including labels/JSON, is capped at
+64 KiB. If truncated, merge `next_cursor` with `path` in the next call; it contains
+`byte_offset`, `format`, and any remaining `line_count`. Byte continuations are
+unnumbered and require a UTF-8 boundary. Cursors assume the file has not changed.
+Line-start scans stop at 32 MiB; use a byte offset to inspect farther into a file.
+
 `apply_patch` edits an existing UTF-8 file with exact replacements:
 `{"path":"src/example.rs","edits":[{"old_text":"old code","new_text":"new code"}]}`.
 Each old segment must occur exactly once; all edits must fit before Atlas publishes

@@ -11,6 +11,7 @@ mod exec_command;
 #[cfg(windows)]
 mod exec_command_windows;
 mod import_skill;
+mod inspection;
 mod list_dir;
 mod load_skill;
 mod move_file;

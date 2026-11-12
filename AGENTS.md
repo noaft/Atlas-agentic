@@ -61,7 +61,7 @@ The built-in runtime tools are:
 - `current_time`: show the current date and time from the user's machine, including its local UTC offset
 - `pwd`: show the current workspace path
 - `ls`: list files and directories inside the workspace
-- `read_file`: safely read up to 64 KiB from a UTF-8 file inside the workspace
+- `read_file`: safely read bounded UTF-8 text, inclusive line ranges, or byte-cursor pages inside the workspace
 - `ripgrep`: search file contents with compiled-in ripgrep matching, including
   approved paths outside the workspace
 - `search_files`: search workspace filenames and UTF-8 contents
@@ -82,6 +82,14 @@ The built-in runtime tools are:
 - `key_press`: press named or Unicode keys with optional modifiers
 - `get_ui_state`: read pointer, primary-display, and active-window metadata
 - `capture_screen`: capture the primary display as an in-memory PNG for model vision
+
+`read_file` keeps plain text by default. Optional `start_line`/`end_line` select
+inclusive 1-based lines; `line_numbers` adds labels. `format: "json"` returns
+`{data,truncated,next_cursor}` with content and source byte positions. Merge a
+returned cursor with `path` to resume: byte cursors are unnumbered and preserve
+remaining range lines through `line_count`. Cursors assume unchanged file bytes.
+Output is bounded to 64 KiB including JSON/labels. Line-start scans are bounded
+to 32 MiB; use `byte_offset` beyond that. Byte offsets must be UTF-8 boundaries.
 
 `apply_patch` accepts one relative path and 1–64 sequential `{old_text,new_text}`
 edits. Source, result and aggregate replacement input are bounded to 1 MiB. Old

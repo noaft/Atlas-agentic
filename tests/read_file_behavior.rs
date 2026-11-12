@@ -196,3 +196,149 @@ fn never_reads_outside_during_an_atomic_file_symlink_swap() {
     running.store(false, Ordering::Relaxed);
     swapper.join().unwrap();
 }
+
+fn json_read(tool: &ReadFileTool, args: serde_json::Value) -> serde_json::Value {
+    let result = tool.execute(&args).unwrap();
+    assert!(result.message.len() <= MAX_OUTPUT_BYTES);
+    serde_json::from_str(&result.message).unwrap()
+}
+
+#[test]
+fn reads_an_inclusive_line_range_with_original_newlines_and_numbers() {
+    let workspace = TempDir::new().unwrap();
+    fs::write(
+        workspace.path().join("notes.txt"),
+        "first\r\nViệt 🌍\r\nthird\nlast",
+    )
+    .unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    let page = json_read(
+        &tool,
+        serde_json::json!({
+            "path":"notes.txt", "start_line":2, "end_line":3,
+            "line_numbers":true, "format":"json"
+        }),
+    );
+    assert_eq!(page["data"]["content"], "2: Việt 🌍\r\n3: third\n");
+    assert_eq!(page["data"]["start_byte"], 7);
+    assert_eq!(page["data"]["start_line"], 2);
+    assert_eq!(page["truncated"], false);
+    assert!(page["next_cursor"].is_null());
+}
+
+#[test]
+fn reads_lines_after_the_old_64k_prefix() {
+    let workspace = TempDir::new().unwrap();
+    let mut content = "prefix\n".repeat(12_000);
+    content.push_str("wanted\nend");
+    fs::write(workspace.path().join("large.txt"), content).unwrap();
+    let page = json_read(
+        &ReadFileTool::new(workspace.path()),
+        serde_json::json!({
+            "path":"large.txt", "start_line":12001, "end_line":12001, "format":"json"
+        }),
+    );
+    assert_eq!(page["data"]["content"], "wanted\n");
+    assert_eq!(page["truncated"], false);
+}
+
+#[test]
+fn empty_ranges_at_eof_do_not_invent_a_line() {
+    let workspace = TempDir::new().unwrap();
+    fs::write(workspace.path().join("notes.txt"), "one\ntwo\n").unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    for start in [3, 9] {
+        let page = json_read(
+            &tool,
+            serde_json::json!({
+                "path":"notes.txt", "start_line":start, "format":"json", "line_numbers":true
+            }),
+        );
+        assert_eq!(page["data"]["content"], "");
+        assert_eq!(page["truncated"], false);
+        assert!(page["next_cursor"].is_null());
+    }
+}
+
+#[test]
+fn json_byte_cursor_resumes_long_unicode_lines_without_loss() {
+    let workspace = TempDir::new().unwrap();
+    let content = format!("{}\nlast", "\"🌍\t".repeat(20_000));
+    fs::write(workspace.path().join("long.txt"), &content).unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    let mut offset = 0;
+    let mut recovered = String::new();
+    loop {
+        let page = json_read(
+            &tool,
+            serde_json::json!({
+                "path":"long.txt", "byte_offset":offset, "format":"json"
+            }),
+        );
+        recovered.push_str(page["data"]["content"].as_str().unwrap());
+        if !page["truncated"].as_bool().unwrap() {
+            assert!(page["next_cursor"].is_null());
+            break;
+        }
+        let next = page["next_cursor"]["byte_offset"].as_u64().unwrap();
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(recovered, content);
+}
+
+#[test]
+fn numbered_output_is_bounded_even_for_many_empty_lines() {
+    let workspace = TempDir::new().unwrap();
+    fs::write(workspace.path().join("blank.txt"), "\n".repeat(30_000)).unwrap();
+    let page = json_read(
+        &ReadFileTool::new(workspace.path()),
+        serde_json::json!({
+            "path":"blank.txt", "line_numbers":true, "format":"json"
+        }),
+    );
+    assert_eq!(page["truncated"], true);
+    assert!(page["data"]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("1: \n2: \n"));
+    assert!(page["next_cursor"]["byte_offset"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn rejects_invalid_ranges_offsets_formats_and_unknown_arguments() {
+    let workspace = TempDir::new().unwrap();
+    fs::write(workspace.path().join("note.txt"), "🌍").unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    for extra in [
+        serde_json::json!({"start_line":0}),
+        serde_json::json!({"start_line":3,"end_line":2}),
+        serde_json::json!({"end_line":0}),
+        serde_json::json!({"byte_offset":1}),
+        serde_json::json!({"byte_offset":0,"start_line":1}),
+        serde_json::json!({"byte_offset":0,"line_numbers":true}),
+        serde_json::json!({"format":"yaml"}),
+        serde_json::json!({"start_lien":2}),
+    ] {
+        let mut args = extra;
+        args["path"] = "note.txt".into();
+        assert!(tool.execute(&args).is_err(), "accepted {args}");
+    }
+}
+
+#[test]
+fn range_scanning_is_bounded_with_actionable_error() {
+    let workspace = TempDir::new().unwrap();
+    fs::write(
+        workspace.path().join("huge.txt"),
+        vec![b'a'; 32 * 1024 * 1024 + 1],
+    )
+    .unwrap();
+    let error = ReadFileTool::new(workspace.path())
+        .execute(&serde_json::json!({
+            "path":"huge.txt", "start_line":2
+        }))
+        .err()
+        .unwrap();
+    assert!(error.contains("byte_offset"), "{error}");
+}
