@@ -147,8 +147,8 @@ riêng từ process manager, không có log archive replay vô hạn.
 
 | Hạng mục | Giá trị |
 | --- | --- |
-| Active / chat scope | 8 |
-| Active / backend manager | 32 |
+| Active / chat scope | Mặc định 8; cấu hình 1–32 |
+| Active / backend manager | Mặc định 32; cấu hình 1–128 |
 | Record / chat scope | 32 |
 | Record / backend manager | 128 |
 | Buffer / stdout hoặc stderr | 64 KiB byte; overflow bỏ phần cũ |
@@ -157,6 +157,16 @@ riêng từ process manager, không có log archive replay vô hạn.
 | Command đồng bộ mặc định | 30 giây |
 | Job session | Mặc định/tối đa 10 phút |
 | Background | Mặc định 1 giờ, tối đa 24 giờ |
+
+Đặt hai giới hạn trong **Settings → Permissions → Concurrent commands**, rồi
+**Save changes**. File settings version 2 lưu `processes:{perChat,total}`; file cũ
+thiếu trường này vẫn dùng 8/32. Cả hai giới hạn đều áp dụng, nên app có thể có cap
+nhỏ hơn cap mỗi chat. Backend chặn lệnh mới trước khi khởi chạy, không tự xếp hàng.
+Giảm cap để lệnh đang chạy tiếp tục, kể cả khi chuyển chat nháp sang chat đã lưu;
+đọc log và stop vẫn dùng được. Tăng cap cho phép thêm lệnh ngay sau Save.
+CLI cũng áp dụng policy đã lưu: lệnh đồng bộ giữ một slot trong lúc thực thi,
+cùng bộ đếm với các session có yield; output và timeout đồng bộ giữ nguyên.
+Đây là giới hạn command, không biến các tool call thông thường thành chạy song song.
 
 Loại record hoàn tất cũ khi cần chỗ; ID có thể hết hạn dù process đã hoàn tất.
 Giới hạn session không giới hạn tổng process OS con hay CPU/RAM của command.

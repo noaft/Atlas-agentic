@@ -2,6 +2,7 @@
 use crate::commands::{run_blocking, DesktopState};
 use atlas_agentic::{
     conversations::ConversationId,
+    process_limits::ProcessLimits,
     tools::{ProcessCursor, ProcessInfo, ProcessManager, ProcessRead, ProcessScope},
 };
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,9 @@ impl Drop for ProcessLease {
     }
 }
 impl DesktopProcesses {
+    pub(crate) fn set_limits(&self, limits: ProcessLimits) -> Result<(), String> {
+        self.manager.set_limits(limits)
+    }
     pub(crate) fn initialize(&self, window: &str) -> Result<String, String> {
         let token = uuid();
         let old = {

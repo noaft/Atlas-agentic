@@ -479,3 +479,43 @@ test("switching chats after leaving Settings cancels its pending MCP check",asyn
  finish({fingerprint:"version",workspacePath:"/old",tools:[]});
  for(let i=0;i<12;i++)await Promise.resolve();expect(root.textContent).not.toContain("Verified");
 });
+
+test("concurrent command limits keep drafts across categories and save through the Settings API", async () => {
+  const current = {...settings, processLimits:{perChat:2,total:4}};
+  const {root,store,api,saves} = fixture(current);
+  api.saveSettings = async input => { saves.push(input); return {...current,processLimits:input.processLimits}; };
+  await store.initialize(); store.openSettings(); store.selectSettingsSection("permissions");
+  renderSettings(root,store.getState(),store);
+  const perChat = root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')!;
+  const total = root.querySelector<HTMLInputElement>('[data-settings-command-limit="total"]')!;
+  expect(perChat.value).toBe("2"); expect(total.value).toBe("4");
+  expect(perChat.type).toBe("number"); expect(perChat.max).toBe("32"); expect(total.max).toBe("128");
+  perChat.value="3"; perChat.dispatchEvent(new Event("input",{bubbles:true}));
+  expect(store.hasSettingsChanges()).toBe(true);
+  store.selectSettingsSection("models");updateSettingsChrome(root,store.getState(),store);
+  store.selectSettingsSection("permissions");updateSettingsChrome(root,store.getState(),store);
+  expect(root.querySelector('[data-settings-command-limit="perChat"]')).toBe(perChat);
+  expect(perChat.value).toBe("3");
+  await store.saveSettings({stayInSettings:true});
+  expect(saves[0].processLimits).toEqual({perChat:3,total:4});
+  expect(store.getState().settings?.processLimits).toEqual({perChat:3,total:4});
+  expect(store.hasSettingsChanges()).toBe(false);
+  expect(store.getState().settingsSection).toBe("permissions");
+});
+
+test("command concurrency defaults, discard and invalid values preserve Settings behavior", async () => {
+  const {root,store,saves} = fixture();
+  await store.initialize();store.openSettings();renderSettings(root,store.getState(),store);
+  const perChat=root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')!;
+  const total=root.querySelector<HTMLInputElement>('[data-settings-command-limit="total"]')!;
+  expect(perChat.value).toBe("8");expect(total.value).toBe("32");
+  perChat.value="1.5";perChat.dispatchEvent(new Event("input",{bubbles:true}));
+  expect(perChat.validity.valid).toBe(false);
+  await store.saveSettings({stayInSettings:true});
+  expect(saves).toHaveLength(0);
+  expect(store.getState().settingsErrorMessage).toContain("whole numbers");
+  expect(store.getState().settingsDraft?.processLimits?.perChat).toBe(1.5);
+  store.discardSettingsChanges();renderSettings(root,store.getState(),store);
+  expect(root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')?.value).toBe("8");
+  expect(store.hasSettingsChanges()).toBe(false);
+});

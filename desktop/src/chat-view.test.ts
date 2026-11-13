@@ -2155,3 +2155,18 @@ test("process position labels distinguish pending bytes from an empty completed 
   expect(output.textContent).toContain("Pending bytes at capture");
   expect(output.textContent).toContain("stderr · no readable lines at capture");
 });
+
+test("command-limit typing and discard preserve the focused Settings field", async () => {
+  const api = new ViewApi();
+  const {root,store} = setup(api);
+  await store.initialize();store.openSettings();store.selectSettingsSection("permissions");
+  const input=root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')!;
+  input.focus();input.value="2";input.dispatchEvent(new Event("input",{bubbles:true}));
+  expect(root.querySelector('[data-settings-command-limit="perChat"]')).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect(store.getState().settingsDraft?.processLimits?.perChat).toBe(2);
+  store.discardSettingsChanges();
+  const reset=root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')!;
+  expect(document.activeElement).toBe(reset);
+  expect(reset.value).toBe("8");
+});

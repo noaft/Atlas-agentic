@@ -3,6 +3,7 @@ use crate::provider_settings::{
 };
 use atlas_agentic::app::resolve_settings_for_agent;
 use atlas_agentic::diagnostics;
+use atlas_agentic::process_limits::ProcessLimits;
 use atlas_agentic::settings::{ModelSource, ProviderId};
 use std::{
     collections::HashMap,
@@ -46,6 +47,7 @@ pub struct DesktopState {
     pending_approvals: Arc<PendingApprovals>,
     active_requests: Arc<ActiveRequests>,
     pub(crate) processes: Arc<crate::process_commands::DesktopProcesses>,
+    process_settings_lock: Arc<Mutex<()>>,
 }
 
 impl DesktopState {
@@ -129,7 +131,18 @@ impl DesktopState {
             pending_approvals: Arc::new(PendingApprovals::default()),
             active_requests: Arc::new(ActiveRequests::default()),
             processes: Arc::new(crate::process_commands::DesktopProcesses::default()),
+            process_settings_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    fn settings_with_process_limits(&self) -> Result<AtlasSettings, String> {
+        let _guard = self
+            .process_settings_lock
+            .lock()
+            .map_err(|_| "Settings policy unavailable")?;
+        let saved = self.settings_store.load()?;
+        self.processes.set_limits(saved.processes)?;
+        Ok(saved)
     }
 
     #[cfg(test)]
@@ -218,7 +231,8 @@ impl DesktopState {
         } else {
             permission_mode
         };
-        let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
+        let effective =
+            resolve_settings_for_agent(&self.settings_with_process_limits()?, &self.agent_file)?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
         let runtime = match &process_scope {
@@ -709,6 +723,7 @@ pub struct SettingsViewDto {
     pub default_workspace_automatic: bool,
     pub default_workspace_error: Option<String>,
     pub default_permission_mode: PermissionMode,
+    pub process_limits: ProcessLimits,
     pub environment_overrides: Vec<&'static str>,
 }
 
@@ -729,10 +744,12 @@ pub struct SaveSettingsInput {
     pub history_limit: usize,
     pub default_workspace_path: Option<String>,
     pub default_permission_mode: PermissionMode,
+    #[serde(default)]
+    pub process_limits: Option<ProcessLimits>,
 }
 
 fn load_settings_impl(state: &DesktopState) -> Result<SettingsViewDto, String> {
-    let saved = state.settings_store.load()?;
+    let saved = state.settings_with_process_limits()?;
     let effective = resolve_settings_for_agent(&saved, &state.agent_file)?;
     let (default_workspace, default_workspace_automatic, default_workspace_error) =
         match effective.default_workspace.as_deref() {
@@ -800,6 +817,7 @@ fn settings_view(
         default_workspace_automatic,
         default_workspace_error,
         default_permission_mode: saved.permissions.default_mode,
+        process_limits: saved.processes,
         environment_overrides,
     }
 }
@@ -811,52 +829,62 @@ fn save_settings_impl(
     if input.clear_api_key && input.api_key.is_some() {
         return Err("cannot set and clear the API key in the same save".to_string());
     }
-    state.settings_store.update(|saved| {
-        if input.selected_provider.is_some() || !input.profile_patches.is_empty() {
-            if saved
-                .resolve_from_env()?
-                .environment_overrides
-                .contains(&SettingField::Provider)
-                && input.selected_provider != Some(saved.resolve_from_env()?.provider)
-            {
-                return Err("provider is controlled by ATLAS_PROVIDER".into());
-            }
-            let mut seen = std::collections::BTreeSet::new();
-            for patch in &input.profile_patches {
-                if !seen.insert(patch.provider) {
-                    return Err("Duplicate provider settings patch".into());
+    {
+        let _guard = state
+            .process_settings_lock
+            .lock()
+            .map_err(|_| "Settings policy unavailable")?;
+        let saved = state.settings_store.update(|saved| {
+            if input.selected_provider.is_some() || !input.profile_patches.is_empty() {
+                if saved
+                    .resolve_from_env()?
+                    .environment_overrides
+                    .contains(&SettingField::Provider)
+                    && input.selected_provider != Some(saved.resolve_from_env()?.provider)
+                {
+                    return Err("provider is controlled by ATLAS_PROVIDER".into());
                 }
-                provider_settings::apply_profile(saved, patch)?;
-            }
-            if let Some(provider) = input.selected_provider {
-                saved.selected_provider = Some(provider);
-            }
-            saved.conversation.history_limit = input.history_limit;
-        } else {
-            if input.clear_api_key {
-                saved.deepseek.api_key = None;
-            } else if let Some(api_key) = input.api_key {
-                if api_key.trim().is_empty() {
-                    return Err("DeepSeek API key cannot be blank".to_string());
+                let mut seen = std::collections::BTreeSet::new();
+                for patch in &input.profile_patches {
+                    if !seen.insert(patch.provider) {
+                        return Err("Duplicate provider settings patch".into());
+                    }
+                    provider_settings::apply_profile(saved, patch)?;
                 }
-                saved.deepseek.api_key = Some(api_key);
+                if let Some(provider) = input.selected_provider {
+                    saved.selected_provider = Some(provider);
+                }
+                saved.conversation.history_limit = input.history_limit;
+            } else {
+                if input.clear_api_key {
+                    saved.deepseek.api_key = None;
+                } else if let Some(api_key) = input.api_key {
+                    if api_key.trim().is_empty() {
+                        return Err("DeepSeek API key cannot be blank".to_string());
+                    }
+                    saved.deepseek.api_key = Some(api_key);
+                }
+                saved.deepseek.base_url = input.base_url;
+                saved.deepseek.model = input.model;
+                saved.conversation.history_limit = input.history_limit;
+                if let Some(limits) = &input.model_limits {
+                    saved.conversation.model_limits = limits.clone();
+                }
             }
-            saved.deepseek.base_url = input.base_url;
-            saved.deepseek.model = input.model;
-            saved.conversation.history_limit = input.history_limit;
-            if let Some(limits) = &input.model_limits {
-                saved.conversation.model_limits = limits.clone();
+            saved.workspace.default_path = input
+                .default_workspace_path
+                .as_deref()
+                .map(Path::new)
+                .map(validate_workspace_path)
+                .transpose()?;
+            saved.permissions.default_mode = input.default_permission_mode;
+            if let Some(limits) = input.process_limits {
+                saved.processes = limits;
             }
-        }
-        saved.workspace.default_path = input
-            .default_workspace_path
-            .as_deref()
-            .map(Path::new)
-            .map(validate_workspace_path)
-            .transpose()?;
-        saved.permissions.default_mode = input.default_permission_mode;
-        Ok(())
-    })?;
+            Ok(())
+        })?;
+        state.processes.set_limits(saved.processes)?;
+    }
     load_settings_impl(state)
 }
 
@@ -1440,7 +1468,7 @@ mod tests {
         DesktopState, PendingApprovals, SaveSettingsInput,
     };
 
-    fn environment_lock() -> MutexGuard<'static, ()> {
+    pub(super) fn environment_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
@@ -2926,6 +2954,7 @@ conversation_title_prompt = "Return a short title."
             history_limit: saved.conversation.history_limit,
             default_workspace_path: None,
             default_permission_mode: PermissionMode::Ask,
+            process_limits: None,
         };
 
         save_settings_impl(input.clone(), &state).unwrap();
@@ -2973,6 +3002,7 @@ conversation_title_prompt = "Return a short title."
                 history_limit: defaults.conversation.history_limit,
                 default_workspace_path: None,
                 default_permission_mode: PermissionMode::Ask,
+                process_limits: None,
             },
             &state,
         );
@@ -3028,6 +3058,7 @@ conversation_title_prompt = "Return a short title."
                 history_limit: 0,
                 default_workspace_path: None,
                 default_permission_mode: PermissionMode::Ask,
+                process_limits: None,
             },
             &state,
         )
@@ -3198,6 +3229,7 @@ conversation_title_prompt = "Return a short title."
                 history_limit: 40,
                 default_workspace_path: None,
                 default_permission_mode: PermissionMode::Ask,
+                process_limits: None,
             },
             &state,
         )
@@ -3379,5 +3411,174 @@ conversation_title_prompt = "Return a short title."
             .unwrap_err()
             .contains("fake provider failure"));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_limit_settings_tests {
+    use super::*;
+    use atlas_agentic::{
+        process_limits::ProcessLimits,
+        tools::{register_process_tools_in_scope, ToolRegistry},
+    };
+    use serde_json::json;
+
+    fn input(limits: Option<ProcessLimits>) -> SaveSettingsInput {
+        let mut value = json!({"apiKey":null,"clearApiKey":false,"baseUrl":"https://api.deepseek.com", "model":"deepseek-flash","historyLimit":40,"defaultWorkspacePath":null,"defaultPermissionMode":"ask"});
+        if let Some(limits) = limits {
+            value["processLimits"] = serde_json::to_value(limits).unwrap();
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn registry(
+        state: &DesktopState,
+        path: &Path,
+    ) -> (atlas_agentic::tools::ProcessScope, ToolRegistry) {
+        let client = state.processes.initialize("limits-test").unwrap();
+        let scope = state
+            .processes
+            .resolve(
+                "limits-test",
+                &client,
+                &crate::process_commands::ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let mut tools = ToolRegistry::empty();
+        register_process_tools_in_scope(&mut tools, path, scope.clone());
+        (scope, tools)
+    }
+
+    fn start(tools: &ToolRegistry) -> Result<atlas_agentic::tools::ToolResult, String> {
+        tools.execute(&atlas_agentic::agent_output::AgentOutput::ToolCall {
+            tool: "exec_command".into(),
+            message: None,
+            args: json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0}),
+        })
+    }
+
+    #[test]
+    fn saved_limits_round_trip_and_legacy_saves_preserve_them() {
+        let _environment = super::tests::environment_lock();
+        let root = tempfile::tempdir().unwrap();
+        let settings = SettingsStore::at(root.path().join("settings.json"));
+        let state = DesktopState::new_with_settings(
+            ConversationStore::at(root.path().join("data")),
+            settings.clone(),
+        );
+        let view = save_settings_impl(
+            input(Some(ProcessLimits {
+                per_chat: 2,
+                total: 3,
+            })),
+            &state,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(view).unwrap()["processLimits"],
+            json!({"perChat":2,"total":3})
+        );
+        save_settings_impl(input(None), &state).unwrap();
+        assert_eq!(
+            settings.load().unwrap().processes,
+            ProcessLimits {
+                per_chat: 2,
+                total: 3
+            }
+        );
+        let restarted = DesktopState::new_with_settings(
+            ConversationStore::at(root.path().join("data")),
+            settings,
+        );
+        assert_eq!(
+            serde_json::to_value(load_settings_impl(&restarted).unwrap()).unwrap()["processLimits"],
+            json!({"perChat":2,"total":3})
+        );
+    }
+
+    #[test]
+    fn saving_lower_limits_immediately_blocks_new_commands_in_existing_scopes() {
+        let _environment = super::tests::environment_lock();
+        let root = tempfile::tempdir().unwrap();
+        let settings = SettingsStore::at(root.path().join("settings.json"));
+        let saved = AtlasSettings {
+            processes: ProcessLimits {
+                per_chat: 2,
+                total: 2,
+            },
+            ..Default::default()
+        };
+        settings.save(&saved).unwrap();
+        let state = DesktopState::new_with_settings(
+            ConversationStore::at(root.path().join("data")),
+            settings,
+        );
+        load_settings_impl(&state).unwrap();
+        let (scope, tools) = registry(&state, root.path());
+        start(&tools).unwrap();
+        start(&tools).unwrap();
+        save_settings_impl(
+            input(Some(ProcessLimits {
+                per_chat: 1,
+                total: 1,
+            })),
+            &state,
+        )
+        .unwrap();
+        assert!(scope.list().unwrap().iter().all(|entry| entry.running));
+        assert!(start(&tools).is_err());
+        scope.close(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn failed_settings_publication_does_not_change_the_active_policy() {
+        let _environment = super::tests::environment_lock();
+        let root = tempfile::tempdir().unwrap();
+        let settings = SettingsStore::at_with_publisher(
+            root.path().join("settings.json"),
+            |source, destination| {
+                if destination.exists() {
+                    Err(std::io::Error::other("injected publication failure"))
+                } else {
+                    std::fs::rename(source, destination)
+                }
+            },
+        );
+        let saved = AtlasSettings {
+            processes: ProcessLimits {
+                per_chat: 2,
+                total: 2,
+            },
+            ..Default::default()
+        };
+        settings.save(&saved).unwrap();
+        let state = DesktopState::new_with_settings(
+            ConversationStore::at(root.path().join("data")),
+            settings.clone(),
+        );
+        load_settings_impl(&state).unwrap();
+        let (scope, tools) = registry(&state, root.path());
+        start(&tools).unwrap();
+        assert!(save_settings_impl(
+            input(Some(ProcessLimits {
+                per_chat: 1,
+                total: 1
+            })),
+            &state
+        )
+        .is_err());
+        start(&tools).unwrap();
+        assert!(start(&tools).is_err());
+        assert_eq!(
+            settings.load().unwrap().processes,
+            ProcessLimits {
+                per_chat: 2,
+                total: 2
+            }
+        );
+        scope.close(Duration::from_secs(2)).unwrap();
     }
 }

@@ -1,3 +1,4 @@
+import { DEFAULT_PROCESS_LIMITS, validProcessLimits } from "./process-limits";
 import type { ProcessContext, ProcessCursor } from "./process-types";
 import type { McpOnboardingApi, McpContext } from "./mcp-types";
 import { taskUnavailableReason } from "./slash-commands";
@@ -131,6 +132,7 @@ const draftFromSettings = (settings: SettingsView): SettingsDraft => ({
   ...(settings.modelLimits ? { modelLimits: structuredClone(settings.modelLimits) } : {}),
   defaultWorkspace: settings.defaultWorkspaceAutomatic ? null : settings.defaultWorkspace,
   defaultPermissionMode: settings.defaultPermissionMode,
+  processLimits: {...(settings.processLimits ?? DEFAULT_PROCESS_LIMITS)},
   capabilities: settings.providers?.find(p => p.provider === settings.provider)?.capabilities,
   allowKeyless: settings.providers?.find(p => p.provider === settings.provider)?.allowKeyless,
   requestOutputTokens: settings.providers?.find(p => p.provider === settings.provider)?.requestOutputTokens,
@@ -744,7 +746,9 @@ export class ChatStore {
     const baseline = draftFromSettings(settings);
     if (draft.selectedProvider !== baseline.selectedProvider ||
         draft.historyLimit !== baseline.historyLimit || draft.defaultPermissionMode !== baseline.defaultPermissionMode ||
-        draft.defaultWorkspace?.path !== baseline.defaultWorkspace?.path) return true;
+        draft.defaultWorkspace?.path !== baseline.defaultWorkspace?.path ||
+        (draft.processLimits ?? DEFAULT_PROCESS_LIMITS).perChat !== baseline.processLimits!.perChat ||
+        (draft.processLimits ?? DEFAULT_PROCESS_LIMITS).total !== baseline.processLimits!.total) return true;
     const differs = (current:ProviderDraft, expected:ProviderDraft) => {
       // Ignore discovery bookkeeping and cached, merely visited provider drafts.
       const fields = (value:ProviderDraft) => ({apiKey:value.apiKey.trim(), clearApiKey:value.clearApiKey,
@@ -835,6 +839,11 @@ export class ChatStore {
     if (!draft || this.state.settingsStatus === "saving") {
       return;
     }
+    const processLimits = draft.processLimits ?? DEFAULT_PROCESS_LIMITS;
+    if (!validProcessLimits(processLimits)) {
+      this.update({settingsStatus: "error", settingsErrorMessage: "Concurrent commands must be whole numbers: 1–32 per chat and 1–128 across the app."});
+      return;
+    }
     const token = ++this.settingsToken;
     const settingsOwner = this.state.activeSessionId;
     const previousDefault = usableDefaultWorkspace(this.state.settings);
@@ -853,6 +862,7 @@ export class ChatStore {
         ...(draft.modelLimits ? { modelLimits: draft.modelLimits } : {}),
         defaultWorkspacePath: draft.defaultWorkspace?.path ?? null,
         defaultPermissionMode: draft.defaultPermissionMode,
+        processLimits: {...processLimits},
       });
       if (token !== this.settingsToken) return;
       const nextDefault = usableDefaultWorkspace(settings);

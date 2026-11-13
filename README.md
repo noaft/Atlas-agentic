@@ -73,6 +73,8 @@ Help works without an API key. The CLI starts in your current directory.
 | Workspace | Reads and non-destructive structured workspace changes |
 | Full access | All registered tools within your OS-user permissions |
 
+Set concurrent-command limits per chat and across the app in **Settings → Permissions**.
+
 The starting folder is not a shell sandbox. Commands can access other paths with
 normal OS permissions. Desktop observation/control requires approval in Ask and
 Workspace modes. Screenshots stay in memory for the turn and may be sent to your

@@ -1,3 +1,4 @@
+import { DEFAULT_PROCESS_LIMITS, MAX_COMMANDS_PER_CHAT, MAX_COMMANDS_TOTAL } from "./process-limits";
 import type { ChatStore } from "./chat-state";
 import type { ChatState, SettingsSection } from "./types";
 import { createMcpSettingsPanel, type McpSettingsPanel } from "./mcp-settings";
@@ -11,7 +12,7 @@ export const settingsSections: Record<SettingsSection, { title: string; subtitle
   connections: { title: "MCP connections", subtitle: "Manage the tools and services Atlas can connect to." },
   skills: { title: "Skills", subtitle: "Install and manage instructions Atlas can load for a task." },
   workspace: { title: "Workspace", subtitle: "Choose where new chats start working." },
-  permissions: { title: "Permissions", subtitle: "Set how much Atlas asks before using tools in new chats." },
+  permissions: { title: "Permissions", subtitle: "Control tool approvals and simultaneous commands." },
 };
 
 /** Switch pages without replacing input nodes or the asynchronous connections panel. */
@@ -38,6 +39,9 @@ export function updateSettingsChrome(container: HTMLElement, state: Readonly<Cha
   if (save) {
     save.disabled = saving || !changed;
     save.textContent = saving ? "Saving…" : "Save changes";
+  }
+  for (const input of container.querySelectorAll<HTMLInputElement>("[data-settings-command-limit]")) {
+    input.disabled = saving;
   }
   const discard = container.querySelector<HTMLButtonElement>("[data-discard-settings]");
   if (discard) discard.disabled = saving;
@@ -288,6 +292,29 @@ export function renderSettings(
   permissionHint.className = "settings-hint";
   permissionHint.textContent = "This default applies to new chats. Each saved chat keeps its own selection.";
   permissionsSection.append(permissionGroup, permissionHint);
+  const commandLimits = settingsCard("Concurrent commands", "Set how many commands Atlas can run at the same time, including background commands.");
+  for (const [key, title, maximum] of [
+    ["perChat", "Maximum commands per chat", MAX_COMMANDS_PER_CHAT],
+    ["total", "Maximum commands across the app", MAX_COMMANDS_TOTAL],
+  ] as const) {
+    const input = document.createElement("input");
+    input.type = "number"; input.min = "1"; input.max = String(maximum); input.step = "1"; input.required = true;
+    input.value = String((draft.processLimits ?? DEFAULT_PROCESS_LIMITS)[key]);
+    input.disabled = saving;
+    input.dataset.settingsCommandLimit = key;
+    input.dataset.settingsField = `commands-${key}`;
+    input.addEventListener("input", () => {
+      const limits = store.getState().settingsDraft?.processLimits ?? DEFAULT_PROCESS_LIMITS;
+      store.updateSettingsDraft({processLimits: {...limits, [key]: input.valueAsNumber}});
+    });
+    commandLimits.append(field(title, input, `Choose a whole number from 1 to ${maximum}.`));
+  }
+  const limitHint = document.createElement("p");
+  limitHint.className = "settings-hint";
+  limitHint.textContent = "Saved limits apply to new command starts in all chats. Lowering a limit lets running commands finish. These counts do not limit CPU, memory, or child processes.";
+  commandLimits.append(limitHint);
+  permissionsSection.append(commandLimits);
+
 
   if (overridden.has("historyLimit")) {
     const history = inputFor(String(draft.historyLimit), () => {}, true);

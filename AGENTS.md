@@ -36,6 +36,7 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 │   │   └── title.rs        Title sanitization
 │   ├── skills/            Scoped skill catalog, safe storage, and GitHub imports
 │   ├── tasks/             Authoritative built-in task catalog and validated dispatch
+│   ├── process_limits.rs   Validated concurrent-command policy shared by CLI/desktop
 │   ├── diagnostics.rs      Private rotating backend logs and request correlation
 │   ├── settings.rs         Versioned private settings and environment precedence
 │   ├── workspace.rs        Automatic Atlas home provisioning and validation
@@ -189,8 +190,14 @@ default8/32 with validated ranges1–32/chat and1–128/app. Enforce both caps u
 manager store lock, before launching; lower limits drain existing work without
 stopping it. Empty-destination draft ownership handoff preserves existing commands
 above a lowered cap, while merges of two active scopes respect the current cap.
-CLI applies the same saved policy to its request-local manager and still rejects
-background commands. Retained records remain32/scope128/app. These
+CLI applies the same saved policy to yielded and synchronous commands, reserving
+capacity for the latter until return/error while preserving their original output
+and timeout behavior. It remains request-local and rejects background commands.
+Settings → Permissions exposes both integers with Save/Discard and draft/focus
+preservation. Native load/save/configuration is serialized with the settings-policy
+mutex; configure the app-owned manager only from loaded or successfully published
+settings. Failed publication must not alter active policy. These resource caps
+apply to every new command start, including an already running request. Retained records remain32/scope128/app. These
 are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
 rings with absolute offsets, per-chat default agent cursor and independent UI
 cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms. `read_process` also accepts `tail_lines`1–1000,

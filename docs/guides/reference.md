@@ -203,8 +203,15 @@ Processes panel or automatic UI polling; ask Atlas to read or stop a session.
 
 Job sessions default to ten minutes (max ten minutes); synchronous commands keep
 their 30-second default. Background defaults to one hour (max 24 hours). Desktop
-tracks synchronous commands too. Limits are eight active/32 retained per scope,
-32 active/128 retained per manager, 64 KiB per output stream. Session counts do
+tracks synchronous commands too. **Settings → Permissions → Concurrent commands**
+controls active limits: default eight per chat and 32 across the app, configurable
+from 1–32 and 1–128 respectively. Save applies to new starts immediately, including
+ongoing requests; lowering a cap lets existing commands finish and blocks new ones
+until capacity is available. Discard keeps the saved policy. Both caps apply.
+Settings persist as `processes: {"perChat": 8, "total": 32}`; older files retain these
+defaults. CLI applies the same saved policy to yielded and synchronous commands,
+while remaining request-local. Retained records stay 32 per scope/128 per manager,
+with 64 KiB per output stream. Session counts do
 not bound the total OS descendants or their CPU/RAM use. Jobs are cleaned on
 request exit; background ends on Stop, timeout, chat deletion or normal app
 shutdown. CLI stays request-local and rejects background. No process survives as

@@ -1,3 +1,4 @@
+import type { ProcessLimits } from "./process-limits";
 export interface MemoryBlock { startIndex: number; endIndexExclusive: number; content: string }
 export interface MemoryCheckpoint { version: number; conversationId: string; checkpointId: string; createdAt: string; model: string; compactedMessageCount: number; blocks: MemoryBlock[] }
 export interface CompactionProgress { completedBlocks: number; totalBlocks: number }
@@ -256,6 +257,7 @@ export interface SettingsView {
   defaultWorkspaceAutomatic: boolean;
   defaultWorkspaceError: string | null;
   defaultPermissionMode: PermissionMode;
+  processLimits?: ProcessLimits;
   environmentOverrides: Array<"provider" | "apiKey" | "baseUrl" | "model" | "historyLimit">;
 }
 
@@ -271,6 +273,7 @@ export interface SettingsDraft extends ProviderDraft {
   historyLimit: number;
   defaultWorkspace: Workspace | null;
   defaultPermissionMode: PermissionMode;
+  processLimits?: ProcessLimits;
 }
 
 export interface SaveSettingsInput {
@@ -284,6 +287,7 @@ export interface SaveSettingsInput {
   historyLimit: number;
   defaultWorkspacePath: string | null;
   defaultPermissionMode: PermissionMode;
+  processLimits?: ProcessLimits;
 }
 
 export interface TaskDescriptor {
