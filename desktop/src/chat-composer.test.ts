@@ -167,7 +167,8 @@ test("composer stays editable while send availability follows state", async () =
 
   composer.updateState({ ...store.getState(), status: "streaming" });
   expect(composer.textarea.disabled).toBe(false);
-  expect(composer.sendButton.disabled).toBe(true);
+  expect(composer.sendButton.disabled).toBe(false);
+  expect(composer.element.querySelector<HTMLButtonElement>("[data-stop-turn]")?.hidden).toBe(false);
 
   composer.updateState({ ...store.getState(), activeWorkspace: null });
   expect(composer.textarea.disabled).toBe(false);

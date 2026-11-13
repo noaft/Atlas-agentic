@@ -258,6 +258,11 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   const label = document.createElement("div");
   label.className = "message-label";
   label.textContent = message.role === "assistant" ? "Atlas" : "You";
+  if (message.interrupted || message.inputStatus) {
+    const status = document.createElement("span"); status.className = "message-input-status";
+    status.textContent = message.interrupted ? "Stopped" : message.delivery === "failed" ? "Not applied" : message.inputStatus === "received" ? "Received" : "Pending";
+    label.append(" · ", status);
+  }
   const content = document.createElement("div");
   content.className = "message-content";
   const renderedContent =
@@ -815,7 +820,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         const rendered = renderMessage(message);
         if (
           isStreaming &&
-          index === state.messages.length - 1 &&
+          index === state.messages.length - 1 - [...state.messages].reverse().findIndex(item => item.role === "assistant") &&
           message.role === "assistant" &&
           state.toolActivity.length
         ) {
@@ -987,8 +992,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       if (key !== "messages" && key !== "toolActivity" && previous[key] !== state[key]) return false;
     }
     if (previous.messages.length !== state.messages.length || !state.messages.length) return false;
-    const lastIndex = state.messages.length - 1;
-    if (previous.messages.slice(0, lastIndex).some((message, index) => message !== state.messages[index])) return false;
+    const lastIndex = state.messages.length - 1 - [...state.messages].reverse().findIndex(message => message.role === "assistant");
+    if (lastIndex < 0 || previous.messages.some((message, index) => index !== lastIndex && message !== state.messages[index])) return false;
     const message = state.messages[lastIndex];
     if (message.role !== "assistant" || message.delivery !== "pending") return false;
     const article = messages.querySelectorAll<HTMLElement>("[data-message-role]").item(lastIndex);

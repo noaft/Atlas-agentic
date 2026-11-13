@@ -10,7 +10,8 @@ not imply that it is already available in the product.
 | [Tool/resource lifecycle](architecture/tool-resource-lifecycle.md) | Approved for implementation 2026-11-09; desktop process scopes implemented |
 | [Demo and Tauri walkthrough](guides/process-manager-demo.md) | Local demo without an API key and UI instructions |
 | [Wakeup](architecture/wakeup.md) | Implemented hard/lazy protocol, scheduler, mailbox, and durable bounded results; verified |
-| [Tool execution control: hard/lazy](architecture/tool-execution-control.md) | Approved 2026-11-13; tool-only implementation verified; replaces job/task, tracks every tool, and stores durable results; user-message queuing deferred |
+| [Tool execution control: hard/lazy](architecture/tool-execution-control.md) | Approved 2026-11-13; tool-only implementation verified; replaces job/task, tracks every tool, and stores durable results |
+| [Live chat input and Stop](architecture/live-chat-input.md) | Implemented desktop queued/supplemental messages and marked partial responses |
 | [Delegated agents](architecture/delegated-agents.md) | Approved for implementation 2026-11-13; runtime and desktop child monitoring implemented |
 | [Process sessions](architecture/process-sessions.md) | Current command lifetime and ownership reference, 2026-11-09 |
 | [UniKey on WSLg](platforms/wslg-unikey.md) | Reproduction notes and verified workaround |

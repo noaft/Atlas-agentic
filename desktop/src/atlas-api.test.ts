@@ -367,3 +367,11 @@ test("process scope, independent output and explicit stop share one native clien
  expect(calls.find(call=>call.command==="read_process_output")?.payload).toEqual({client:"client",context,sessionId:"process",cursor:{stdout:10,stderr:0}});
  expect(calls.find(call=>call.command==="stop_process")?.payload).toEqual({client:"client",context,sessionId:"process"});
 });
+
+test("Stop forwards the captured displayed prefix with native scope and request ownership", async () => {
+  const calls: Array<{command: string; payload: unknown}> = [];
+  mockIPC((command, payload) => { calls.push({command, payload}); return command === "initialize_process_client" ? "client" : undefined; });
+  const context = {conversationId: metadata.id, scopeId: "scope"};
+  await createTauriAtlasApi().stopChatRequest!(context, "request", {responseEpoch: 2, displayedBytes: 6});
+  expect(calls.find(call => call.command === "stop_chat_request")?.payload).toEqual({client: "client", context, requestId: "request", responseEpoch: 2, displayedBytes: 6});
+});

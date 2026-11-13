@@ -1,5 +1,5 @@
 import type { AgentRunsApi, AgentRunView } from "./agent-types";
-import type { ProcessesApi, ProcessInfo, ProcessOutput } from "./process-types";
+import type { ProcessContext, ProcessesApi, ProcessInfo, ProcessOutput } from "./process-types";
 import type { McpOnboardingApi, McpSettingsView, McpCheckEvent, McpCheckResult } from "./mcp-types";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -34,6 +34,8 @@ export interface AtlasApi extends SkillsApi, McpOnboardingApi, ProcessesApi, Age
   compactConversation(id: string, onEvent: (event: ChatEvent) => void): Promise<import("./types").CompactionResult>;
   listConversations(): Promise<ConversationMetadata[]>;
   loadConversation(id: string): Promise<Conversation>;
+  submitTurnInput?(context: ProcessContext, requestId: string, inputId: string, content: string): Promise<{id: string; accepted: boolean; finished: boolean}>;
+  stopChatRequest?(context: ProcessContext, requestId: string, snapshot?: {responseEpoch: number; displayedBytes: number}): Promise<void>;
   ask(
     prompt: string,
     conversationId: string | null,
@@ -113,6 +115,8 @@ export function createTauriAtlasApi(): AtlasApi {
     },
     listConversations: () => invoke<ConversationMetadata[]>("list_conversations"),
     loadConversation: (id) => invoke<Conversation>("load_conversation", { id }),
+    submitTurnInput: async (context, requestId, inputId, content) => invoke("submit_chat_input", {client: await client(), context, requestId, inputId, content}),
+    stopChatRequest: async (context, requestId, snapshot) => invoke("stop_chat_request", {client: await client(), context, requestId, ...snapshot}),
     ask: async (prompt, conversationId, workspacePath, permissionMode, onEvent, processScopeId) => {
       if (!conversationId && !processScopeId) throw new Error("Open a draft process scope before sending a request");
       const channel = new Channel<ChatEvent>((message) => {

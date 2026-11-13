@@ -31,6 +31,11 @@ folder in your home directory; you can choose another folder per chat.
 ## Features
 
 - **Chat:** streaming replies, independent conversations, local history and Activity.
+  While Atlas is working, choose **Wait until finished** to queue a message or
+  **Supplement active turn** to add an instruction at the next safe boundary.
+  **Stop** retains the displayed partial answer and pauses the queue; remove queued
+  messages or select Resume when ready. Queues are not restored after reload.
+  See [Live chat input and Stop](docs/architecture/live-chat-input.md).
 - **Models:** DeepSeek, OpenAI, Anthropic, Gemini, and OpenAI-compatible endpoints.
 - **Files and coding:** search, read by line range, paginate directory listings,
   create, patch, move, copy, and delete files.

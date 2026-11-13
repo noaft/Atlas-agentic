@@ -53,6 +53,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
+  sendMode: "wait", queuedInputs: [], queuePaused: false, stopping: false,
   tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
   compactionFailure: null, memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
@@ -101,6 +102,7 @@ const displaySavedMessages = (conversation: import("./types").Conversation): Dis
       ...displaySavedMessage(message),
       activity: activity?.records,
       activityDurationMs: activity?.durationMs,
+      interrupted: activity?.interrupted,
     };
   });
 };
@@ -150,6 +152,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : configured ? [{ id: configured, name: configured }, ...models] : models;
 
 const sessionKeys = [
+  "sendMode", "queuedInputs", "queuePaused", "stopping",
   "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
@@ -159,6 +162,7 @@ type SessionState = Pick<ChatState, typeof sessionKeys[number]>;
 interface ChatSession {
   state: SessionState;
   generation: number;
+  turn?: {responseEpoch: number; stopSnapshot?: {responseEpoch: number; displayedBytes: number}; inFlight?: {id: string; content: string}; requestId: string | null; assistantIndex: number; pending: Array<{id: string; content: string}>; flushing?: boolean; stopped: boolean};
 }
 const sessionState = (state: ChatState): SessionState =>
   Object.fromEntries(sessionKeys.map((key) => [key, state[key]])) as SessionState;
@@ -466,30 +470,69 @@ export class ChatStore {
     }
   }
 
+  setSendMode(mode: "wait" | "steer"): void { this.update({sendMode: mode}); }
+
+  removeQueuedInput(id: string): void {
+    this.update({queuedInputs: this.state.queuedInputs?.filter(input => input.id !== id)});
+  }
+
+  async resumeQueue(): Promise<void> {
+    const owner = this.state.activeSessionId;
+    this.updateSession(owner, {queuePaused: false});
+    this.drainQueue(owner);
+  }
+
+  private drainQueue(owner: string): void {
+    const state = this.chats.get(owner)?.state;
+    if (!state || state.status === "streaming" || state.status === "loading" || state.queuePaused) return;
+    const [next, ...rest] = state.queuedInputs ?? [];
+    if (!next) return;
+    this.updateSession(owner, {queuedInputs: rest});
+    void this.startTurn(owner, next.content);
+  }
+
+  private enqueue(owner: string, input: {id: string; content: string}): boolean {
+    const state = this.chats.get(owner)!.state;
+    if (state.queuedInputs?.some(queued => queued.id === input.id)) return true;
+    if ((state.queuedInputs?.length ?? 0) >= 16) {
+      this.updateSession(owner, {errorMessage: "Queue is full. Remove a queued message before sending."}); return false;
+    }
+    this.updateSession(owner, {queuedInputs: [...state.queuedInputs ?? [], input]}); return true;
+  }
+
   async send(): Promise<void> {
-    if (
-      !this.state.historyLoaded ||
-      this.state.status === "streaming" ||
-      this.state.status === "loading" ||
-      this.state.workspaceBusy ||
-      this.state.permissionBusy ||
-      this.state.modelListStatus === "saving"
-    )
+    const state = this.state;
+    if (!state.historyLoaded || state.status === "loading" || state.workspaceBusy || state.permissionBusy || state.modelListStatus === "saving") return;
+    const prompt = state.draftText.trim(); if (!prompt) return;
+    const owner = state.activeSessionId;
+    if (state.status === "streaming") {
+      const chat = this.chats.get(owner)!;
+      const input = {id: crypto.randomUUID(), content: prompt};
+      if (state.sendMode === "steer" && chat.turn && !chat.turn.stopped && this.api.submitTurnInput) {
+        const turnInputs = chat.state.messages.slice(chat.turn.assistantIndex + 1).filter(message => message.inputId);
+        if (turnInputs.length >= 32) { this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. Use Wait until finished."}); return; }
+        chat.turn.pending.push(input);
+        this.updateSession(owner, {draftText: "", messages: [...chat.state.messages, {role: "user", content: prompt, createdAt: null, delivery: "pending", inputId: input.id, inputStatus: "pending"}]});
+        void this.flushSteering(owner, chat.generation);
+      } else if (this.enqueue(owner, input)) this.updateSession(owner, {draftText: ""});
       return;
-    const prompt = this.state.draftText.trim();
-    if (!prompt) return;
-    const workspace = this.state.activeWorkspace;
+    }
+    return this.startTurn(owner, prompt, true);
+  }
+
+  private async startTurn(owner: string, prompt: string, clearDraft = false): Promise<void> {
+    const chat = this.chats.get(owner); if (!chat) return;
+    const state = chat.state;
+    const workspace = state.activeWorkspace;
     if (!workspace) {
       this.update({ errorMessage: "Choose a workspace folder before sending." });
       return;
     }
     this.selectionToken += 1;
-    const owner = this.state.activeSessionId;
-    const chat = this.chats.get(owner)!;
     const generation = ++chat.generation;
-    const conversationId = this.state.activeConversationId;
-    const permissionMode = this.state.activePermissionMode;
-    const stableMessages = this.state.messages.filter(
+    const conversationId = state.activeConversationId;
+    const permissionMode = state.activePermissionMode;
+    const stableMessages = state.messages.filter(
       (message) => message.delivery !== "failed",
     );
     const userMessage: DisplayMessage = {
@@ -504,10 +547,10 @@ export class ChatStore {
       createdAt: null,
       delivery: "pending",
     };
-    this.replace({
-      ...this.state,
+    chat.turn = {responseEpoch: 0, requestId: null, assistantIndex: stableMessages.length + 1, pending: [], stopped: false};
+    this.updateSession(owner, {
       messages: [...stableMessages, userMessage, assistantMessage],
-      draftText: "",
+      draftText: clearDraft ? "" : state.draftText,
       compactionMessage: null, contextStatus: null, compactionFailure: null,
       status: "streaming",
       errorMessage: null,
@@ -527,16 +570,23 @@ export class ChatStore {
         processContext.scopeId,
       );
       if (generation !== chat.generation) return;
-      const messages = chat.state.messages.map((message, index, all) => {
+      this.reconcileAppliedInputs(owner, completed.additionalInputs ?? []);
+      const unsubmitted = chat.turn?.inFlight;
+      const deferredInput = unsubmitted && !chat.turn?.stopped && !completed.additionalInputs?.some(input => input.id === unsubmitted.id)
+        && !chat.state.messages.some(message => message.inputId === unsubmitted.id && message.inputStatus === "received") ? unsubmitted : null;
+      const queuedDeferred = deferredInput && this.enqueue(owner, deferredInput);
+      const messages = chat.state.messages.map((message, index) => {
         const completedAssistant =
-          index === all.length - 1 && message.role === "assistant";
+          index === chat.turn?.assistantIndex && message.role === "assistant";
         return {
           ...message,
+          interrupted: completedAssistant ? completed.interrupted : message.interrupted,
           content: completedAssistant ? completed.answer : message.content,
           progressMessage: completedAssistant ? undefined : message.progressMessage,
           progressPreview: completedAssistant ? undefined : message.progressPreview,
-          delivery:
-            message.delivery === "pending" ? ("saved" as const) : message.delivery,
+          inputStatus: message.inputId && completed.additionalInputs?.some(input => input.id === message.inputId) ? "received" as const : message.inputStatus,
+          delivery: message.inputId && message.inputStatus !== "received" && !completed.additionalInputs?.some(input => input.id === message.inputId)
+            ? "failed" as const : message.delivery === "pending" ? ("saved" as const) : message.delivery,
           activity: completedAssistant
             ? (completed.activities ?? [])
             : message.activity,
@@ -545,6 +595,19 @@ export class ChatStore {
             : message.activityDurationMs,
         };
       });
+      const visibleMessages = queuedDeferred ? messages.filter(message => message.inputId !== deferredInput.id) : messages;
+      const assistantIndex = chat.turn!.assistantIndex;
+      const appliedIds = new Set(completed.additionalInputs?.map(input => input.id));
+      const appliedMessages = (completed.additionalInputs ?? []).flatMap(input => {
+        const message = visibleMessages.find(message => message.inputId === input.id);
+        return message ? [message] : [];
+      });
+      const orderedMessages = [
+        ...visibleMessages.slice(0, assistantIndex),
+        ...appliedMessages,
+        visibleMessages[assistantIndex],
+        ...visibleMessages.slice(assistantIndex + 1).filter(message => !message.inputId || !appliedIds.has(message.inputId)),
+      ];
       const conversations = moveToTop(this.state.conversations, completed.metadata);
       this.state = { ...this.state, conversations, conversationGroups: groupConversations(conversations) };
       this.updateSession(owner, {
@@ -553,14 +616,19 @@ export class ChatStore {
         activeConversationId: completed.metadata.id,
         activeWorkspace: completed.metadata.workspace ?? workspace,
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
-        messages,
+        messages: orderedMessages,
         status: "idle",
+        stopping: false, queuePaused: completed.interrupted || chat.turn?.stopped || chat.state.queuePaused,
         errorMessage: completed.processWarning ?? null,
         pendingApproval: null,
         toolActivity: [],
       });
+      this.finishSteering(owner);
+      this.drainQueue(owner);
     } catch (error) {
       if (generation !== chat.generation) return;
+      const inFlight = chat.turn?.inFlight;
+      if (inFlight && !chat.turn?.stopped && !chat.state.messages.some(message => message.inputId === inFlight.id && message.inputStatus === "received")) this.enqueue(owner, inFlight);
       this.updateSession(owner, {
         compactionFailure: chat.state.compactionProgress ? {message: errorMessage(error), task: null} : null,
         contextUsage: null, compactionProgress: null,
@@ -572,17 +640,93 @@ export class ChatStore {
             ? errorMessage(error)
             : message.failureReason,
         })),
-        draftText: chat.state.draftText || prompt,
-        status: "error",
+        draftText: chat.turn?.stopped ? chat.state.draftText : chat.state.draftText || prompt,
+        status: "error", stopping: false, queuePaused: true,
         errorMessage: errorMessage(error),
         pendingApproval: null,
       });
+      this.finishSteering(owner);
       if (conversationId) {
         try { const saved = await this.api.loadConversation(conversationId);
           if (generation === chat.generation) this.updateSession(owner, { memory: saved.memory ?? chat.state.memory });
         } catch { /* Preserve prior local memory if the reload also fails. */ }
       }
     }
+  }
+
+  private async flushSteering(owner: string, generation: number): Promise<void> {
+    const chat = this.chats.get(owner), turn = chat?.turn;
+    if (!chat || !turn?.requestId || turn.flushing || turn.stopped || !this.api.submitTurnInput) return;
+    turn.flushing = true;
+    try {
+      while (turn.pending.length && !turn.stopped && chat.generation === generation && chat.turn === turn) {
+        const input = turn.pending.shift()!;
+        turn.inFlight = input;
+        try {
+          const receipt = await this.api.submitTurnInput(await this.processContext(owner), turn.requestId, input.id, input.content);
+          if (chat.generation !== generation || chat.turn !== turn) return;
+          turn.inFlight = undefined;
+          if (!receipt.accepted) {
+            if (this.enqueue(owner, input)) this.updateSession(owner, {messages: chat.state.messages.filter(message => message.inputId !== input.id)});
+            else this.updateSession(owner, {messages: chat.state.messages.map(message => message.inputId === input.id ? {...message, delivery: "failed"} : message)});
+          }
+        } catch (error) {
+          if (chat.generation !== generation || chat.turn !== turn) return;
+          turn.inFlight = undefined;
+          if (chat.state.messages.some(message => message.inputId === input.id && message.inputStatus === "received")) continue;
+          this.enqueue(owner, input);
+          this.updateSession(owner, {queuePaused: true, errorMessage: errorMessage(error), messages:
+            chat.state.messages.map(message => message.inputId === input.id ? {...message, delivery: "failed"} : message)});
+        }
+      }
+    } finally { turn.flushing = false; }
+  }
+
+  private reconcileAppliedInputs(owner: string, inputs: import("./types").TurnInput[]): void {
+    if (!inputs.length) return;
+    const chat = this.chats.get(owner)!;
+    const applied = new Map(inputs.map(input => [input.id, input]));
+    const seen = new Set<string>();
+    const messages = chat.state.messages.map(message => {
+      const input = message.inputId && applied.get(message.inputId);
+      if (!input) return message;
+      seen.add(input.id);
+      return {...message, content: input.content, createdAt: input.createdAt, delivery: "pending" as const, inputStatus: "received" as const};
+    });
+    for (const input of inputs) {
+      if (!seen.has(input.id)) messages.push({role: "user", content: input.content, createdAt: input.createdAt, delivery: "pending", inputId: input.id, inputStatus: "received"});
+    }
+    this.updateSession(owner, {messages, queuedInputs: chat.state.queuedInputs?.filter(input => !applied.has(input.id))});
+  }
+
+  private finishSteering(owner: string): void {
+    const chat = this.chats.get(owner)!;
+    const pending = chat.turn?.pending.splice(0) ?? [];
+    if (!chat.turn?.stopped) {
+      const queued = pending.filter(input => this.enqueue(owner, input));
+      if (queued.length) this.updateSession(owner, {messages: chat.state.messages.filter(message => !queued.some(input => input.id === message.inputId))});
+    }
+    chat.turn = undefined;
+  }
+
+  async stopActiveRequest(): Promise<void> {
+    const owner = this.state.activeSessionId, chat = this.chats.get(owner)!;
+    if (!chat.turn || chat.turn.stopped || chat.state.status !== "streaming") return;
+    chat.turn.stopSnapshot = {
+      responseEpoch: chat.turn.responseEpoch,
+      displayedBytes: new TextEncoder().encode(chat.state.messages[chat.turn.assistantIndex]?.content ?? "").byteLength,
+    };
+    chat.turn.stopped = true;
+    this.updateSession(owner, {stopping: true, queuePaused: true});
+    await this.requestStop(owner, chat.generation);
+  }
+
+  private async requestStop(owner: string, generation: number): Promise<void> {
+    const chat = this.chats.get(owner), requestId = chat?.turn?.requestId;
+    const snapshot = chat?.turn?.stopSnapshot;
+    if (!chat || !requestId || !this.api.stopChatRequest) return;
+    try { await this.api.stopChatRequest(await this.processContext(owner), requestId, snapshot); }
+    catch (error) { if (chat.generation === generation) this.updateSession(owner, {errorMessage: errorMessage(error)}); }
   }
 
   async cancelCompaction(): Promise<void> {
@@ -623,9 +767,10 @@ export class ChatStore {
       if (generation !== chat.generation) return;
       if (result.taskId !== task.id) throw new Error("Task returned an unexpected result.");
       this.applyTaskResult(owner, result);
+      this.drainQueue(owner);
     } catch (error) {
       if (generation !== chat.generation) return;
-      this.updateSession(owner, {compactionFailure: {message: errorMessage(error), task: {id: task.id, arguments: args}}, status: "error", compactionProgress: null, errorMessage: errorMessage(error),
+      this.updateSession(owner, {queuePaused: true, compactionFailure: {message: errorMessage(error), task: {id: task.id, arguments: args}}, status: "error", compactionProgress: null, errorMessage: errorMessage(error),
         draftText: chat.state.draftText || submittedDraft});
     }
   }
@@ -1070,9 +1215,10 @@ export class ChatStore {
   private appendDelta(owner: string, delta: string): void {
     const state = this.chats.get(owner)!.state;
     const messages = [...state.messages];
-    const last = messages.at(-1);
+    const assistantIndex = this.chats.get(owner)?.turn?.assistantIndex ?? messages.length - 1;
+    const last = messages[assistantIndex];
     if (!last || last.role !== "assistant" || last.delivery !== "pending") return;
-    messages[messages.length - 1] = { ...last, content: last.content + delta };
+    messages[assistantIndex] = { ...last, content: last.content + delta };
     this.updateSession(owner, { messages });
   }
 
@@ -1080,6 +1226,15 @@ export class ChatStore {
     const chat = this.chats.get(owner);
     if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
     const state = chat.state;
+    if (event.event === "requestStarted") {
+      if (chat.turn) { chat.turn.requestId = event.data.requestId; if (chat.turn.stopped) void this.requestStop(owner, generation); else void this.flushSteering(owner, generation); }
+      return;
+    }
+    if (event.event === "userInputAccepted") {
+      this.reconcileAppliedInputs(owner, [event.data.input]);
+      this.updateSession(owner, {pendingApproval: null}); return;
+    }
+    if (chat.turn?.stopped) return;
     if (event.event === "compaction") { this.updateSession(owner, { compactionProgress: event.data.progress }); return; }
     if (event.event === "contextStatus") { this.updateSession(owner, { contextStatus: event.data.status, compactionProgress: null, compactionMessage: null }); return; }
     if (event.event === "usage") {
@@ -1087,32 +1242,37 @@ export class ChatStore {
       return;
     }
     if (event.event === "delta") {
+      if (chat.turn && event.data.responseEpoch !== undefined) chat.turn.responseEpoch = event.data.responseEpoch;
       this.appendDelta(owner, event.data.content);
       return;
     }
     if (event.event === "progressPreview") {
       const messages = [...state.messages];
-      const last = messages.at(-1);
+      const assistantIndex = this.chats.get(owner)?.turn?.assistantIndex ?? messages.length - 1;
+    const last = messages[assistantIndex];
       if (last?.role === "assistant" && last.delivery === "pending") {
-        messages[messages.length - 1] = { ...last, progressPreview: event.data.message ?? undefined };
+        messages[assistantIndex] = { ...last, progressPreview: event.data.message ?? undefined };
         this.updateSession(owner, { messages });
       }
       return;
     }
     if (event.event === "progress") {
       const messages = [...state.messages];
-      const last = messages.at(-1);
+      const assistantIndex = this.chats.get(owner)?.turn?.assistantIndex ?? messages.length - 1;
+    const last = messages[assistantIndex];
       if (last?.role === "assistant" && last.delivery === "pending") {
-        messages[messages.length - 1] = { ...last, content: "", progressMessage: event.data.message, progressPreview: undefined };
+        messages[assistantIndex] = { ...last, content: "", progressMessage: event.data.message, progressPreview: undefined };
         this.updateSession(owner, { messages });
       }
       return;
     }
     if (event.event === "responseReset") {
+      if (chat.turn) chat.turn.responseEpoch++;
       const messages = [...state.messages];
-      const last = messages.at(-1);
+      const assistantIndex = this.chats.get(owner)?.turn?.assistantIndex ?? messages.length - 1;
+    const last = messages[assistantIndex];
       if (last?.role === "assistant" && last.delivery === "pending") {
-        messages[messages.length - 1] = { ...last, content: "" };
+        messages[assistantIndex] = { ...last, content: "" };
         this.updateSession(owner, { messages });
       }
       return;

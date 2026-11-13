@@ -1,8 +1,8 @@
 # Wakeup: managed tool execution
 
 Status: hard/lazy tool execution implemented and verified on 2026-11-13. See [Tool execution control](tool-execution-control.md) for the approved
-architecture and acceptance criteria. User-message queuing during an active turn
-is explicitly deferred.
+architecture and acceptance criteria. Desktop user input during an active turn
+is covered by [Live chat input and Stop](live-chat-input.md).
 
 ## Purpose and ownership
 
@@ -180,7 +180,9 @@ before dispatch and preserve recoverable storage failures instead of claiming
 success or replaying work. Committed results remain readable after restart;
 reading an artifact does not authorize control of old handles.
 
-Ordinary successful chat history keeps user/final-assistant pairs. Activity stores
+Ordinary successful chat history keeps the original user request, applied
+supplemental user messages, and final assistant answer. Explicit user Stop retains
+a marked partial answer; see [Live chat input and Stop](live-chat-input.md). Activity stores
 bounded references/summaries, not every wakeup or all logs. Execution results also
 cover failed turns absent from successful history. Backend diagnostics contain
 neither credentials nor raw output.

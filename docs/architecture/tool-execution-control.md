@@ -5,7 +5,8 @@ This document records the approved tool-execution architecture. It replaces the
 former `execution.mode: job/task` protocol. [Wakeup](wakeup.md) describes the
 current protocol. The hard/lazy protocol, unified execution tracking, and bounded durable records
 are implemented and verified.
-User-message queuing during an active turn is explicitly deferred and is outside
+User-message queuing during an active turn is implemented separately; see
+[Live chat input and Stop](live-chat-input.md). It is outside
 this implementation.
 
 ## 1. Main decisions
@@ -137,10 +138,10 @@ or raw errors. Keep batches at most 16 events and preserve Wakeup coalescing/ack
 - Terminal delivery is logically once; an unacknowledged delivery may repeat with
   the same identity for idempotent consumption, without creating a new terminal event.
 
-Receiving additional user messages during an active turn and prioritizing those
-messages against wakeups is deferred. This tool-only implementation must not claim
-that user-message queuing exists. Explicit Stop uses native cancellation authority
-rather than depending on an agent reading logs.
+The active-turn inbox interrupts execution waits at a safe boundary when user
+input arrives; see [Live chat input and Stop](live-chat-input.md). Wakeup scheduling
+retains its tool-notification authority. Explicit Stop uses native cancellation
+authority rather than depending on an agent reading logs.
 
 ## 5. Verification responsibility and final answers
 
@@ -167,7 +168,8 @@ design/authorization and must not be enabled implicitly by lazy.
 ## 6. Results, conversation history, and restart
 
 Store execution results separately from ordinary chat. Conversation history keeps
-the successful turn's user/final-assistant pair; Activity keeps execution references
+the successful turn's original user request, applied supplements, and final
+assistant answer; explicit Stop retains a marked partial answer. Activity keeps execution references
 and bounded summaries. Do not insert every wakeup or all stdout into history.
 Execution storage retains actual state/results even for failed turns absent from
 successful chat history. Drafts use temporary native owners; promotion preserves

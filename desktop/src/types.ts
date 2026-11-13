@@ -37,7 +37,11 @@ export interface Conversation {
   activities?: ActivityTurn[];
 }
 
+export interface TurnInput { id: string; content: string; createdAt: string }
+export interface QueuedInput { id: string; content: string }
 export interface ConversationAskResult {
+  additionalInputs?: TurnInput[];
+  interrupted?: boolean;
   processWarning?: string | null;
   memory?: MemoryCheckpoint | null;
   answer: string;
@@ -63,6 +67,7 @@ export interface ActivityRecord {
 }
 
 export interface ActivityTurn {
+  interrupted?: boolean;
   turnId: string;
   assistantMessageIndex: number;
   durationMs?: number | null;
@@ -114,13 +119,15 @@ export interface AuthorizationRequest {
 }
 
 export type ChatEvent =
+  | { event: "requestStarted"; data: {requestId: string} }
+  | { event: "userInputAccepted"; data: {input: TurnInput} }
   | { event: "progress"; data: { message: string } }
   | { event: "progressPreview"; data: { message: string | null } }
   | { event: "responseReset" }
   | { event: "compaction"; data: { progress: CompactionProgress } }
   | { event: "contextStatus"; data: { status: ContextStatus } }
   | { event: "usage"; data: { usage: ModelUsage | null } }
-  | { event: "delta"; data: { content: string } }
+  | { event: "delta"; data: { content: string; responseEpoch?: number } }
   | { event: "runtimeStatus"; data: { status: "thinking" | "preparingAnswer" } }
   | {
       event: "toolRequested";
@@ -165,6 +172,9 @@ export type ModelListStatus = "idle" | "loading" | "saving" | "error";
 export type MessageDelivery = "saved" | "pending" | "failed";
 
 export interface DisplayMessage {
+  inputId?: string;
+  inputStatus?: "pending" | "received";
+  interrupted?: boolean;
   role: MessageRole;
   content: string;
   createdAt: string | null;
@@ -192,6 +202,10 @@ export interface CompactionFailure {
 export type SettingsSection = "models" | "connections" | "skills" | "workspace" | "permissions";
 
 export interface ChatState {
+  sendMode?: "wait" | "steer";
+  queuedInputs?: QueuedInput[];
+  queuePaused?: boolean;
+  stopping?: boolean;
   compactionFailure: CompactionFailure | null;
   tasks: TaskDescriptor[];
   taskCatalogStatus: "idle" | "loading" | "ready" | "error";

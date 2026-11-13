@@ -500,8 +500,12 @@ uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses
 activity and memory sidecars to `trash/` and reports the history recovery location; recovery
 is manual, with no CLI restore command.
 
-`ConversationService` coordinates the store and runtime. Save only successful
-user/final-assistant pairs to ordinary message history.
+`ConversationService` coordinates the store and runtime. Successful ordinary
+history stores the original User, ordered applied supplemental Users, and final
+Assistant atomically. Explicit user Stop additionally saves the authoritative
+displayed partial answer with an interrupted Activity marker and skips title
+inference. Generic failure, channel loss, and scope teardown still save no turn.
+See docs/architecture/live-chat-input.md.
 
 Ordinary `tool_call` responses may include an optional top-level `message` string
 of 1–1000 Unicode characters after trimming. Runtime-injected protocol instructions
@@ -533,8 +537,8 @@ Do not duplicate live activity in notices or render a growing live timeline. Kee
 all session activity and saved records intact; the final answer replaces the live
 row and retains the complete collapsed Activity disclosure.
 
-Save sanitized, bounded runtime status and tool activity from successful turns in
-the separate sidecar; failed overall turns save neither. Never persist screenshot pixels, image data,
+Save sanitized, bounded runtime status and tool activity from successful or
+explicitly stopped turns in the separate sidecar; other failed turns save neither. Never persist screenshot pixels, image data,
 or tool attachments. New activity batches also store elapsed runtime/model work
 duration; legacy batches without it remain valid. Raw activity details remain
 local, while later model turns receive only a separately capped summary from the
@@ -659,7 +663,7 @@ npm --prefix desktop run tauri dev
 ```
 
 The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
-chat** as an unsaved frontend draft; only a successful first `ask` may create
+chat** as an unsaved frontend draft; only a successful or explicitly stopped first `ask` may create
 local conversation data or persist its validated starting folder. New chats use
 an explicitly chosen draft folder, then a custom Settings default, then the
 automatic `Atlas` folder in the user's home directory. Saved continuations derive
@@ -674,7 +678,7 @@ errors, and approvals owned by their session, even when another chat or Settings
 is visible. Independent chats may run concurrently, but only one request may
 run per saved conversation in the desktop backend. Navigation must not cancel
 all pending approvals. First requests remain in-memory sidebar sessions until
-successful persistence supplies an ID; failures stay retryable without writing
+successful or explicitly stopped persistence supplies an ID; other failures stay retryable without writing
 conversation data. Session state and unfinished requests do not survive an app
 reload or restart. Running requests retain their starting settings and folder.
 Keep Settings inputs and user scroll position stable during background updates,
@@ -788,7 +792,20 @@ bounded storage quotas. Reject old execution.mode job/task with a migration erro
 command lifetime job/background and child execution_mode wait/parallel are separate.
 All request-owned executions block final equally until terminal notifications are
 handled. Only explicitly user-requested background services may survive final.
-No model calls after final/restart. User-message queuing remains deferred.
+No model calls after final/restart. Desktop busy chats offer Wait until finished
+and Supplement active turn. FIFO queues are frontend-local (16/chat), pause on Stop/error,
+and require explicit Resume after pausing. Active supplements use native
+owner/request/input identities with idempotent receipts, 32 inputs/request,
+64KiB/input and 256KiB total. One runtime consumer drains at safe boundaries,
+withdraws stale approvals/actions, and interrupts execution waits without parallel
+inference or fabricated tool events. Final seals acceptance atomically; reconcile
+receipt races against accepted events and authoritative additionalInputs.
+Stop freezes visible text and stays Stopping until worker exit. Persist only the
+backend-validated epoch/UTF8 byte prefix, never client-provided answer text.
+Transient display buffers retain at most64 epochs/16MiB; unavailable cursors fail
+closed. Teardown invalidation overrides explicit Stop persistence. Future context
+labels interrupted answers as partial; history/compaction keep original requests
+with supplements. Queues and turn handles are not restored after restart.
 
 set_execution_wakeup changes policy without replay. await_execution waits for
 scheduled events without changing policy; its legacy yield_ms field is validated

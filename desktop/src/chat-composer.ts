@@ -21,7 +21,6 @@ export interface ChatComposer {
 
 function chatIsBusy(state: Readonly<ChatState>) {
   return (
-    state.status === "streaming" ||
     state.status === "loading" ||
     state.workspaceBusy ||
     state.permissionBusy ||
@@ -42,9 +41,10 @@ export function createChatComposer(
       <textarea rows="1" aria-label="Message Atlas" data-composer></textarea>
       <div class="composer-controls" data-composer-controls>
         <div class="composer-pickers"><div class="model-picker" data-model-picker></div><div class="permission-picker" data-permission-picker></div></div>
-        <div class="composer-actions" data-composer-actions><span data-context-meter-host></span><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
+        <div class="composer-actions" data-composer-actions><span data-context-meter-host></span><select class="send-mode" aria-label="When Atlas is working" data-send-mode><option value="wait">Wait until finished</option><option value="steer">Supplement active turn</option></select><button type="button" class="stop-turn" aria-label="Stop response" data-stop-turn hidden>■</button><button type="submit" class="send-button" aria-label="Send message" data-send>↑</button></div>
       </div>
     </div>
+    <div class="queued-inputs" data-queued-inputs></div>
     <div data-model-feedback-host></div>
     <p class="composer-note" data-composer-note></p>`;
 
@@ -53,7 +53,12 @@ export function createChatComposer(
   const permissionHost = element.querySelector<HTMLElement>("[data-permission-picker]")!;
   const feedbackHost = element.querySelector<HTMLElement>("[data-model-feedback-host]")!;
   const sendButton = element.querySelector<HTMLButtonElement>("[data-send]")!;
+  const modePicker = element.querySelector<HTMLSelectElement>("[data-send-mode]")!;
+  const stopButton = element.querySelector<HTMLButtonElement>("[data-stop-turn]")!;
+  const queueHost = element.querySelector<HTMLElement>("[data-queued-inputs]")!;
   const note = element.querySelector<HTMLElement>("[data-composer-note]")!;
+  modePicker.addEventListener("change", () => store.setSendMode(modePicker.value as "wait" | "steer"));
+  stopButton.addEventListener("click", () => { void store.stopActiveRequest(); });
   let composing = false;
   let sessionId = store.getState().activeSessionId;
   const layout = createTextareaLayout(textarea);
@@ -140,6 +145,24 @@ export function createChatComposer(
         sessionId = state.activeSessionId; resetComposition();
       }
       updateMenu(state);
+      modePicker.value = state.sendMode ?? "wait";
+      modePicker.hidden = state.status !== "streaming";
+      modePicker.disabled = !!state.stopping;
+      stopButton.hidden = state.status !== "streaming" || !!state.compactionProgress;
+      stopButton.disabled = !!state.stopping;
+      stopButton.title = state.stopping ? "Stopping…" : "Stop response";
+      stopButton.setAttribute("aria-label", state.stopping ? "Stopping response" : "Stop response");
+      queueHost.replaceChildren();
+      for (const input of state.queuedInputs ?? []) {
+        const row = document.createElement("div"); row.className = "queued-input";
+        const text = document.createElement("span"); text.textContent = `${state.queuePaused ? "Paused" : "Queued"}: ${input.content}`;
+        const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "×"; remove.setAttribute("aria-label", "Remove queued message");
+        remove.addEventListener("click", () => store.removeQueuedInput(input.id)); row.append(text, remove); queueHost.append(row);
+      }
+      if (state.queuePaused && state.queuedInputs?.length) {
+        const resume = document.createElement("button"); resume.type = "button"; resume.textContent = "Resume queue";
+        resume.disabled = state.status === "streaming"; resume.addEventListener("click", () => { void store.resumeQueue(); }); queueHost.append(resume);
+      }
       const placeholder = state.activeWorkspace ? "Message Atlas…" : "Starting folder unavailable";
       if (textarea.placeholder !== placeholder) textarea.placeholder = placeholder;
       updateSendAvailability(state);
