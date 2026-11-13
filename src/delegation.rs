@@ -1038,9 +1038,17 @@ mod integration_tests {
             scope.clone(),
         );
         for option in ["cursor", "tail_lines"] {
-            let output=parent_tools.execute(&crate::agent_output::AgentOutput::ToolCall {message:None,tool:"exec_command".into(),args:serde_json::json!({"command":"printf 'parent bytes\n'","yield_time_ms":0})}).unwrap();
+            let command = format!(
+                "while [ ! -f release-{option} ]; do sleep .01; done; printf 'parent bytes\\n'"
+            );
+            let output=parent_tools.execute(&crate::agent_output::AgentOutput::ToolCall {message:None,tool:"exec_command".into(),args:serde_json::json!({"command":command,"yield_time_ms":0,"timeout_ms":5000})}).unwrap();
             let output: serde_json::Value = serde_json::from_str(&output.message).unwrap();
             let id = output["session_id"].as_str().unwrap().to_string();
+            assert_eq!(
+                output["stdout"], "",
+                "the initial command response must not consume the test bytes"
+            );
+            std::fs::write(folder.path().join(format!("release-{option}")), "ready").unwrap();
             let snapshot = scope
                 .read(&id, Some(crate::tools::ProcessCursor::default()), 1000)
                 .unwrap();
@@ -1140,6 +1148,206 @@ mod integration_tests {
         .with_delegation(delegation);
         (dir, runtime, manager, seen)
     }
+    struct BlockedDelegation {
+        _directory: tempfile::TempDir,
+        manager: AgentRunManager,
+        child_started: std::sync::mpsc::Receiver<()>,
+        final_attempted: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::Sender<()>,
+        finish: std::sync::mpsc::Sender<()>,
+        result: std::sync::mpsc::Receiver<Result<String, String>>,
+        thread: std::thread::JoinHandle<()>,
+    }
+    fn blocked_delegation(fail_parent: bool) -> BlockedDelegation {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+        struct Parent {
+            calls: AtomicUsize,
+            final_attempted: mpsc::Sender<()>,
+            fail: bool,
+        }
+        impl ModelProvider for Parent {
+            fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(format!(
+                        r#"{{"type":"tool_call","tool":"call_agent","args":{}}}"#,
+                        serde_json::json!({"agent":"personal:reviewer","task":"Review this","tools":[],"context_mode":"fork","execution_mode":"parallel"})
+                    ));
+                }
+                let _ = self.final_attempted.send(());
+                if self.fail {
+                    Err("parent provider failed".into())
+                } else {
+                    Ok(final_reply("parent complete"))
+                }
+            }
+        }
+        struct Child {
+            started: mpsc::Sender<()>,
+            release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+        impl ModelProvider for Child {
+            fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+                self.started.send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                Ok(final_reply(&serde_json::json!({"outcome":"done","summary":"Checked","work_done":["Read task"],"findings":[],"artifacts":[],"verification":[],"remaining":[]}).to_string()))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().to_path_buf();
+        let store = SettingsStore::at(workspace.join("settings.json"));
+        AgentCatalog::for_settings(&store, &workspace)
+            .create("personal", definition())
+            .unwrap();
+        let manager = AgentRunManager::default();
+        let runs = manager.clone();
+        let (started, child_started) = mpsc::channel();
+        let (attempted, final_attempted) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let gate = Arc::new(Mutex::new(gate));
+        let (finished, result) = mpsc::channel();
+        let (finish, retain_runtime) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let delegation = Delegation::new(&workspace, EffectiveSettings::default(), store)
+                .unwrap()
+                .with_manager(runs, "test-chat".into())
+                .with_factory(Arc::new(move |_, definition, _, _| {
+                    Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                        LocalAgent::new(
+                            definition,
+                            Box::new(Child {
+                                started: started.clone(),
+                                release: gate.clone(),
+                            }),
+                        ),
+                    )])))
+                }));
+            let local =
+                LocalAgentDefinition::from_toml(include_str!("../agents/atlas.toml")).unwrap();
+            let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+                local,
+                Box::new(Parent {
+                    calls: AtomicUsize::new(0),
+                    final_attempted: attempted,
+                    fail: fail_parent,
+                }),
+            ))]))
+            .with_tools(ToolRegistry::new(vec![]))
+            .with_delegation(delegation);
+            let answer = runtime.ask_stream_with_history_and_authorization(
+                "Review",
+                &[],
+                PermissionMode::FullAccess,
+                &AllowAllAuthorizer,
+                &mut |_| {},
+                &mut |_| {},
+            );
+            finished.send(answer).unwrap();
+            // Keep the desktop-style runtime alive: request cleanup, not Runtime::drop,
+            // must enforce final obligations and cancel work after provider failure.
+            let _ = retain_runtime.recv();
+        });
+        BlockedDelegation {
+            _directory: directory,
+            manager,
+            child_started,
+            final_attempted,
+            release,
+            finish,
+            result,
+            thread,
+        }
+    }
+
+    #[test]
+    fn omitted_wakeup_parallel_child_blocks_parent_final_until_completion() {
+        let fixture = blocked_delegation(false);
+        fixture
+            .child_started
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "child did not start: {error}; parent={:?}; runs={:?}",
+                    fixture.result.try_recv(),
+                    fixture.manager.list("test-chat")
+                )
+            });
+        fixture
+            .final_attempted
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        let early = fixture.result.recv_timeout(Duration::from_millis(100));
+        let child_was_active = fixture
+            .manager
+            .list("test-chat")
+            .unwrap()
+            .iter()
+            .any(|run| !run.status.is_terminal());
+        fixture.release.send(()).unwrap();
+        let answer = match &early {
+            Ok(answer) => answer.clone(),
+            Err(_) => fixture.result.recv_timeout(Duration::from_secs(3)).unwrap(),
+        };
+        fixture.finish.send(()).unwrap();
+        fixture.thread.join().unwrap();
+        assert!(
+            child_was_active,
+            "the child must remain blocked at the parent final attempt"
+        );
+        assert!(
+            early.is_err(),
+            "parent finalized while its delegated child was active"
+        );
+        assert_eq!(answer.unwrap(), "parent complete");
+        assert_eq!(
+            fixture.manager.list("test-chat").unwrap()[0].status,
+            crate::agent_runs::AgentRunStatus::Completed
+        );
+    }
+
+    #[test]
+    fn parent_provider_failure_cancels_omitted_wakeup_parallel_child() {
+        let fixture = blocked_delegation(true);
+        fixture
+            .child_started
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "child did not start: {error}; parent={:?}; runs={:?}",
+                    fixture.result.try_recv(),
+                    fixture.manager.list("test-chat")
+                )
+            });
+        let answer = fixture.result.recv_timeout(Duration::from_secs(4)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let run = loop {
+            let run = fixture.manager.list("test-chat").unwrap().remove(0);
+            if run.status == crate::agent_runs::AgentRunStatus::Cancelling
+                || std::time::Instant::now() >= deadline
+            {
+                break run;
+            }
+            let _ = fixture
+                .manager
+                .wait("test-chat", &run.run_id, Duration::from_millis(20));
+        };
+        fixture.release.send(()).unwrap();
+        fixture.finish.send(()).unwrap();
+        fixture.thread.join().unwrap();
+        assert!(answer.unwrap_err().contains("parent provider failed"));
+        assert_eq!(run.status, crate::agent_runs::AgentRunStatus::Cancelling);
+        assert_eq!(
+            fixture
+                .manager
+                .wait("test-chat", &run.run_id, Duration::from_secs(2))
+                .unwrap()
+                .status,
+            crate::agent_runs::AgentRunStatus::Cancelled
+        );
+    }
+
     #[test]
     fn wait_task_only_runs_with_exact_granted_tools_and_structured_result() {
         let (_dir, runtime, manager, seen) = setup("task_only", "wait", vec!["pwd"]);
@@ -1173,7 +1381,7 @@ mod integration_tests {
         assert_eq!(seen[0]["tools"], serde_json::json!(["pwd"]));
     }
     #[test]
-    fn fork_parallel_survives_parent_final_and_cannot_restore_ungranted_tools() {
+    fn fork_parallel_completes_before_parent_final_and_cannot_restore_ungranted_tools() {
         let (_dir, runtime, manager, seen) = setup("fork", "parallel", vec![]);
         let history = vec![ConversationMessage {
             role: MessageRole::User,

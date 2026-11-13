@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 pub(crate) const TOOL_MESSAGE_LIMIT: usize = 1_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AgentOutput {
     Final {
         content: String,
@@ -72,7 +72,10 @@ enum RawAgentOutput {
     ToolCall {
         tool: String,
         message: Option<String>,
-        execution: Option<crate::executions::protocol::ExecutionPolicy>,
+        #[serde(default, deserialize_with = "present_wakeup")]
+        wake_up: Option<crate::executions::protocol::ExecutionPolicy>,
+        #[serde(default, deserialize_with = "legacy_execution_present")]
+        execution: bool,
         #[serde(default)]
         args: serde_json::Value,
     },
@@ -88,6 +91,11 @@ enum RawAgentOutput {
         execution_id: String,
         tail_lines: Option<usize>,
         cursor: Option<u64>,
+    },
+    #[serde(rename = "set_execution_wakeup")]
+    SetWakeup {
+        execution_id: String,
+        wake_up: crate::executions::protocol::ExecutionPolicy,
     },
     #[serde(rename = "list_executions")]
     List,
@@ -120,6 +128,13 @@ impl RawAgentOutput {
                 tail_lines,
                 cursor,
             }),
+            Self::SetWakeup {
+                execution_id,
+                wake_up,
+            } => action(crate::executions::protocol::ExecutionAction::SetWakeup {
+                id: execution_id,
+                wake_up,
+            }),
             Self::List => action(crate::executions::protocol::ExecutionAction::List),
             Self::Cancel { execution_id } => {
                 action(crate::executions::protocol::ExecutionAction::Cancel { id: execution_id })
@@ -129,8 +144,12 @@ impl RawAgentOutput {
                 tool,
                 args,
                 message,
+                wake_up,
                 execution,
             } => {
+                if execution {
+                    return Err("legacy execution policy is unsupported; replace execution with top-level wake_up hard/lazy".into());
+                }
                 if tool.trim().is_empty() {
                     Err("tool_call needs tool".to_string())
                 } else {
@@ -144,7 +163,7 @@ impl RawAgentOutput {
                         }
                         None => None,
                     };
-                    if let Some(execution) = execution {
+                    if let Some(execution) = wake_up {
                         execution.validate()?;
                         return Ok(AgentOutput::ScheduledToolCall {
                             tool,
@@ -170,4 +189,16 @@ fn default_wait() -> u64 {
 fn action(action: crate::executions::protocol::ExecutionAction) -> Result<AgentOutput, String> {
     action.validate()?;
     Ok(AgentOutput::Execution { action })
+}
+
+fn present_wakeup<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::executions::protocol::ExecutionPolicy>, D::Error> {
+    crate::executions::protocol::ExecutionPolicy::deserialize(deserializer).map(Some)
+}
+
+fn legacy_execution_present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
 }

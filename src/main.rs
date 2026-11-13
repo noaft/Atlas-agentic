@@ -92,7 +92,13 @@ fn run_command(command: AppResult) -> Result<(), String> {
             println!("Renamed conversation: {} | {}", metadata.id, metadata.title);
         }
         AppResult::ConversationDelete { id } => {
-            let path = ConversationStore::from_user_data()?.delete(&id)?;
+            let store = ConversationStore::from_user_data()?;
+            store.load(&id)?;
+            let executions = atlas_agentic::executions::ToolExecutionManager::with_persistence(
+                store.data_root().join("tool-executions"),
+            )?;
+            executions.remove_persistence_owner(&id.to_string())?;
+            let path = store.delete(&id)?;
             println!(
                 "Deleted conversation: {id}\nHistory recoverable at: {}",
                 path.display()
@@ -110,8 +116,18 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
     let store = ConversationStore::from_user_data()?;
     let workspace = std::env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+    let executions = atlas_agentic::executions::ToolExecutionManager::with_persistence(
+        store.data_root().join("tool-executions"),
+    )?;
+    let owner = ConversationId::new().to_string();
+    if let Some(id) = id {
+        // Validate native conversation authority before binding durable tool evidence.
+        store.load(id)?;
+        executions.bind_persistence_owner(&owner, &id.to_string())?;
+    }
     let runtime =
-        build_runtime_with_settings(&workspace, Path::new("agents/atlas.toml"), &settings)?;
+        build_runtime_with_settings(&workspace, Path::new("agents/atlas.toml"), &settings)?
+            .with_execution_scope(executions.scope(&owner));
     let service = ConversationService::new(&runtime, &store, settings.history_limit);
     let authorizer = TerminalAuthorizer::new();
     let mut stdout = std::io::stdout();
@@ -145,6 +161,7 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
             _ => {}
         },
     )?;
+    executions.bind_persistence_owner(&owner, &result.metadata.id.to_string())?;
     println!("\n{}", render_conversation_metadata(&result.metadata));
     Ok(())
 }

@@ -27,7 +27,7 @@ pub(crate) fn render_model_instructions(request: &ModelRequest) -> String {
     prompt.push_str(
         "\nUse a tool name exactly as listed below. Put all tool parameters inside args.",
     );
-    prompt.push_str(include_str!("../../config/wakeup-prompt.md"));
+    prompt.push_str(&crate::executions::protocol::wakeup_prompt());
     prompt.push_str("\nAvailable tools:\n");
 
     for tool in request.tools {

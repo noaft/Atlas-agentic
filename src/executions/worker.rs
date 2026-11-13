@@ -14,6 +14,9 @@ impl<T: Tool + Send + Sync + 'static> Tool for WorkerTool<T> {
     fn name(&self) -> &str {
         self.0.name()
     }
+    fn has_execution_worker(&self) -> bool {
+        true
+    }
     fn definition(&self) -> ToolDefinition {
         self.0.definition()
     }

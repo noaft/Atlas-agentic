@@ -59,6 +59,11 @@ impl fmt::Debug for ConversationStore {
 }
 
 impl ConversationStore {
+    /// Native data root shared by conversation history and private execution artifacts.
+    pub fn data_root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn from_user_data() -> Result<Self, String> {
         if let Some(root) = env::var_os("ATLAS_DATA_DIR") {
             return Ok(Self::at(PathBuf::from(root)));

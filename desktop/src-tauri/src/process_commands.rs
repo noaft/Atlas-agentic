@@ -100,9 +100,15 @@ impl DesktopProcesses {
         }
         if let Some(id) = &context.conversation_id {
             return match registry.saved.get(id) {
-                Some(scope) => Ok(scope.clone()),
+                Some(scope) => {
+                    self.executions
+                        .bind_persistence_owner(scope.id(), &id.to_string())?;
+                    Ok(scope.clone())
+                }
                 None => {
                     let scope = self.manager.create_scope()?;
+                    self.executions
+                        .bind_persistence_owner(scope.id(), &id.to_string())?;
                     registry.saved.insert(id.clone(), scope.clone());
                     Ok(scope)
                 }
@@ -222,6 +228,8 @@ impl DesktopProcesses {
         if target.id() != scope.id() {
             self.executions.check_adoption(scope.id(), target.id())?;
         }
+        self.executions
+            .bind_persistence_owner(target.id(), &id.to_string())?;
         if target.id() != scope.id() && target.adopt_from(scope).is_err() {
             registry.drafts.remove(scope.id());
             drop(registry);
@@ -291,15 +299,17 @@ impl DesktopProcesses {
             .get(id)
             .cloned();
         if let Some(scope) = scope {
-            self.executions.close_owner(scope.id());
             self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
+            self.executions.remove_persistence_owner(&id.to_string())?;
             let mut registry = self
                 .registry
                 .lock()
                 .map_err(|_| "Process ownership unavailable")?;
             registry.saved.remove(id);
             registry.promoted.retain(|_, entry| &entry.2 != id);
+        } else {
+            self.executions.remove_persistence_owner(&id.to_string())?;
         }
         Ok(())
     }
@@ -416,6 +426,108 @@ pub async fn stop_process(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn archived_execution_deletion_trashes_results_without_restoring_live_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let conversation = ConversationId::new();
+        let execution_id = {
+            let hub = DesktopProcesses::default();
+            hub.executions.enable_persistence(directory.path()).unwrap();
+            let scope = hub.executions.scope("native");
+            let info = scope
+                .start("fake", |_| {
+                    Ok(atlas_agentic::tools::ToolResult::text("recoverable"))
+                })
+                .unwrap();
+            let batch = scope
+                .wait(std::slice::from_ref(&info.execution_id), 100)
+                .unwrap();
+            scope.ack(&batch.batch_id).unwrap();
+            hub.executions
+                .bind_persistence_owner("native", &conversation.to_string())
+                .unwrap();
+            info.execution_id
+        };
+        {
+            let hub = DesktopProcesses::default();
+            hub.executions.enable_persistence(directory.path()).unwrap();
+            hub.delete(&conversation).unwrap();
+            assert_eq!(
+                std::fs::read_dir(directory.path().join("trash"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+        let hub = DesktopProcesses::default();
+        hub.executions.enable_persistence(directory.path()).unwrap();
+        assert!(hub
+            .executions
+            .scope(&conversation.to_string())
+            .read(&execution_id, Some(1), None)
+            .is_err());
+    }
+
+    #[test]
+    fn execution_results_bind_to_saved_chat_and_restore_to_a_new_native_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let conversation = ConversationId::new();
+        let (execution_id, previous_owner) = {
+            let hub = DesktopProcesses::default();
+            hub.executions.enable_persistence(directory.path()).unwrap();
+            let client = hub.initialize("main").unwrap();
+            let native = hub
+                .resolve(
+                    "main",
+                    &client,
+                    &ProcessContext {
+                        conversation_id: None,
+                        scope_id: None,
+                    },
+                )
+                .unwrap();
+            let scope = hub.executions.scope(native.id());
+            let info = scope
+                .start("fake", |_| {
+                    Ok(atlas_agentic::tools::ToolResult::text("durable evidence"))
+                })
+                .unwrap();
+            let batch = scope
+                .wait(std::slice::from_ref(&info.execution_id), 100)
+                .unwrap();
+            scope.ack(&batch.batch_id).unwrap();
+            hub.bind(&native, &conversation).unwrap();
+            (info.execution_id, native.id().to_string())
+        };
+        let hub = DesktopProcesses::default();
+        hub.executions.enable_persistence(directory.path()).unwrap();
+        let client = hub.initialize("main").unwrap();
+        let restored = hub
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: Some(conversation),
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        assert_ne!(restored.id(), previous_owner);
+        assert_eq!(
+            hub.executions
+                .scope(restored.id())
+                .read(&execution_id, Some(1), None)
+                .unwrap()
+                .text,
+            "durable evidence"
+        );
+        assert!(hub
+            .executions
+            .scope(&previous_owner)
+            .read(&execution_id, Some(1), None)
+            .is_err());
+    }
+
     #[test]
     fn draft_tokens_transfer_and_reload_only_closes_old_drafts() {
         let hub = DesktopProcesses::default();

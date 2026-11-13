@@ -622,6 +622,12 @@ fn ask_uses_saved_provider_full_history_and_current_directory_workspace() {
         ]
     );
     let continuation = server.request();
+    let metadata_only = continuation["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(metadata_only.contains("execution_id"));
+    assert!(!metadata_only.contains(&fixture.workspace.path().display().to_string()));
+    let continuation = server.request();
     assert!(
         continuation["messages"].as_array().unwrap().last().unwrap()["content"]
             .as_str()
@@ -852,11 +858,25 @@ impl FakeDeepSeek {
                     if continuation["original_user_request"] == "recover incomplete generation" {
                         String::new()
                     } else {
-                        let workspace = continuation["tool_results"][0]["output"].as_str().unwrap();
-                        format!(
-                            r#"{{"type":"final","content":{}}}"#,
-                            serde_json::to_string(workspace).unwrap()
-                        )
+                        let last = continuation["tool_results"]
+                            .as_array()
+                            .unwrap()
+                            .last()
+                            .unwrap();
+                        let output = last["output"].as_str().unwrap();
+                        let result: Value = serde_json::from_str(output).unwrap_or(Value::Null);
+                        if let Some(id) = result["execution_id"].as_str() {
+                            format!(
+                                r#"{{"type":"read_execution","execution_id":{},"tail_lines":20}}"#,
+                                serde_json::to_string(id).unwrap()
+                            )
+                        } else {
+                            let text = result["result"]["text"].as_str().unwrap_or(output);
+                            format!(
+                                r#"{{"type":"final","content":{}}}"#,
+                                serde_json::to_string(text).unwrap()
+                            )
+                        }
                     }
                 } else {
                     r#"{"type":"final","content":"Hello from Atlas"}"#.to_string()

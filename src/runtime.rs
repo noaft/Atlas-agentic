@@ -255,19 +255,23 @@ impl Runtime {
         let mut wakeup_batch: Option<crate::executions::WakeupBatch> = None;
         let mut control_result: Option<serde_json::Value> = None;
         let mut owned_executions = std::collections::HashMap::<String, (u32, String)>::new();
-        let mut jobs = wakeup::JobsGuard::new(self.execution_scope.clone());
+        let mut pending_executions = wakeup::ExecutionsGuard::new(self.execution_scope.clone());
         let mut next_sequence = 0u32;
         let mut has_wakeup_controls = false;
 
         loop {
+            context.check_cancelled()?;
             self.execution_scope.check_open()?;
             if protocol_repairs == 0 {
                 if wakeup_batch.is_none() {
                     wakeup_batch = self.execution_scope.claim()?;
                 }
                 for info in self.execution_scope.list()? {
-                    if matches!(info.status.as_str(), "succeeded" | "failed" | "cancelled") {
-                        jobs.remove(&info.execution_id);
+                    if matches!(
+                        info.status.as_str(),
+                        "succeeded" | "failed" | "cancelled" | "interrupted"
+                    ) {
+                        pending_executions.remove(&info.execution_id);
                         if let Some((sequence, tool)) = owned_executions.remove(&info.execution_id)
                         {
                             on_tool_event(&ToolEvent::Finished {
@@ -391,12 +395,30 @@ impl Runtime {
                     continue;
                 }
             };
+            context.check_cancelled()?;
             self.execution_scope.check_open()?;
             protocol_repairs = 0;
             if let Some(batch) = wakeup_batch.take() {
                 self.execution_scope.ack(&batch.batch_id)?;
             }
             control_result = None;
+            let output = match output {
+                AgentOutput::ToolCall {
+                    tool,
+                    args,
+                    message,
+                } if self.tools.has_execution_worker(&tool)
+                    || crate::delegation::is_run_tool(&tool) =>
+                {
+                    AgentOutput::ScheduledToolCall {
+                        tool,
+                        args,
+                        message,
+                        execution: Default::default(),
+                    }
+                }
+                output => output,
+            };
             let (output, execution_policy) = match output {
                 AgentOutput::ScheduledToolCall {
                     tool,
@@ -452,6 +474,9 @@ impl Runtime {
                             "read_execution"
                         }
                         crate::executions::protocol::ExecutionAction::List => "list_executions",
+                        crate::executions::protocol::ExecutionAction::SetWakeup { .. } => {
+                            "set_execution_wakeup"
+                        }
                         crate::executions::protocol::ExecutionAction::Cancel { .. } => {
                             "cancel_execution"
                         }
@@ -474,9 +499,9 @@ impl Runtime {
                         action,
                         authorizer,
                         on_tool_event,
-                        permission_mode,
-                        sequence,
+                        (permission_mode, sequence),
                         &mut latest_images,
+                        context,
                     );
                     let success = outcome.is_ok();
                     match outcome {
@@ -534,21 +559,30 @@ impl Runtime {
                 }
                 AgentOutput::Final { content } => {
                     if let Some(batch) = self.execution_scope.claim()? {
-                        if !final_stream.emitted_content.is_empty() {
-                            on_tool_event(&ToolEvent::ResponseReset);
+                        let must_handle = !pending_executions.is_empty()
+                            || batch
+                                .events
+                                .iter()
+                                .any(|event| event.reason != "interval_elapsed");
+                        if must_handle {
+                            if !final_stream.emitted_content.is_empty() {
+                                on_tool_event(&ToolEvent::ResponseReset);
+                            }
+                            wakeup_batch = Some(batch);
+                            continue;
                         }
-                        wakeup_batch = Some(batch);
-                        continue;
+                        // Unrelated background reminders do not invalidate a completed answer.
+                        // Leave the unacknowledged batch available to the next authorized turn.
                     }
-                    if !jobs.is_empty() {
+                    if !pending_executions.is_empty() {
                         if !final_stream.emitted_content.is_empty() {
                             on_tool_event(&ToolEvent::ResponseReset);
                         }
-                        wakeup_batch = Some(self.wait_executions(
-                            &jobs.iter().cloned().collect::<Vec<_>>(),
-                            2000,
+                        wakeup_batch = Some(self.wait_scheduled_executions(
+                            &pending_executions.iter().cloned().collect::<Vec<_>>(),
                             authorizer,
                             on_tool_event,
+                            context,
                         )?);
                         continue;
                     }
@@ -668,6 +702,12 @@ impl Runtime {
                     }
                     if let Some(policy) = execution_policy {
                         let start = self.execution_scope.reserve(&tool).and_then(|slot| {
+                            self.execution_scope
+                                .set_wakeup(&slot.execution_id, policy.clone())
+                                .inspect_err(|error| {
+                                    self.execution_scope
+                                        .fail_reserved(&slot.execution_id, error.clone())
+                                })?;
                             let preparation =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     let work = if crate::delegation::is_run_tool(&tool) {
@@ -708,12 +748,11 @@ impl Runtime {
                         });
                         match start {
                             Ok(info) => {
-                                if policy.mode == crate::executions::protocol::ExecutionMode::Job
-                                    || tool == "exec_command"
-                                        && args.get("lifetime").and_then(|v| v.as_str())
-                                            != Some("background")
+                                if tool != "exec_command"
+                                    || args.get("lifetime").and_then(|v| v.as_str())
+                                        != Some("background")
                                 {
-                                    jobs.insert(info.execution_id.clone());
+                                    pending_executions.insert(info.execution_id.clone());
                                 }
                                 owned_executions
                                     .insert(info.execution_id.clone(), (sequence, tool.clone()));
@@ -724,12 +763,12 @@ impl Runtime {
                                     output: serde_json::to_string(&info)
                                         .map_err(|_| "Could not encode tool execution")?,
                                 });
-                                if policy.mode == crate::executions::protocol::ExecutionMode::Job {
-                                    wakeup_batch = Some(self.wait_executions(
+                                if policy.mode == crate::executions::protocol::WakeupMode::Hard {
+                                    wakeup_batch = Some(self.wait_scheduled_executions(
                                         &[info.execution_id],
-                                        policy.yield_ms,
                                         authorizer,
                                         on_tool_event,
+                                        context,
                                     )?);
                                 }
                             }
@@ -751,6 +790,7 @@ impl Runtime {
                         }
                         continue;
                     }
+                    let inline = self.execution_scope.reserve(&tool)?;
                     let result = if crate::delegation::is_run_tool(&tool) {
                         match &self.delegation {
                             Some(delegation) => delegation
@@ -802,6 +842,14 @@ impl Runtime {
                         }
                         Err(error) => (false, error),
                     };
+                    self.execution_scope.finish_inline(
+                        &inline.execution_id,
+                        if success {
+                            Ok(crate::tools::ToolResult::text(output.clone()))
+                        } else {
+                            Err(output.clone())
+                        },
+                    )?;
                     crate::diagnostics::event(
                         if success { "INFO" } else { "ERROR" },
                         "tool.finished",

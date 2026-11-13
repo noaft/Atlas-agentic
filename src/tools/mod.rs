@@ -126,6 +126,9 @@ pub trait Tool {
     fn summarize(&self, args: &serde_json::Value) -> String {
         summarize_arguments(args)
     }
+    fn has_execution_worker(&self) -> bool {
+        false
+    }
     fn prepare_execution(
         &self,
         _args: serde_json::Value,
@@ -297,6 +300,12 @@ impl ToolRegistry {
             .get(&authorization.tool)
             .ok_or("Unknown tool")?
             .prepare_execution(authorization.args, authorization.context)
+    }
+
+    pub(crate) fn has_execution_worker(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|tool| tool.has_execution_worker())
     }
 
     pub fn authorization(

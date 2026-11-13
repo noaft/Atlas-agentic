@@ -1971,22 +1971,30 @@ fn runtime_sessions_continue_between_tools_and_are_cleaned_on_final_or_error() {
         phase: Cell<u8>,
         workspace: std::path::PathBuf,
         fail: bool,
+        session_id: RefCell<String>,
     }
     impl ModelProvider for SessionModel {
         fn complete(&self, request: &ModelRequest) -> Result<String, String> {
             let phase = self.phase.replace(self.phase.get() + 1);
             if phase == 0 {
-                return Ok(r#"{"type":"tool_call","tool":"exec_command","args":{"command":"touch started; printf step; sleep 1; touch leaked","yield_time_ms":0}}"#.into());
+                return Ok(r#"{"type":"tool_call","tool":"exec_command","wake_up":{"mode":"hard","interval_seconds":0.1},"args":{"command":"touch started; printf step; sleep 1; touch leaked","yield_time_ms":0}}"#.into());
             }
             let pending: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
             let records = pending["tool_results"].as_array().unwrap();
             let output: serde_json::Value =
                 serde_json::from_str(records.last().unwrap()["output"].as_str().unwrap()).unwrap();
-            let id = output["session_id"].as_str().unwrap();
             if phase == 1 {
+                let id = output["execution_id"].as_str().unwrap();
+                return Ok(format!(
+                    r#"{{"type":"read_execution","execution_id":"{id}","tail_lines":1}}"#
+                ));
+            }
+            if phase == 2 {
+                let id = output["result"]["metadata"]["session_id"].as_str().unwrap();
+                self.session_id.replace(id.into());
                 return Ok(format!(
                     r#"{{"type":"tool_call","tool":"read_process","args":{}}}"#,
-                    serde_json::json!({"session_id":id,"wait_ms":100})
+                    serde_json::json!({"session_id":id,"wait_ms":0})
                 ));
             }
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1996,6 +2004,12 @@ fn runtime_sessions_continue_between_tools_and_are_cleaned_on_final_or_error() {
             assert!(self.workspace.join("started").exists());
             if self.fail {
                 Err("fake provider failure".into())
+            } else if phase == 3 {
+                // Final may no longer abandon running work; explicitly request Stop.
+                Ok(format!(
+                    r#"{{"type":"tool_call","tool":"stop_process","args":{}}}"#,
+                    serde_json::json!({"session_id":self.session_id.borrow().as_str()})
+                ))
             } else {
                 Ok(r#"{"type":"final","content":"Session inspected."}"#.into())
             }
@@ -2011,6 +2025,7 @@ fn runtime_sessions_continue_between_tools_and_are_cleaned_on_final_or_error() {
                 phase: Cell::new(0),
                 workspace: workspace.path().into(),
                 fail,
+                session_id: RefCell::new(String::new()),
             }),
         ))]))
         .with_tools(tools);

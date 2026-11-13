@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BACKUP_COUNT: usize = 3;
 static LOGGER: OnceLock<BackendLog> = OnceLock::new();
+static ARTIFACT_SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WRITE_WARNING: AtomicBool = AtomicBool::new(false);
 thread_local! { static REQUEST_ID: RefCell<Option<String>> = const { RefCell::new(None) }; }
 
@@ -308,6 +309,7 @@ pub fn init(component: &'static str) {
                     .any(|part| name.contains(part))
                 {
                     logger.protect(&value.to_string_lossy());
+                    protect_secret(&value.to_string_lossy());
                 }
             }
             if LOGGER.set(logger).is_ok() {
@@ -324,8 +326,44 @@ pub fn init(component: &'static str) {
 
 /// Register saved credentials before constructing or calling a provider.
 pub fn protect_secret(secret: &str) {
+    if !secret.is_empty() {
+        if let Ok(mut secrets) = ARTIFACT_SECRETS.lock() {
+            if !secrets.iter().any(|value| value == secret) {
+                secrets.push(secret.to_owned());
+            }
+        }
+    }
     if let Some(logger) = LOGGER.get() {
         logger.protect(secret);
+    }
+}
+
+/// Remove registered credentials without changing byte positions in retained output.
+pub(crate) fn redact_artifact(value: &mut Value) {
+    let secrets = ARTIFACT_SECRETS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    redact_artifact_values(value, &secrets);
+}
+
+fn redact_artifact_values(value: &mut Value, secrets: &[String]) {
+    match value {
+        Value::String(text) => {
+            for secret in secrets {
+                *text = text.replace(secret, &"*".repeat(secret.len()));
+            }
+        }
+        Value::Object(fields) => {
+            for value in fields.values_mut() {
+                redact_artifact_values(value, secrets);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_artifact_values(value, secrets);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -418,6 +456,21 @@ pub(crate) fn provider_settings(settings: &crate::settings::EffectiveSettings) {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn artifact_redaction_preserves_utf8_offsets_and_line_breaks_without_logging() {
+        let secret = "artifact-credential-ế";
+        protect_secret(secret);
+        let text = format!("first\n{secret}\nlast\n");
+        let mut value = json!({"output":{"text":text},"status":"succeeded"});
+        redact_artifact(&mut value);
+        let redacted = value["output"]["text"].as_str().unwrap();
+        assert!(!redacted.contains(secret));
+        assert_eq!(redacted.len(), text.len());
+        assert_eq!(redacted.lines().count(), text.lines().count());
+        assert!(redacted.ends_with("\nlast\n"));
+        assert_eq!(value["status"], "succeeded");
+    }
 
     #[test]
     fn records_are_live_private_bounded_and_redacted() {

@@ -215,6 +215,16 @@ impl DesktopState {
         process_scope: Option<atlas_agentic::tools::ProcessScope>,
     ) -> Result<ConversationAskResultDto, String> {
         let _request = self.active_requests.acquire(conversation_id)?;
+        if let Some(scope) = &process_scope {
+            self.processes
+                .executions
+                .enable_persistence(self.store.data_root().join("tool-executions"))?;
+            if let Some(id) = conversation_id {
+                self.processes
+                    .executions
+                    .bind_persistence_owner(scope.id(), &id.to_string())?;
+            }
+        }
         let _process_lease = process_scope
             .as_ref()
             .map(|scope| self.processes.lease(scope))
@@ -264,15 +274,11 @@ impl DesktopState {
             )
             .map(ConversationAskResultDto::from);
         if let (Some(scope), Ok(result)) = (&process_scope, &mut result) {
-            if self
-                .processes
-                .bind(scope, &parse_id(&result.metadata.id)?)
-                .is_err()
-            {
+            if let Err(error) = self.processes.bind(scope, &parse_id(&result.metadata.id)?) {
                 self.processes.executions.close_owner(scope.id());
                 self.processes.agents.close_owner(scope.id());
                 let _ = scope.close(Duration::from_secs(3));
-                result.process_warning=Some("Ownership transfer failed and cleanup was requested. Some actions may have completed; inspect before retrying.".into());
+                result.process_warning = Some(format!("Ownership transfer failed: {error}. Cleanup was requested. Some actions may have completed; inspect before retrying."));
                 diagnostics::event(
                     "WARN",
                     "process.scope.transfer_failed",
@@ -1024,6 +1030,10 @@ fn rename_impl(
 fn delete_impl(id: &str, state: &DesktopState) -> Result<DeleteResult, String> {
     let id = parse_id(id)?;
     let _request = state.active_requests.acquire(Some(&id))?;
+    state
+        .processes
+        .executions
+        .enable_persistence(state.store.data_root().join("tool-executions"))?;
     state.processes.delete(&id)?;
     state.store.delete(&id)?;
     Ok(DeleteResult { id: id.to_string() })

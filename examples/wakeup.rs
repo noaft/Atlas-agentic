@@ -48,7 +48,7 @@ struct DemonstrationAgent {
 impl ModelProvider for DemonstrationAgent {
     fn complete(&self, request: &ModelRequest) -> Result<String, String> {
         if !self.started.replace(true) {
-            return Ok(r#"{"type":"tool_call","tool":"demo_ticker","execution":{"mode":"job","yield_ms":200},"args":{}}"#.into());
+            return Ok(r#"{"type":"tool_call","tool":"demo_ticker","wake_up":{"mode":"hard","interval_seconds":0.2},"args":{}}"#.into());
         }
         let input: serde_json::Value =
             serde_json::from_str(request.user_prompt).map_err(|_| "Invalid continuation")?;
@@ -73,14 +73,21 @@ impl ModelProvider for DemonstrationAgent {
                 selected["result"]["text"].as_str().unwrap_or("")
             );
             if info["status"] == "succeeded" {
-                return Ok(r#"{"type":"final","content":"PASS: bounded reads, adjustable sleep, completion wakeup, one execution."}"#.into());
+                return Ok(r#"{"type":"final","content":"PASS: bounded reads, adjustable wakeup, completion wakeup, one execution."}"#.into());
             }
         }
-        let ms = if self.waits.get() == 0 { 500 } else { 1000 };
-        self.waits.set(self.waits.get() + 1);
-        println!("Agent chooses to sleep {ms}ms; runtime waits without model calls.");
+        let phase = self.waits.get();
+        self.waits.set(phase + 1);
+        if phase == 0 || phase == 2 {
+            let seconds = if phase == 0 { 0.5 } else { 1.0 };
+            println!("Agent changes the wakeup interval to {seconds}s without repeating the tool.");
+            return Ok(format!(
+                r#"{{"type":"set_execution_wakeup","execution_id":"{id}","wake_up":{{"mode":"hard","interval_seconds":{seconds}}}}}"#
+            ));
+        }
+        println!("Agent awaits the scheduled event; runtime waits without model calls.");
         Ok(format!(
-            r#"{{"type":"await_execution","execution_id":"{id}","yield_ms":{ms}}}"#
+            r#"{{"type":"await_execution","execution_id":"{id}"}}"#
         ))
     }
 }

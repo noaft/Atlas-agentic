@@ -151,7 +151,7 @@ mod runtime_wakeup {
             let step = self.step.get();
             self.step.set(step + 1);
             if step == 0 {
-                return Ok(r#"{"type":"tool_call","tool":"slow","execution":{"mode":"job","yield_ms":100},"args":{}}"#.into());
+                return Ok(r#"{"type":"tool_call","tool":"slow","wake_up":{"mode":"hard","interval_seconds":0.1},"args":{}}"#.into());
             }
             let input: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
             let id = input["executions"][0]["execution_id"].as_str().unwrap();
@@ -221,6 +221,311 @@ mod runtime_wakeup {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     struct EmptyControls(Cell<usize>);
+    struct LazyModel {
+        step: Cell<usize>,
+        finish: Arc<AtomicBool>,
+    }
+    impl ModelProvider for LazyModel {
+        fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+            let step = self.step.get();
+            self.step.set(step + 1);
+            match step {
+                0 => Ok(
+                    r#"{"type":"tool_call","tool":"slow","wake_up":{"mode":"lazy"},"args":{}}"#
+                        .into(),
+                ),
+                1 => {
+                    self.finish.store(true, Ordering::SeqCst);
+                    Ok(r#"{"type":"final","content":"premature"}"#.into())
+                }
+                2 => {
+                    let input: serde_json::Value =
+                        serde_json::from_str(request.user_prompt).unwrap();
+                    assert_eq!(
+                        input["execution_wakeup"]["events"][0]["status"],
+                        "succeeded"
+                    );
+                    assert!(!request.user_prompt.contains("RAW_LOG_SHOULD_NOT_PRELOAD"));
+                    Ok(r#"{"type":"final","content":"completion inspected"}"#.into())
+                }
+                _ => panic!("lazy must not poll the model while waiting"),
+            }
+        }
+    }
+    #[test]
+    fn lazy_work_cannot_bypass_final_and_completion_wakes_without_ten_minute_delay() {
+        let finish = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(LazyModel {
+                step: Cell::new(0),
+                finish: finish.clone(),
+            }),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![
+            atlas_agentic::executions::worker::tool(Slow {
+                finish,
+                calls: calls.clone(),
+            }),
+        ]));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            runtime.ask_stream("go", &mut |_| {}).unwrap(),
+            "completion inspected"
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    struct ImmediateTool;
+    struct PeriodicFinalModel {
+        called: Cell<bool>,
+        scope: atlas_agentic::executions::ExecutionScope,
+        id: String,
+    }
+    impl ModelProvider for PeriodicFinalModel {
+        fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+            if self.called.replace(true) {
+                return Err("periodic background notice caused an unnecessary model call".into());
+            }
+            self.scope
+                .wait_scheduled_checked(std::slice::from_ref(&self.id), || Ok(()))?;
+            Ok(r#"{"type":"final","content":"independent work done"}"#.into())
+        }
+    }
+    #[test]
+    fn an_unrelated_periodic_background_notice_does_not_invalidate_final() {
+        use atlas_agentic::executions::protocol::{ExecutionPolicy, WakeupMode};
+        let manager = ToolExecutionManager::new();
+        let scope = manager.scope("background-chat");
+        let (send, recv) = std::sync::mpsc::channel();
+        let info = scope
+            .start("authorized-background", move |_| {
+                recv.recv().unwrap();
+                Ok(ToolResult::text("done"))
+            })
+            .unwrap();
+        scope
+            .set_wakeup(
+                &info.execution_id,
+                ExecutionPolicy {
+                    mode: WakeupMode::Hard,
+                    interval_seconds: Some(0.1),
+                },
+            )
+            .unwrap();
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(PeriodicFinalModel {
+                called: Cell::new(false),
+                scope: scope.clone(),
+                id: info.execution_id.clone(),
+            }),
+        ))]))
+        .with_execution_scope(scope.clone());
+        let result = runtime.ask_stream("independent work", &mut |_| {});
+        send.send(()).unwrap();
+        assert_eq!(result.unwrap(), "independent work done");
+        assert!(
+            scope.claim().unwrap().is_some(),
+            "unhandled background notice remains available for the next authorized turn"
+        );
+    }
+    struct AwaitLazyModel {
+        step: Cell<usize>,
+        finish: Arc<AtomicBool>,
+    }
+    impl ModelProvider for AwaitLazyModel {
+        fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+            let step = self.step.get();
+            self.step.set(step + 1);
+            if step == 0 {
+                return Ok(
+                    r#"{"type":"tool_call","tool":"slow","wake_up":{"mode":"lazy"},"args":{}}"#
+                        .into(),
+                );
+            }
+            let input: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
+            if step == 1 {
+                let finish = self.finish.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(350));
+                    finish.store(true, Ordering::SeqCst);
+                });
+                let id = input["executions"][0]["execution_id"].as_str().unwrap();
+                return Ok(format!(
+                    r#"{{"type":"await_execution","execution_id":"{id}","yield_ms":100}}"#
+                ));
+            }
+            assert_eq!(step, 2, "lazy await must not repeatedly call the model");
+            assert_eq!(
+                input["execution_wakeup"]["events"][0]["status"], "succeeded",
+                "an explicit short wait must not bypass the lazy schedule"
+            );
+            Ok(r#"{"type":"final","content":"lazy completion checked"}"#.into())
+        }
+    }
+    #[test]
+    fn explicit_await_cannot_turn_lazy_into_short_model_polling() {
+        let finish = Arc::new(AtomicBool::new(false));
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(AwaitLazyModel {
+                step: Cell::new(0),
+                finish: finish.clone(),
+            }),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![
+            atlas_agentic::executions::worker::tool(Slow {
+                finish,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        ]));
+        assert_eq!(
+            runtime.ask_stream("go", &mut |_| {}).unwrap(),
+            "lazy completion checked"
+        );
+    }
+    struct FinalCancellation(Arc<AtomicBool>);
+    impl ModelProvider for FinalCancellation {
+        fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(r#"{"type":"final","content":"cancelled answer"}"#.into())
+        }
+    }
+    #[test]
+    fn cancellation_before_final_prevents_successful_history_commit() {
+        use atlas_agentic::conversations::{ConversationService, ConversationStore};
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(FinalCancellation(cancelled.clone())),
+        ))]));
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::at(dir.path().to_owned());
+        let result = ConversationService::new(&runtime, &store, 40)
+            .with_cancellation(&cancelled)
+            .ask("go", None, &mut |_| {});
+        assert!(
+            result.is_err(),
+            "a cancellation arriving with the final result must win before publication"
+        );
+        assert!(store.list().unwrap().is_empty());
+    }
+    struct CancelModel {
+        called: Cell<bool>,
+        cancelled: Arc<AtomicBool>,
+    }
+    impl ModelProvider for CancelModel {
+        fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+            if !self.called.replace(true) {
+                Ok(
+                    r#"{"type":"tool_call","tool":"slow","wake_up":{"mode":"lazy"},"args":{}}"#
+                        .into(),
+                )
+            } else {
+                self.cancelled.store(true, Ordering::SeqCst);
+                Ok(r#"{"type":"final","content":"must not finish after stop"}"#.into())
+            }
+        }
+    }
+    #[test]
+    fn cancelling_a_legacy_history_request_interrupts_a_lazy_wait() {
+        use atlas_agentic::conversations::{ConversationService, ConversationStore};
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let finish = Arc::new(AtomicBool::new(false));
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(CancelModel {
+                called: Cell::new(false),
+                cancelled: cancelled.clone(),
+            }),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![
+            atlas_agentic::executions::worker::tool(Slow {
+                finish: finish.clone(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        ]));
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::at(dir.path().to_owned());
+        let start = std::time::Instant::now();
+        let result = ConversationService::new(&runtime, &store, 40)
+            .with_cancellation(&cancelled)
+            .ask_with_permission_authorizer(
+                "go",
+                None,
+                PermissionMode::FullAccess,
+                &AllowAllAuthorizer,
+                &mut |_| {},
+                &mut |_| {},
+            );
+        finish.store(true, Ordering::SeqCst);
+        assert!(
+            result.is_err(),
+            "Stop must cancel the request even without memory compaction"
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(store.list().unwrap().is_empty());
+    }
+    impl Tool for ImmediateTool {
+        fn name(&self) -> &str {
+            "immediate"
+        }
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().into(),
+                description: "Immediate result".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }
+        }
+        fn execute(&self, _: &serde_json::Value) -> Result<ToolResult, String> {
+            Ok(ToolResult::text("stored result"))
+        }
+    }
+    struct ImmediateModel(Cell<bool>);
+    impl ModelProvider for ImmediateModel {
+        fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+            if !self.0.replace(true) {
+                Ok(r#"{"type":"tool_call","tool":"immediate","args":{}}"#.into())
+            } else {
+                Ok(r#"{"type":"final","content":"done"}"#.into())
+            }
+        }
+    }
+    #[test]
+    fn ordinary_tool_calls_are_owned_and_their_results_can_be_read_after_final() {
+        let manager = ToolExecutionManager::new();
+        let scope = manager.scope("ordinary-chat");
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(ImmediateModel(Cell::new(false))),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![Box::new(ImmediateTool)]))
+        .with_execution_scope(scope.clone());
+        assert_eq!(runtime.ask_stream("go", &mut |_| {}).unwrap(), "done");
+        let records = scope.list().unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "ordinary tool must not bypass execution tracking"
+        );
+        assert_eq!(records[0].status, "succeeded");
+        assert_eq!(
+            scope
+                .read(&records[0].execution_id, Some(1), None)
+                .unwrap()
+                .text,
+            "stored result"
+        );
+    }
     impl ModelProvider for EmptyControls {
         fn complete(&self, request: &ModelRequest) -> Result<String, String> {
             let step = self.0.get();
@@ -263,7 +568,7 @@ mod runtime_wakeup {
     impl ModelProvider for FailureAfterWake {
         fn complete(&self, request: &ModelRequest) -> Result<String, String> {
             if !self.started.replace(true) {
-                return Ok(r#"{"type":"tool_call","tool":"slow","execution":{"mode":"job","yield_ms":100},"args":{}}"#.into());
+                return Ok(r#"{"type":"tool_call","tool":"slow","wake_up":{"mode":"hard","interval_seconds":0.1},"args":{}}"#.into());
             }
             let value: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
             *self.batch.lock().unwrap() = value["execution_wakeup"]["batch_id"]
@@ -274,7 +579,7 @@ mod runtime_wakeup {
         }
     }
     #[test]
-    fn provider_failure_preserves_delivery_requests_job_cancel_and_never_replays() {
+    fn provider_failure_preserves_delivery_requests_execution_cancel_and_never_replays() {
         let finish = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(AtomicUsize::new(0));
         let batch = Arc::new(std::sync::Mutex::new(String::new()));

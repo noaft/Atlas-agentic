@@ -1,0 +1,7 @@
+# The scheduler and rendered wakeup instructions share these values.
+default_mode = "hard"
+hard_interval_seconds = 2.0
+lazy_interval_seconds = 600.0
+
+persistence_max_records = 128
+persistence_max_bytes = 12582912

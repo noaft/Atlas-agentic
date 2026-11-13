@@ -1,9 +1,11 @@
 //! Owned tool workers and metadata-only Wakeup mailboxes. No provider calls occur here.
 mod output;
+mod persistence;
 pub mod protocol;
 pub mod worker;
 use crate::tools::{ToolAttachment, ToolResult};
 pub use output::OutputRead;
+pub use persistence::PersistenceLimits;
 use serde::Serialize;
 use std::{
     cmp::Reverse,
@@ -26,6 +28,7 @@ struct Coordinator {
 struct Shared {
     store: Mutex<Store>,
     changed: Condvar,
+    publication: Mutex<()>,
 }
 #[derive(Default)]
 struct Store {
@@ -37,6 +40,9 @@ struct Store {
     sequence: u64,
     shutdown: bool,
     owner_deadlines: HashMap<String, Instant>,
+    persistence: Option<Arc<persistence::Persistence>>,
+    archives: HashMap<String, serde_json::Value>,
+    aliases: HashMap<String, String>,
 }
 #[derive(Default)]
 struct Mailbox {
@@ -44,12 +50,18 @@ struct Mailbox {
     in_flight: Option<WakeupBatch>,
     consumer: bool,
     image_epoch: u64,
+    request_id: String,
 }
 struct Record {
     owner: String,
     tool: String,
     status: &'static str,
     started: Instant,
+    request_id: String,
+    started_at: String,
+    completed_at: Option<String>,
+    elapsed_offset: u64,
+    finished_elapsed: Option<u64>,
     revision: u64,
     output: output::Output,
     metadata: serde_json::Value,
@@ -61,6 +73,10 @@ struct Record {
     attachments: Vec<ToolAttachment>,
     worker: Option<JoinHandle<()>>,
     launched: bool,
+    wake_up: protocol::ExecutionPolicy,
+    acknowledged: bool,
+    pending_status: Option<&'static str>,
+    restored: bool,
 }
 #[derive(Clone)]
 pub struct ExecutionScope {
@@ -78,6 +94,9 @@ pub struct ExecutionReporter {
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutionInfo {
     pub execution_id: String,
+    pub request_id: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
     pub tool: String,
     pub status: String,
     pub elapsed_ms: u64,
@@ -86,6 +105,8 @@ pub struct ExecutionInfo {
     pub retention_loss: bool,
     pub cancel_requested: bool,
     pub has_image: bool,
+    pub wake_up: protocol::ExecutionPolicy,
+    pub archived: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeupEvent {
@@ -131,6 +152,19 @@ fn owner_closed(store: &Store, owner: &str) -> bool {
             .any(|closed| owner == closed || owner.starts_with(&format!("{closed}/")))
 }
 fn close_store_owner(store: &mut Store, owner: &str) {
+    if store.persistence.is_some() {
+        let archived = store
+            .records
+            .iter()
+            .filter(|(_, r)| r.owner == owner || r.owner.starts_with(&format!("{owner}/")))
+            .map(|(id, r)| {
+                let mut value = persistence::saved_value(store, id, r);
+                value["acknowledged"] = true.into();
+                (id.clone(), value)
+            })
+            .collect::<Vec<_>>();
+        store.archives.extend(archived);
+    }
     let owners = store
         .mailboxes
         .keys()
@@ -148,6 +182,9 @@ fn close_store_owner(store: &mut Store, owner: &str) {
         .values_mut()
         .filter(|r| r.owner == owner || r.owner.starts_with(&format!("{owner}/")))
     {
+        // Scope retirement abandons its private mailbox. This is retention
+        // acknowledgement only; it never changes the actual action outcome.
+        r.acknowledged = true;
         if !terminal(r.status) {
             r.cancel_requested = true;
             r.status = "cancelling";
@@ -165,22 +202,31 @@ fn close_store_owner(store: &mut Store, owner: &str) {
         .retain(|id, _| id != owner && !id.starts_with(&format!("{owner}/")));
 }
 fn terminal(status: &str) -> bool {
-    matches!(status, "succeeded" | "failed" | "cancelled")
+    matches!(status, "succeeded" | "failed" | "cancelled" | "interrupted")
 }
 fn elapsed(start: Instant) -> u64 {
     start.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
+fn record_elapsed(r: &Record) -> u64 {
+    r.finished_elapsed
+        .unwrap_or_else(|| r.elapsed_offset.saturating_add(elapsed(r.started)))
+}
 fn info(id: &str, r: &Record) -> ExecutionInfo {
     ExecutionInfo {
         execution_id: id.into(),
+        request_id: r.request_id.clone(),
+        started_at: r.started_at.clone(),
+        completed_at: r.completed_at.clone(),
         tool: r.tool.clone(),
         status: r.status.into(),
-        elapsed_ms: elapsed(r.started),
+        elapsed_ms: record_elapsed(r),
         revision: r.revision,
         unread_lines: r.output.unread_lines(),
         retention_loss: r.output.retention_loss(),
         cancel_requested: r.cancel_requested,
         has_image: !r.attachments.is_empty(),
+        wake_up: r.wake_up.clone(),
+        archived: r.restored,
     }
 }
 fn enqueue(store: &mut Store, id: &str, reason: &str) {
@@ -196,13 +242,18 @@ fn enqueue(store: &mut Store, id: &str, reason: &str) {
         status: r.status.into(),
         reason: reason.into(),
         revision: r.revision,
-        elapsed_ms: elapsed(r.started),
+        elapsed_ms: record_elapsed(r),
         unread_lines: r.output.unread_lines(),
         retention_loss: r.output.retention_loss(),
         sequence: store.sequence,
     };
     store.sequence += 1;
-    let box_ = store.mailboxes.entry(r.owner.clone()).or_default();
+    let mailbox_owner = if r.restored {
+        r.owner.split('/').next().unwrap_or(&r.owner).to_string()
+    } else {
+        r.owner.clone()
+    };
+    let box_ = store.mailboxes.entry(mailbox_owner).or_default();
     if box_
         .pending
         .get(id)
@@ -257,6 +308,7 @@ impl ToolExecutionManager {
         let shared = Arc::new(Shared {
             store: Mutex::new(Store::default()),
             changed: Condvar::new(),
+            publication: Mutex::new(()),
         });
         let scheduler_shared = shared.clone();
         let scheduler = thread::Builder::new()
@@ -267,6 +319,141 @@ impl ToolExecutionManager {
             shared,
             scheduler: Mutex::new(scheduler),
         }))
+    }
+    pub fn with_persistence(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        Self::with_persistence_options(path, PersistenceLimits::default())
+    }
+    pub fn with_persistence_options(
+        path: impl AsRef<std::path::Path>,
+        options: PersistenceLimits,
+    ) -> Result<Self, String> {
+        let manager = Self::new();
+        manager.enable_persistence_options(path, options)?;
+        Ok(manager)
+    }
+    pub fn enable_persistence(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        self.enable_persistence_options(path, PersistenceLimits::default())
+    }
+    pub fn enable_persistence_options(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        options: PersistenceLimits,
+    ) -> Result<(), String> {
+        let shared = &self.0.shared;
+        let state = shared
+            .store
+            .lock()
+            .map_err(|_| "Execution manager unavailable")?;
+        let (state, publication) = persistence::publication_guard(shared, state);
+        if state.persistence.is_some() {
+            return Ok(());
+        }
+        if !state.records.is_empty() {
+            return Err("Enable execution storage before starting tools".into());
+        }
+        drop(state);
+        let persistence = Arc::new(persistence::Persistence::open(path.as_ref(), options)?);
+        let snapshots = persistence.collect_archives()?;
+        let mut state = shared
+            .store
+            .lock()
+            .map_err(|_| "Execution manager unavailable")?;
+        persistence.merge(snapshots, &mut state)?;
+        state.persistence = Some(persistence);
+        drop(publication);
+        persistence::save(shared, state).1
+    }
+    pub fn bind_persistence_owner(&self, owner: &str, stable: &str) -> Result<(), String> {
+        if owner.is_empty() || stable.is_empty() || owner.len() > 512 || stable.len() > 512 {
+            return Err("Invalid execution owner binding".into());
+        }
+        let mut s = self
+            .0
+            .shared
+            .store
+            .lock()
+            .map_err(|_| "Execution manager unavailable")?;
+        if owner_closed(&s, owner) {
+            return Err("Execution owner is closed".into());
+        }
+        if s.aliases
+            .iter()
+            .any(|(other, key)| other != owner && key == stable)
+        {
+            return Err("Execution history already bound to another native owner".into());
+        }
+        let (state, result) = persistence::refresh(&self.0.shared, s);
+        s = state;
+        result?;
+        s.aliases.insert(owner.into(), stable.into());
+        if owner != stable {
+            for r in s.records.values_mut() {
+                if r.owner == stable {
+                    r.owner = owner.into();
+                } else if let Some(suffix) = r.owner.strip_prefix(&format!("{stable}/")) {
+                    r.owner = format!("{owner}/{suffix}");
+                }
+            }
+            let archived = s
+                .mailboxes
+                .keys()
+                .filter_map(|key| {
+                    if key == stable {
+                        Some((key.clone(), owner.to_string()))
+                    } else {
+                        key.strip_prefix(&format!("{stable}/"))
+                            .map(|suffix| (key.clone(), format!("{owner}/{suffix}")))
+                    }
+                })
+                .collect::<Vec<_>>();
+            for (from, to) in archived {
+                if let Some(mut mailbox) = s.mailboxes.remove(&from) {
+                    let target = s.mailboxes.entry(to).or_default();
+                    target.pending.extend(mailbox.pending.drain());
+                    if let Some(batch) = mailbox.in_flight {
+                        for event in batch.events {
+                            target.pending.insert(event.execution_id.clone(), event);
+                        }
+                    }
+                }
+            }
+        }
+        persistence::save(&self.0.shared, s).1
+    }
+    pub fn remove_persistence_owner(&self, stable: &str) -> Result<(), String> {
+        let mut s = self
+            .0
+            .shared
+            .store
+            .lock()
+            .map_err(|_| "Execution manager unavailable")?;
+        let (state, result) = persistence::refresh(&self.0.shared, s);
+        s = state;
+        result?;
+        let owner = s
+            .aliases
+            .iter()
+            .find(|(_, key)| key.as_str() == stable)
+            .map(|(owner, _)| owner.clone())
+            .unwrap_or_else(|| stable.into());
+        let (state, result) = persistence::trash(&self.0.shared, s, &owner);
+        s = state;
+        result?;
+        close_store_owner(&mut s, &owner);
+        let prefixes = std::iter::once(owner.clone())
+            .chain(s.aliases.get(&owner).cloned())
+            .collect::<Vec<_>>();
+        s.archives.retain(|_, r| {
+            !prefixes.iter().any(|prefix| {
+                r["owner"]
+                    .as_str()
+                    .is_some_and(|id| id == prefix || id.starts_with(&format!("{prefix}/")))
+            })
+        });
+        let (_state, result) = persistence::save(&self.0.shared, s);
+        result?;
+        self.0.shared.changed.notify_all();
+        Ok(())
     }
     pub fn scope(&self, owner: &str) -> ExecutionScope {
         ExecutionScope {
@@ -381,6 +568,8 @@ impl ToolExecutionManager {
             .collect::<Vec<_>>();
         s.closed.extend(closed);
         s.closed.insert(from.into());
+        let (_state, result) = persistence::save(&self.0.shared, s);
+        result?;
         Ok(())
     }
     pub fn close_owner(&self, owner: &str) {
@@ -391,6 +580,7 @@ impl ToolExecutionManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         close_store_owner(&mut store, owner);
+        let (_store, _result) = persistence::save(&self.0.shared, store);
         self.0.shared.changed.notify_all();
     }
     pub fn shutdown(&self, timeout: Duration) -> Result<(), String> {
@@ -478,6 +668,7 @@ impl ExecutionScope {
             return Err("Agent already has an active Wakeup consumer".into());
         }
         b.consumer = true;
+        b.request_id = uuid::Uuid::new_v4().to_string();
         b.image_epoch = b.image_epoch.wrapping_add(1);
         Ok(ConsumerLease {
             shared: self.manager.0.shared.clone(),
@@ -523,7 +714,12 @@ impl ExecutionScope {
         {
             return Err("Concurrent tool execution limit reached".into());
         }
-        while s.records.len() >= RECORDS_TOTAL
+        let retained_limit = s
+            .persistence
+            .as_ref()
+            .map(|p| p.limits.max_records)
+            .unwrap_or(RECORDS_TOTAL);
+        while s.records.len() >= retained_limit
             || s.records.values().filter(|r| r.owner == self.owner).count() >= RECORDS_OWNER
         {
             let per_owner =
@@ -533,6 +729,7 @@ impl ExecutionScope {
                 .iter()
                 .filter(|(id, r)| {
                     terminal(r.status)
+                        && r.acknowledged
                         && (!per_owner || r.owner == self.owner)
                         && !s.mailboxes.values().any(|b| {
                             b.pending.contains_key(*id)
@@ -547,12 +744,19 @@ impl ExecutionScope {
                 return Err("Execution retention is full; consume pending wakeups first".into());
             };
             s.records.remove(&old);
+            s.archives.remove(&old);
         }
         let image_epoch = s
             .mailboxes
             .get(&self.owner)
             .map(|b| b.image_epoch)
             .unwrap_or(0);
+        let request_id = s
+            .mailboxes
+            .get(&self.owner)
+            .map(|b| b.request_id.clone())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         s.records.insert(
             id.clone(),
             Record {
@@ -560,6 +764,11 @@ impl ExecutionScope {
                 tool: tool.into(),
                 status: "running",
                 started: Instant::now(),
+                request_id,
+                started_at: chrono::Utc::now().to_rfc3339(),
+                completed_at: None,
+                elapsed_offset: 0,
+                finished_elapsed: None,
                 revision: 0,
                 output: output::Output::default(),
                 metadata: serde_json::json!({}),
@@ -571,8 +780,20 @@ impl ExecutionScope {
                 attachments: vec![],
                 worker: None,
                 launched: false,
+                wake_up: protocol::ExecutionPolicy::default(),
+                acknowledged: false,
+                pending_status: None,
+                restored: false,
             },
         );
+        let (state, published) = persistence::save(&self.manager.0.shared, s);
+        s = state;
+        if let Err(error) = published {
+            s.records.remove(&id);
+            return Err(error);
+        }
+        schedule(&mut s, &id, Instant::now());
+        shared.changed.notify_all();
         let result = info(&id, s.records.get(&id).unwrap());
         drop(s);
         crate::diagnostics::event(
@@ -658,6 +879,23 @@ impl ExecutionScope {
         r.worker = Some(worker);
         Ok(info(&id, r))
     }
+    pub(crate) fn finish_inline(
+        &self,
+        id: &str,
+        result: Result<ToolResult, String>,
+    ) -> Result<ExecutionInfo, String> {
+        self.info(id)?;
+        ExecutionReporter {
+            shared: self.manager.0.shared.clone(),
+            id: id.into(),
+        }
+        .finish(result);
+        let result = self.info(id)?;
+        if result.status == "storage_error" {
+            return Err("Execution result storage failed; action must not be replayed".into());
+        }
+        Ok(result)
+    }
     pub fn info(&self, id: &str) -> Result<ExecutionInfo, String> {
         let s = self
             .manager
@@ -680,7 +918,7 @@ impl ExecutionScope {
             .map_err(|_| "Execution manager unavailable")?;
         Ok(s.records
             .iter()
-            .filter(|(_, r)| r.owner == self.owner)
+            .filter(|(_, r)| readable_by(r, &self.owner))
             .map(|(id, r)| info(id, r))
             .collect())
     }
@@ -709,7 +947,25 @@ impl ExecutionScope {
         if b.in_flight.as_ref().is_none_or(|v| v.batch_id != batch) {
             return Err("Wakeup batch is not in flight for this owner".into());
         }
-        b.in_flight = None;
+        let events = b.in_flight.take().unwrap().events;
+        for event in &events {
+            if terminal(&event.status) {
+                if let Some(r) = s.records.get_mut(&event.execution_id) {
+                    r.acknowledged = true;
+                }
+            }
+        }
+        let (state, published) = persistence::save(&self.manager.0.shared, s);
+        s = state;
+        if let Err(error) = published {
+            for event in events {
+                if let Some(r) = s.records.get_mut(&event.execution_id) {
+                    r.acknowledged = false;
+                }
+                enqueue(&mut s, &event.execution_id, &event.reason);
+            }
+            return Err(error);
+        }
         Ok(())
     }
     pub fn wait(&self, ids: &[String], ms: u64) -> Result<WakeupBatch, String> {
@@ -736,22 +992,15 @@ impl ExecutionScope {
         if let Some(batch) = claim(&mut s, &self.owner) {
             return Ok(batch);
         }
-        for id in ids {
-            if terminal(s.records[id].status) {
-                enqueue(&mut s, id, "snapshot");
-            } else {
-                s.sequence += 1;
-                let seq = s.sequence;
-                let at = Instant::now() + Duration::from_millis(ms);
-                s.schedules
-                    .insert((self.owner.clone(), id.clone()), (at, seq));
-                s.deadlines
-                    .push(Reverse((at, seq, self.owner.clone(), id.clone())));
-            }
-        }
+        let until = Instant::now() + Duration::from_millis(ms);
         compact(&mut s);
         shared.changed.notify_all();
         loop {
+            if Instant::now() >= until {
+                for id in ids {
+                    enqueue(&mut s, id, "interval_elapsed");
+                }
+            }
             if s.shutdown || owner_closed(&s, &self.owner) {
                 return Err("Execution owner is closed".into());
             }
@@ -772,6 +1021,78 @@ impl ExecutionScope {
                 .wait_timeout(s, Duration::from_millis(50))
                 .map_err(|_| "Execution manager unavailable")?
                 .0;
+        }
+    }
+    pub fn set_wakeup(
+        &self,
+        id: &str,
+        policy: protocol::ExecutionPolicy,
+    ) -> Result<ExecutionInfo, String> {
+        policy.interval_ms()?;
+        let shared = &self.manager.0.shared;
+        let state = shared
+            .store
+            .lock()
+            .map_err(|_| "Execution manager unavailable")?;
+        let (mut state, publication) = persistence::publication_guard(shared, state);
+        controlled(&state, &self.owner, id)?;
+        let previous = state.records[id].wake_up.clone();
+        let record = state.records.get_mut(id).unwrap();
+        record.wake_up = policy;
+        record.revision += 1;
+        let expected_revision = record.revision;
+        let (mut state, published) = persistence::save_with_guard(shared, state, publication);
+        if let Err(error) = published {
+            if let Some(record) = state.records.get_mut(id) {
+                if record.revision == expected_revision {
+                    record.wake_up = previous;
+                    record.revision += 1;
+                }
+            }
+            return Err(error);
+        }
+        schedule(&mut state, id, Instant::now());
+        compact(&mut state);
+        shared.changed.notify_all();
+        Ok(info(id, &state.records[id]))
+    }
+    pub fn wait_scheduled_checked(
+        &self,
+        ids: &[String],
+        mut check: impl FnMut() -> Result<(), String>,
+    ) -> Result<WakeupBatch, String> {
+        if ids.is_empty() || ids.len() > 32 {
+            return Err("Wait for 1–32 owned executions".into());
+        }
+        let shared = &self.manager.0.shared;
+        loop {
+            check()?;
+            let mut s = shared
+                .store
+                .lock()
+                .map_err(|_| "Execution manager unavailable")?;
+            for id in ids {
+                owned(&s, &self.owner, id)?;
+            }
+            let (state, result) = persistence::retry(shared, s);
+            s = state;
+            result?;
+            if let Some(batch) = claim(&mut s, &self.owner) {
+                return Ok(batch);
+            }
+            // A terminal snapshot is explicit inspection, not a new completion notification.
+            if ids.iter().all(|id| terminal(s.records[id].status)) {
+                for id in ids {
+                    enqueue(&mut s, id, "snapshot");
+                }
+                return Ok(claim(&mut s, &self.owner).unwrap());
+            }
+            drop(
+                shared
+                    .changed
+                    .wait_timeout(s, Duration::from_millis(50))
+                    .map_err(|_| "Execution manager unavailable")?,
+            );
         }
     }
     pub fn read(
@@ -835,7 +1156,7 @@ impl ExecutionScope {
             .store
             .lock()
             .map_err(|_| "Execution manager unavailable")?;
-        owned(&s, &self.owner, id)?;
+        controlled(&s, &self.owner, id)?;
         let r = s.records.get_mut(id).unwrap();
         if !terminal(r.status) {
             r.cancel_requested = true;
@@ -847,13 +1168,24 @@ impl ExecutionScope {
         Ok(result)
     }
 }
+fn readable_by(r: &Record, owner: &str) -> bool {
+    r.owner == owner
+        || r.restored && terminal(r.status) && r.owner.starts_with(&format!("{owner}/"))
+}
+fn controlled<'a>(s: &'a Store, owner: &str, id: &str) -> Result<&'a Record, String> {
+    let record = owned(s, owner, id)?;
+    if record.restored || record.owner != owner {
+        return Err("Recovered execution artifacts are read-only".into());
+    }
+    Ok(record)
+}
 fn owned<'a>(s: &'a Store, owner: &str, id: &str) -> Result<&'a Record, String> {
     if owner_closed(s, owner) {
         return Err("Execution owner is closed".into());
     }
     s.records
         .get(id)
-        .filter(|r| r.owner == owner)
+        .filter(|r| readable_by(r, owner))
         .ok_or("Execution not found in this agent scope".into())
 }
 impl ExecutionReporter {
@@ -1020,6 +1352,8 @@ impl ExecutionReporter {
                     Some("Tool execution failed; read selected output lines for details".into());
             }
         }
+        r.finished_elapsed = Some(record_elapsed(r));
+        r.completed_at = Some(chrono::Utc::now().to_rfc3339());
         let reason = if r.status == "failed" {
             "failed"
         } else if r.status == "cancelled" {
@@ -1031,6 +1365,22 @@ impl ExecutionReporter {
         let fields = serde_json::json!({"executionId":self.id,"tool":r.tool,"status":r.status,"durationMs":elapsed(r.started)});
         let success = r.status == "succeeded";
         s.schedules.remove(&(owner, self.id.clone()));
+        let r = s.records.get_mut(&self.id).unwrap();
+        r.pending_status = Some(r.status);
+        r.status = "publishing";
+        let (state, result) = persistence::save(&self.shared, s);
+        s = state;
+        let Some(r) = s.records.get_mut(&self.id) else {
+            return;
+        };
+        if result.is_err() {
+            r.status = "storage_error";
+            self.shared.changed.notify_all();
+            return;
+        }
+        if let Some(status) = r.pending_status.take() {
+            r.status = status;
+        }
         enqueue(&mut s, &self.id, reason);
         self.shared.changed.notify_all();
         drop(s);
@@ -1041,6 +1391,25 @@ impl ExecutionReporter {
         );
     }
 }
+fn schedule(s: &mut Store, id: &str, now: Instant) {
+    let Some(r) = s.records.get(id) else {
+        return;
+    };
+    if terminal(r.status) || r.pending_status.is_some() {
+        return;
+    }
+    let Ok(ms) = r.wake_up.interval_ms() else {
+        return;
+    };
+    let owner = r.owner.clone();
+    let at = now + Duration::from_millis(ms);
+    s.sequence += 1;
+    let generation = s.sequence;
+    s.schedules
+        .insert((owner.clone(), id.into()), (at, generation));
+    s.deadlines
+        .push(Reverse((at, generation, owner, id.into())));
+}
 fn compact(s: &mut Store) {
     if s.deadlines.len() > s.schedules.len() * 2 + 128 {
         s.deadlines = s
@@ -1048,6 +1417,22 @@ fn compact(s: &mut Store) {
             .iter()
             .map(|((owner, id), (at, seq))| Reverse((*at, *seq, owner.clone(), id.clone())))
             .collect();
+    }
+}
+fn process_due(s: &mut Store, now: Instant) {
+    while let Some(Reverse((at, seq, owner, id))) = s.deadlines.peek().cloned() {
+        if at > now {
+            break;
+        }
+        s.deadlines.pop();
+        if s.schedules.get(&(owner.clone(), id.clone())) != Some(&(at, seq)) {
+            continue;
+        }
+        s.schedules.remove(&(owner, id.clone()));
+        if s.records.get(&id).is_some_and(|r| !terminal(r.status)) {
+            enqueue(s, &id, "interval_elapsed");
+            schedule(s, &id, now);
+        }
     }
 }
 fn scheduler_loop(shared: Arc<Shared>) {
@@ -1067,20 +1452,8 @@ fn scheduler_loop(shared: Arc<Shared>) {
             close_store_owner(&mut s, &owner);
             shared.changed.notify_all();
         }
-        while let Some(Reverse((at, seq, owner, id))) = s.deadlines.peek().cloned() {
-            if at > now {
-                break;
-            }
-            s.deadlines.pop();
-            if s.schedules.get(&(owner.clone(), id.clone())) != Some(&(at, seq)) {
-                continue;
-            }
-            s.schedules.remove(&(owner, id.clone()));
-            if s.records.get(&id).is_some_and(|r| !terminal(r.status)) {
-                enqueue(&mut s, &id, "interval_elapsed");
-                shared.changed.notify_all();
-            }
-        }
+        process_due(&mut s, now);
+        shared.changed.notify_all();
         let owner_wait = s
             .owner_deadlines
             .values()
@@ -1212,5 +1585,144 @@ mod privacy_tests {
             .unwrap();
         assert_eq!(batch.events[0].status, "failed");
         assert!(!scope.info(&late.execution_id).unwrap().has_image);
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    fn snapshot_path(root: &std::path::Path) -> std::path::PathBuf {
+        std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| uuid::Uuid::parse_str(&e.file_name().to_string_lossy()).is_ok())
+            .map(|e| e.path().join("executions.json"))
+            .next()
+            .unwrap()
+    }
+    #[test]
+    fn lazy_deadline_repeats_and_policy_update_invalidates_old_generation() {
+        let manager = ToolExecutionManager::new();
+        let scope = manager.scope("owner");
+        let run = scope.reserve("fake").unwrap();
+        scope
+            .set_wakeup(
+                &run.execution_id,
+                protocol::ExecutionPolicy {
+                    mode: protocol::WakeupMode::Lazy,
+                    interval_seconds: None,
+                },
+            )
+            .unwrap();
+        let mut s = manager.0.shared.store.lock().unwrap();
+        let key = ("owner".to_string(), run.execution_id.clone());
+        let (deadline, generation) = s.schedules[&key];
+        assert!(deadline.duration_since(Instant::now()) > Duration::from_secs(599));
+        process_due(&mut s, deadline);
+        let batch = claim(&mut s, "owner").unwrap();
+        assert_eq!(batch.events[0].reason, "interval_elapsed");
+        let (next, next_generation) = s.schedules[&key];
+        assert_eq!(next.duration_since(deadline), Duration::from_secs(600));
+        assert!(next_generation > generation);
+        drop(s);
+        scope.ack(&batch.batch_id).unwrap();
+        scope
+            .set_wakeup(
+                &run.execution_id,
+                protocol::ExecutionPolicy {
+                    mode: protocol::WakeupMode::Lazy,
+                    interval_seconds: None,
+                },
+            )
+            .unwrap();
+        let mut s = manager.0.shared.store.lock().unwrap();
+        process_due(&mut s, deadline);
+        assert!(claim(&mut s, "owner").is_none());
+    }
+    #[test]
+    fn restart_marks_unfinished_records_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let id;
+        {
+            let manager = ToolExecutionManager::with_persistence(dir.path()).unwrap();
+            id = manager.scope("owner").reserve("fake").unwrap().execution_id;
+        }
+        let manager = ToolExecutionManager::with_persistence(dir.path()).unwrap();
+        manager
+            .bind_persistence_owner("new-native", "owner")
+            .unwrap();
+        let scope = manager.scope("new-native");
+        assert_eq!(scope.info(&id).unwrap().status, "interrupted");
+        assert!(scope
+            .read(&id, None, None)
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("outcome may be unknown"));
+        assert!(manager.scope("other").info(&id).is_err());
+    }
+    #[test]
+    fn publication_commits_only_included_records_at_the_captured_revision() {
+        let manager = ToolExecutionManager::new();
+        let scope = manager.scope("owner");
+        let a = scope.reserve("a").unwrap();
+        let b = scope.reserve("b").unwrap();
+        let mut state = manager.0.shared.store.lock().unwrap();
+        for id in [&a.execution_id, &b.execution_id] {
+            let record = state.records.get_mut(id).unwrap();
+            record.pending_status = Some("succeeded");
+            record.status = "publishing";
+        }
+        persistence::commit_publication(&mut state, vec![(a.execution_id.clone(), 0, "succeeded")]);
+        assert_eq!(state.records[&a.execution_id].status, "succeeded");
+        assert_eq!(
+            state.records[&b.execution_id].status, "publishing",
+            "a later completion was not included in the saved snapshot"
+        );
+        state.records.get_mut(&b.execution_id).unwrap().revision = 1;
+        persistence::commit_publication(&mut state, vec![(b.execution_id.clone(), 0, "succeeded")]);
+        assert_eq!(
+            state.records[&b.execution_id].status, "publishing",
+            "a newer revision must not be committed by an older snapshot"
+        );
+    }
+
+    #[test]
+    fn terminal_storage_failure_is_recoverable_without_replaying_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ToolExecutionManager::with_persistence(dir.path()).unwrap();
+        let scope = manager.scope("owner");
+        let run = scope.reserve("fake").unwrap();
+        std::fs::remove_file(snapshot_path(dir.path())).unwrap();
+        std::fs::create_dir(snapshot_path(dir.path())).unwrap();
+        assert!(scope
+            .finish_inline(&run.execution_id, Ok(ToolResult::text("real result")))
+            .is_err());
+        assert_eq!(
+            scope.info(&run.execution_id).unwrap().status,
+            "storage_error"
+        );
+        assert!(scope.claim().unwrap().is_none());
+        std::fs::remove_dir(snapshot_path(dir.path())).unwrap();
+        let batch = scope
+            .wait_scheduled_checked(std::slice::from_ref(&run.execution_id), || Ok(()))
+            .unwrap();
+        assert_eq!(batch.events[0].status, "succeeded");
+        assert_eq!(
+            scope.read(&run.execution_id, None, Some(0)).unwrap().text,
+            "real result"
+        );
+    }
+    #[test]
+    fn admission_storage_failure_does_not_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ToolExecutionManager::with_persistence(dir.path()).unwrap();
+        std::fs::remove_file(snapshot_path(dir.path())).unwrap();
+        std::fs::create_dir(snapshot_path(dir.path())).unwrap();
+        let scope = manager.scope("owner");
+        assert!(scope
+            .start("fake", |_| panic!("must not dispatch"))
+            .is_err());
+        assert!(scope.list().unwrap().is_empty());
     }
 }

@@ -29,6 +29,10 @@ pub struct ContextPreparationRequest<'a> {
     pub latest_usage: Option<&'a ModelUsage>,
 }
 pub trait RuntimeContext {
+    fn check_cancelled(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn prepare(
         &mut self,
         agent: &dyn Agent,
@@ -39,6 +43,33 @@ pub trait RuntimeContext {
 pub struct StaticContext<'a> {
     pub history: &'a [ConversationMessage],
     pub activity_context: Option<&'a str>,
+}
+
+pub struct CancellableContext<'a> {
+    pub inner: &'a mut dyn RuntimeContext,
+    pub cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+}
+impl RuntimeContext for CancellableContext<'_> {
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err("Request cancelled".into());
+        }
+        self.inner.check_cancelled()
+    }
+    fn prepare(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        events: &mut dyn FnMut(&ToolEvent),
+    ) -> Result<PreparedContext, String> {
+        self.check_cancelled()?;
+        let prepared = self.inner.prepare(agent, request, events)?;
+        self.check_cancelled()?;
+        Ok(prepared)
+    }
 }
 impl RuntimeContext for StaticContext<'_> {
     fn prepare(
@@ -239,6 +270,17 @@ fn agent_request<'a>(
     }
 }
 impl RuntimeContext for ConversationContext<'_> {
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self
+            .cancelled
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            Err("Request cancelled".into())
+        } else {
+            Ok(())
+        }
+    }
+
     fn prepare(
         &mut self,
         agent: &dyn Agent,

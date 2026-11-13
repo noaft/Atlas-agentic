@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 const RETAIN: usize = 64 * 1024;
 pub const READ_LIMIT: usize = 4096;
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub(super) struct Output {
     text: String,
     base: u64,
@@ -28,6 +28,17 @@ fn boundary(text: &str, mut at: usize) -> usize {
     at
 }
 impl Output {
+    pub(super) fn validate(&self) -> Result<(), String> {
+        let end = self
+            .base
+            .checked_add(self.text.len() as u64)
+            .ok_or("Invalid execution output offsets")?;
+        if self.text.len() > RETAIN || self.reader > end || self.seen > end {
+            return Err("Invalid retained execution output".into());
+        }
+        Ok(())
+    }
+
     pub fn append(&mut self, text: &str) {
         if text.len() >= RETAIN {
             let skip = boundary(text, text.len() - RETAIN);
@@ -113,6 +124,15 @@ impl Output {
                 }
             }
         }
+        if tail.is_none() {
+            if let Some((at, _)) = self.text[start..end].match_indices('\n').nth(199) {
+                let line_end = start + at + 1;
+                if line_end < end {
+                    end = line_end;
+                    truncated = true;
+                }
+            }
+        }
         let text = self.text[start..end].to_string();
         let next = self.base + end as u64;
         self.seen = self.seen.max(next);
@@ -131,5 +151,36 @@ impl Output {
             partial_first_line: partial,
             complete_result: self.base == 0 && start == 0 && end == self.text.len(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cursor_pages_bound_line_count_independently_of_bytes() {
+        let mut output = Output::default();
+        output.append(&"x\n".repeat(1000));
+        let page = output.read(None, Some(0)).unwrap();
+        assert_eq!(page.returned_lines, 200);
+        assert!(page.truncated);
+        assert_eq!(page.next_cursor, 400);
+    }
+}
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn corrupt_persisted_output_offsets_are_rejected_without_overflow() {
+        let output: Output = serde_json::from_value(
+            serde_json::json!({"text":"x","base":u64::MAX,"reader":0,"seen":0}),
+        )
+        .unwrap();
+        assert!(output.validate().is_err());
+        let output: Output = serde_json::from_value(
+            serde_json::json!({"text":"x".repeat(65537),"base":0,"reader":0,"seen":0}),
+        )
+        .unwrap();
+        assert!(output.validate().is_err());
     }
 }

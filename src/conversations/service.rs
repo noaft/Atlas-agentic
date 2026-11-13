@@ -312,9 +312,13 @@ impl<'a> ConversationService<'a> {
         } else {
             &mut static_context
         };
+        let mut context = crate::runtime::context::CancellableContext {
+            inner: context,
+            cancelled: self.cancelled,
+        };
         let answer = self.runtime.ask_stream_with_managed_context(
             prompt,
-            context,
+            &mut context,
             permission_mode,
             RuntimeAskCallbacks {
                 authorizer: callbacks.authorizer,
