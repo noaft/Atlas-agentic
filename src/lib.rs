@@ -1,3 +1,4 @@
+pub mod agent_catalog;
 pub mod agent_output;
 pub mod agents;
 pub mod app;

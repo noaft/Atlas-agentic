@@ -1,3 +1,5 @@
+mod agent_catalog;
+pub use agent_catalog::register_agent_catalog_tools;
 mod apply_patch;
 mod computer;
 mod copy_file;
