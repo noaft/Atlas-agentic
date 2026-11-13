@@ -366,8 +366,13 @@ never route child usage, answer streams or tool events into the parent's current
 row/context meter. Cooperative cancellation must remain Cancelling until worker exit.
 Native scope deletion/reload/shutdown cancels owned children. Normal draft promotion
 retains scope identity; reject different-scope merges with active child workers.
-Agent runs UI refreshes only while explicitly expanded with unfinished work; ignore
-stale callbacks, preserve focus, and keep all native calls in atlas-api.ts.
+Render active agent runs inline in the assistant conversation, not as a separate
+bar above the composer. Preserve agent identity/status/duration. Activate monitoring
+only after delegation is used (including saved delegation activity), refresh while
+a child is starting or unfinished, and hide completed rows. A running call_agent
+uses its child card instead of a duplicate parent terminal. Keep child approvals
+visible/actionable, preserve focus, reject navigation-stale callbacks, stop polling
+when leaving chat, and keep native calls in atlas-api.ts.
 
 Reports follow config/agent-result-prompt.md, strict64KiB JSON with outcome,summary,
 work_done,findings,artifacts,verification,remaining. Runtime supplies actual lifecycle

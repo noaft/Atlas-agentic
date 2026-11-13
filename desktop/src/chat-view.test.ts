@@ -2170,3 +2170,31 @@ test("command-limit typing and discard preserve the focused Settings field", asy
   expect(document.activeElement).toBe(reset);
   expect(reset.value).toBe("8");
 });
+
+
+test("delegated agents appear inside the assistant conversation instead of the composer", async () => {
+  const listAgentRuns = vi.fn().mockResolvedValue([{
+    run_id: "news-run", agent: "personal:ai-news-fetcher", task: "Fetch news", context_mode: "task_only", execution_mode: "parallel",
+    status: "running", tools: [], progress: null, current_tool: null, started_at: metadata.createdAt,
+    duration_ms: 10000, tool_calls: 0, result: null, error: null,
+  }]);
+  const api = Object.assign(new ViewApi(), {listAgentRuns});
+  const pending = deferred<ConversationAskResult>(); api.askImpl = () => pending.promise;
+  const {root, store} = setup(api); await store.initialize();
+  expect(root.querySelector(".agent-runs")).toBeNull();
+  expect(listAgentRuns).not.toHaveBeenCalled();
+  store.setDraft("fetch news"); const sending = store.send();
+  api.eventSink!({event: "toolRequested", data: {sequence: 0, tool: "call_agent", arguments: "{}"}});
+  api.eventSink!({event: "toolStarted", data: {sequence: 0, tool: "call_agent"}});
+  await flushStreaming();
+  await vi.waitFor(() => expect(root.querySelector(".message-assistant [data-agent-run]")?.textContent).toContain("personal:ai-news-fetcher · Running · 10s"));
+  expect(root.querySelector(".composer-wrap .agent-runs")).toBeNull();
+  expect(root.querySelector("[data-current-tool]")).toBeNull();
+  expect(root.querySelector<HTMLDetailsElement>(".agent-runs")?.hidden).toBe(false);
+  expect(root.querySelector<HTMLElement>(".agent-runs > summary")?.hidden).toBe(true);
+  const heading = root.querySelector<HTMLElement>("[data-agent-run] > summary")!;
+  heading.tabIndex = 0; heading.focus(); store.setDraft("Keep this draft");
+  expect(document.activeElement).toBe(heading);
+  pending.resolve({answer: "Started", metadata, created: true}); await sending;
+  expect(root.querySelector(".message-assistant [data-agent-run]")).not.toBeNull();
+});

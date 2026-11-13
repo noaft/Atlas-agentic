@@ -255,3 +255,47 @@ it("cancels a scheduled transient-error retry on navigation", async () => {
   expect(list).toHaveBeenCalledTimes(2);
   view.destroy();
 });
+
+it("inline agents stay hidden until used, then show active runs without a separate bar", async () => {
+  vi.useFakeTimers();
+  const list = vi.fn().mockResolvedValue([run()]);
+  const view = createAgentRuns({list, cancel: vi.fn()}, {inline: true});
+  view.update("chat-a", "initial", false);
+  expect(view.element.hidden).toBe(true); expect(list).not.toHaveBeenCalled();
+  view.update("chat-a", "called", true); await flush();
+  expect(view.element.hidden).toBe(false);
+  expect(view.element.querySelector("summary")?.hidden).toBe(true);
+  expect(view.element.textContent).toContain("Researcher · Running");
+  list.mockResolvedValue([run("completed")]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(view.element.hidden).toBe(true);
+  view.update("chat-b", "other", false);
+  expect(view.element.hidden).toBe(true);
+  view.destroy();
+});
+
+it("inline child approvals remain visible and actionable", async () => {
+  const approval = {id: "child-approval", tool: "exec_command", arguments: "{}", reason: "Run command"};
+  const list = vi.fn().mockResolvedValue([{...run("waiting_approval"), pending_approval: approval}]);
+  const approve = vi.fn().mockResolvedValue(undefined);
+  const view = createAgentRuns({list, cancel: vi.fn(), approve}, {inline: true});
+  view.update("chat-a", "called", true); await flush();
+  expect(view.element.querySelector<HTMLDetailsElement>("[data-agent-run]")?.open).toBe(true);
+  const allow = [...view.element.querySelectorAll("button")].find(button => button.textContent === "Allow once")!;
+  allow.click(); await flush();
+  expect(approve).toHaveBeenCalledWith("chat-a", "run-1", "child-approval", true);
+  view.destroy();
+});
+
+
+it("inline monitoring discovers a child registered after the parent's call starts", async () => {
+  vi.useFakeTimers();
+  const list = vi.fn().mockResolvedValueOnce([]).mockResolvedValue([run("waiting_approval")]);
+  const view = createAgentRuns({list, cancel: vi.fn()}, {inline: true});
+  view.update("chat-a", "starting", true, true); await flush();
+  expect(view.element.hidden).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(view.element.hidden).toBe(false);
+  view.destroy();
+});

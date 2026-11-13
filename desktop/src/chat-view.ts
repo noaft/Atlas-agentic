@@ -119,6 +119,8 @@ function renderCurrentTool(
     if (records[index].kind === "tool") { current = records[index]; break; }
   }
   if (!current || current.status === "succeeded" || current.status === "failed" || current.status === "denied") return null;
+  // A running delegation is represented by its child card, not a duplicate terminal.
+  if (current.tool === "call_agent" && current.status === "running") return null;
   const card = document.createElement("section");
   card.className = "current-tool tool-terminal";
   card.dataset.currentTool = current.id;
@@ -327,8 +329,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     () => {void syncComposerRequest(() => store.retryCompaction());},
   );
   notices.before(compactionStatus.element);
-  const agentRuns = createAgentRuns({list: store.listAgentRuns, cancel: store.cancelAgentRun, approve: store.resolveAgentRunApproval});
-  composer.element.prepend(agentRuns.element);
+  const agentRuns = createAgentRuns({list: store.listAgentRuns, cancel: store.cancelAgentRun, approve: store.resolveAgentRunApproval}, {inline: true});
   chatScreen.append(composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
@@ -747,6 +748,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
     }
 
+    const focusedAgentControl = state.screen === "chat" && document.activeElement instanceof HTMLElement &&
+      agentRuns.element.contains(document.activeElement) ? document.activeElement : null;
     messages.replaceChildren();
     if (state.messages.length === 0) {
       const welcome = document.createElement("div");
@@ -789,6 +792,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       messages.scrollTop = followBottom ? messages.scrollHeight : previousScroll;
     }
 
+    mountInlineAgents();
+    if (focusedAgentControl?.isConnected) focusedAgentControl.focus({preventScroll: true});
     pickerCleanups.splice(0).forEach((cleanup) => cleanup());
     composer.modelHost.replaceChildren();
     composer.permissionHost.replaceChildren();
@@ -979,9 +984,18 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(id);
     else window.clearTimeout(id);
   };
+  const mountInlineAgents = () => {
+    const articles = messages.querySelectorAll<HTMLElement>('[data-message-role="assistant"]');
+    const article = articles.item(articles.length - 1);
+    if (article && agentRuns.element.parentElement !== article) article.append(agentRuns.element);
+    else if (!article) agentRuns.element.remove();
+  };
   const renderImmediate = (state: Readonly<ChatState>) => {
     agentRuns.update(state.screen === "chat" ? state.activeSessionId : null,
-      agentRunsRevision(state));
+      agentRunsRevision(state), state.toolActivity.some(call => call.kind === "tool" && call.tool === "call_agent") ||
+        state.messages.some(message => message.activity?.some(record => record.tool === "call_agent")),
+      state.status === "streaming" && state.toolActivity.some(call => call.tool === "call_agent" &&
+        ["requested", "waiting", "running"].includes(call.status)));
     const previous = renderedState;
     const sidebarOnly = previous && activeMetadata(previous) === activeMetadata(state) &&
       (Object.keys(previous) as Array<keyof ChatState>).every((key) =>
@@ -992,6 +1006,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       return;
     }
     if (!renderedState || !patchStreaming(renderedState, state)) renderNow(state);
+    mountInlineAgents();
     renderedState = state;
   };
   const render = (state: Readonly<ChatState>) => {

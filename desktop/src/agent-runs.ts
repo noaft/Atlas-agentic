@@ -17,33 +17,40 @@ interface Source {
 const pending = (run: AgentRunView) => ["queued", "running", "waiting_approval", "cancelling"].includes(run.status);
 const labels: Record<AgentRunStatus, string> = {queued: "Queued", running: "Running", waiting_approval: "Waiting for approval", cancelling: "Cancelling", completed: "Completed", failed: "Failed", cancelled: "Cancelled", timed_out: "Timed out"};
 function text(tag: string, value: string) {const node = document.createElement(tag); node.textContent = value; return node;}
-export function createAgentRuns(source: Source) {
+export function createAgentRuns(source: Source, options: {inline?: boolean} = {}) {
   const element = document.createElement("details"); element.className = "agent-runs";
   element.setAttribute("aria-label", "Agent runs");
+  element.classList.toggle("agent-runs-inline", !!options.inline);
+  element.hidden = !!options.inline;
   const summary = text("summary", "Agent runs"), notice = text("p", "Expand to check agent runs."), content = document.createElement("div");
+  summary.hidden = !!options.inline;
   const refreshButton = document.createElement("button");
   refreshButton.type = "button";
   refreshButton.className = "secondary-button";
   refreshButton.textContent = "Refresh";
+  refreshButton.hidden = !!options.inline;
   refreshButton.setAttribute("aria-label", "Refresh agent runs");
   refreshButton.addEventListener("click", () => {void refresh();});
   notice.setAttribute("role", "status"); element.append(summary, notice, refreshButton, content);
   let owner: string | null = null, revision = "", epoch = 0, request = 0, disposed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let runs: AgentRunView[] = [];
-  let observedOpen = false;
+  let observedOpen = false, launching = false, inlineError = false;
   const answeredApprovals = new Set<string>();
   const openChats = new Set<string>();
+  const activatedChats = new Set<string>();
   const rows = new Map<string, {element: HTMLDetailsElement; summary: HTMLElement; body: HTMLElement; stop: HTMLButtonElement; approval: HTMLElement; approvalId: string | null}>();
   const busy = new Map<string, symbol>();
   function clearTimer() {if (timer !== null) clearTimeout(timer); timer = null;}
   function valid(expected: number) {return !disposed && epoch === expected && !!owner && element.open;}
-  function schedule() {clearTimer(); if (!disposed && owner && element.open && runs.some(pending)) timer = setTimeout(() => {void refresh();}, 1000);}
+  function schedule() {clearTimer(); if (!disposed && owner && element.open && (runs.some(pending) || !!options.inline && launching)) timer = setTimeout(() => {void refresh();}, 1000);}
   function render() {
+    const visibleRuns = options.inline ? runs.filter(pending) : runs;
+    if (options.inline) {element.hidden = !owner || !visibleRuns.length && !inlineError; refreshButton.hidden = !inlineError;}
     summary.textContent = runs.length ? `Agent runs (${runs.length})` : "Agent runs";
     notice.textContent = runs.length ? "" : "No agent runs in this chat."; notice.hidden = !!runs.length;
-    for (const [id, row] of rows) if (!runs.some(run => run.run_id === id)) {row.element.remove(); rows.delete(id);}
-    for (const run of runs) {
+    for (const [id, row] of rows) if (!visibleRuns.some(run => run.run_id === id)) {row.element.remove(); rows.delete(id);}
+    for (const run of visibleRuns) {
       let row = rows.get(run.run_id);
       if (!row) {
         const detail = document.createElement("details"); detail.dataset.agentRun = run.run_id;
@@ -80,6 +87,7 @@ export function createAgentRuns(source: Source) {
       }
       row.body.replaceChildren(...nodes);
       const approval = run.pending_approval;
+      if (options.inline && approval) row.element.open = true;
       if (row.approvalId !== (approval?.id ?? null)) {
         row.approvalId = approval?.id ?? null; row.approval.replaceChildren();
         if (approval) {
@@ -99,8 +107,8 @@ export function createAgentRuns(source: Source) {
   async function refresh() {
     clearTimer(); if (!owner || !element.open || disposed) return;
     const expected = epoch, sequence = ++request, capturedOwner = owner;
-    try {const result = await source.list(capturedOwner); if (!valid(expected) || sequence !== request) return; runs = result; render(); schedule();}
-    catch (error) {if (!valid(expected) || sequence !== request) return; notice.hidden = false; notice.textContent = `Unable to check agent runs: ${String(error)}`; schedule();}
+    try {const result = await source.list(capturedOwner); if (!valid(expected) || sequence !== request) return; runs = result; inlineError = false; render(); schedule();}
+    catch (error) {if (!valid(expected) || sequence !== request) return; notice.hidden = false; notice.textContent = `Unable to check agent runs: ${String(error)}`; if (options.inline) {inlineError = true; element.hidden = false; refreshButton.hidden = false;} schedule();}
   }
   async function act(id: string, action: () => Promise<AgentRunView | void>) {
     if (!owner || disposed || busy.has(id)) return;
@@ -110,7 +118,7 @@ export function createAgentRuns(source: Source) {
       const result = await action(); if (!valid(expected)) return;
       if (result) {runs = runs.map(run => run.run_id === id ? result : run); busy.delete(id); render(); schedule();}
       else {await refresh();}
-    } catch (error) {if (!valid(expected)) return; notice.hidden = false; notice.textContent = `Agent action failed: ${String(error)}`; schedule();}
+    } catch (error) {if (!valid(expected)) return; notice.hidden = false; notice.textContent = `Agent action failed: ${String(error)}`; if (options.inline) {inlineError = true; refreshButton.hidden = false;} schedule();}
     finally {
       // Closing a disclosure invalidates displayed results, but does not change action ownership.
       // A later action in another chat (or a reopened owner) has its own token.
@@ -130,14 +138,20 @@ export function createAgentRuns(source: Source) {
     if (element.open) {openChats.add(owner); void refresh();}
     else {openChats.delete(owner); ++epoch; clearTimer();}
   });
-  return {element, update(nextOwner: string | null, nextRevision = "") {
+  return {element, update(nextOwner: string | null, nextRevision = "", activated = false, starting = false) {
     if (disposed) return;
+    if (options.inline && nextOwner && activated) activatedChats.add(nextOwner);
+    launching = !!nextOwner && starting;
     const changed = nextOwner !== owner, refreshNeeded = changed || nextRevision !== revision; revision = nextRevision;
     if (changed) {
       if (owner && element.open) openChats.add(owner);
-      ++epoch; ++request; clearTimer(); owner = nextOwner; runs = []; rows.clear(); busy.clear(); content.replaceChildren();
+      ++epoch; ++request; clearTimer(); owner = nextOwner; inlineError = false; runs = []; rows.clear(); busy.clear(); content.replaceChildren();
       element.open = !!owner && openChats.has(owner); observedOpen = element.open; render();
     }
-    element.hidden = !owner; if (refreshNeeded && element.open) void refresh();
+    if (options.inline) {
+      element.open = !!owner && activatedChats.has(owner); observedOpen = element.open;
+      element.hidden = !owner || !element.open || !runs.some(pending) && !inlineError;
+    } else element.hidden = !owner;
+    if (refreshNeeded && element.open) void refresh();
   }, destroy() {disposed = true; ++epoch; clearTimer();}};
 }

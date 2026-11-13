@@ -67,7 +67,7 @@ Successful draft promotion normally keeps the exact native scope identity, prese
 
 ## Approvals and UI
 
-Child approvals are stored against their actual run, exact approval ID and native owner. Desktop **Agent runs** appears above the chat composer. Expanding it reads the current chat's runs; while expanded with unfinished work it refreshes once per second. Closing, navigating away or unmounting stops refreshes and invalidates stale callbacks. Refresh remains available after transient errors. This does not poll OS process output.
+Child approvals are stored against their actual run, exact approval ID and native owner. Desktop renders active child cards inside the assistant conversation, showing agent identity, status and duration; there is no separate Agent runs bar above the composer. Delegation activity activates monitoring; a starting call or unfinished child refreshes once per second while its chat is visible. Completed rows hide automatically, and a running call_agent does not create a duplicate parent terminal. Child approval requests expand their card so Allow/Deny remains accessible. Navigation or unmounting stops refreshes and invalidates stale callbacks. A retry remains available after transient errors. This does not poll OS process output.
 
 Each card shows actual state, task, context/execution modes, model, duration, latest progress, current tool, tool count, bounded tool-history summaries and result. Stop requests cancellation. Allow once/Deny resolve only that run's pending tool approval and preserve focus during updates. Parent stream, usage meter and approval row are unaffected. Foreground CLI waits service pending descendant approvals through the terminal authorizer.
 

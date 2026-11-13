@@ -735,3 +735,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .agent-runs p { margin: .5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-runs pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; font-size: .8rem; }
 .agent-runs [hidden] { display: none; }
+
+/* Child agents live in the conversation, never in the composer toolbar. */
+.agent-runs-inline { margin: 12px 0 0; max-height: none; overflow: visible; }
+.agent-runs-inline > summary { display: none; }
+.agent-runs-inline[hidden] { display: none; }
+.agent-runs-inline [data-agent-run] { margin: 8px 0; padding: 0; overflow: hidden; border: 1px solid #3d374a; border-radius: 10px; background: #25222f; color: #e6e1ee; }
+.agent-runs-inline [data-agent-run] > summary { padding: 12px 14px; color: #ddd2ed; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.agent-runs-inline [data-agent-run] > div, .agent-runs-inline [data-agent-run] > section { padding: 0 14px 12px; }
+.agent-runs-inline [data-agent-run] > button { margin-left: 14px; }
+.agent-runs-inline [data-agent-run] > section:empty { display: none; }
