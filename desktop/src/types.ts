@@ -202,7 +202,6 @@ export interface CompactionFailure {
 export type SettingsSection = "models" | "connections" | "skills" | "workspace" | "permissions";
 
 export interface ChatState {
-  sendMode?: "wait" | "steer";
   queuedInputs?: QueuedInput[];
   queuePaused?: boolean;
   stopping?: boolean;

@@ -1725,6 +1725,12 @@ test("waiting inputs drain in order while another chat is selected", async () =>
   await store.selectSession(owner); expect(store.getState().messages.at(-1)?.content).toBe("second answer");
 });
 
+async function sendSupplement(store: ChatStore, content: string): Promise<void> {
+  store.setDraft(content); await store.send();
+  const queued = store.getState().queuedInputs?.at(-1);
+  if (queued) await store.steerQueuedInput(queued.id);
+}
+
 test("supplement waits for request identity and preserves assistant delta routing", async () => {
   const api = new FakeApi(); const store = new ChatStore(api); await store.initialize();
   const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
@@ -1733,7 +1739,7 @@ test("supplement waits for request identity and preserves assistant delta routin
     submissions.push(request + ":" + content); return {id, accepted: true, finished: false};
   }});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
-  store.setSendMode("steer"); store.setDraft("correction"); await store.send();
+  await sendSupplement(store, "correction");
   expect(submissions).toEqual([]);
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn-1"}});
   await Promise.resolve(); await Promise.resolve();
@@ -1769,7 +1775,7 @@ test("sealed steering input safely becomes a followup even if final result wins 
   Object.assign(api, {submitTurnInput: async () => receipt.promise});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "old"}});
-  store.setSendMode("steer"); store.setDraft("late input"); await store.send(); await Promise.resolve();
+  await sendSupplement(store, "late input"); await Promise.resolve();
   pending.resolve({...result(first, "answer", true), additionalInputs: []}); await running;
   expect(api.askCalls.map(call => call.prompt)).toEqual(["start", "late input"]);
   receipt.resolve({id: "ignored", accepted: false, finished: true}); await Promise.resolve(); await Promise.resolve();
@@ -1811,7 +1817,7 @@ test("accepted steering receipt on a sealed turn never duplicates the input as a
   Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => ({id, accepted: true, finished: true})});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("change"); await store.send(); await Promise.resolve(); await Promise.resolve();
+  await sendSupplement(store, "change"); await Promise.resolve(); await Promise.resolve();
   expect(store.getState().queuedInputs).toEqual([]);
   const id = store.getState().messages.at(-1)!.inputId!;
   pending.resolve({...result(first, "done", true), additionalInputs: [{id, content: "change", createdAt: first.updatedAt}]}); await running;
@@ -1823,10 +1829,10 @@ test("buffered supplements are bounded before a request identity arrives", async
   const api = new FakeApi(); const store = new ChatStore(api); await store.initialize();
   const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
   Object.assign(api, {submitTurnInput: async () => { throw new Error("should stay buffered"); }});
-  store.setDraft("start"); const running = store.send(); await Promise.resolve(); store.setSendMode("steer");
-  for (let index = 0; index < 32; index++) { store.setDraft(`supplement ${index}`); await store.send(); }
-  store.setDraft("overflow"); await store.send();
-  expect(store.getState().draftText).toBe("overflow");
+  store.setDraft("start"); const running = store.send(); await Promise.resolve();
+  for (let index = 0; index < 32; index++) { await sendSupplement(store, `supplement ${index}`); }
+  await sendSupplement(store, "overflow");
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["overflow"]);
   expect(store.getState().messages.filter(message => message.inputId)).toHaveLength(32);
   await store.stopActiveRequest(); pending.resolve({...result(first, "", true), interrupted: true}); await running;
 });
@@ -1870,7 +1876,7 @@ test("failed ask rescues an unresolved supplement into the paused queue", async 
   Object.assign(api, {submitTurnInput: async () => receipt.promise});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("rescue me"); await store.send(); await Promise.resolve();
+  await sendSupplement(store, "rescue me"); await Promise.resolve();
   pending.reject(new Error("request failed")); await running;
   expect(store.getState().queuePaused).toBe(true);
   expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["rescue me"]);
@@ -1885,7 +1891,7 @@ test("accepted input acknowledgement reconciles a rejected receipt without a que
   Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => { inputId = id; return receipt.promise; }});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("applied once"); await store.send(); await Promise.resolve();
+  await sendSupplement(store, "applied once"); await Promise.resolve();
   receipt.reject(new Error("receipt transport failed")); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   const input = {id: inputId, content: "applied once", createdAt: first.updatedAt};
   api.eventSinks[0]({event: "userInputAccepted", data: {input}});
@@ -1901,7 +1907,7 @@ test("authoritative result removes a retry queued after a receipt transport fail
   Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => { inputId = id; throw new Error("receipt failed"); }});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("applied once"); await store.send(); await Promise.resolve(); await Promise.resolve();
+  await sendSupplement(store, "applied once"); await Promise.resolve(); await Promise.resolve();
   pending.resolve({...result(first, "done", true), additionalInputs: [{id: inputId, content: "applied once", createdAt: first.updatedAt}]}); await running;
   expect(store.getState().queuedInputs).toEqual([]);
   expect(store.getState().messages.filter(message => message.content === "applied once")).toHaveLength(1);
@@ -1914,7 +1920,7 @@ test("already received supplement is not retried when request and receipt later 
   Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => { inputId = id; return receipt.promise; }});
   store.setDraft("start"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("already applied"); await store.send(); await Promise.resolve();
+  await sendSupplement(store, "already applied"); await Promise.resolve();
   api.eventSinks[0]({event: "userInputAccepted", data: {input: {id: inputId, content: "already applied", createdAt: first.updatedAt}}});
   receipt.reject(new Error("lost acknowledgement")); await Promise.resolve(); await Promise.resolve();
   pending.reject(new Error("request failed")); await running;
@@ -1928,8 +1934,8 @@ for (const interrupted of [false, true]) test(`completed supplemental input orde
   Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => ({id, accepted: true, finished: false})});
   store.setDraft("original"); const running = store.send(); await Promise.resolve();
   api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
-  store.setSendMode("steer"); store.setDraft("first correction"); await store.send();
-  store.setDraft("second correction"); await store.send(); await Promise.resolve(); await Promise.resolve();
+  await sendSupplement(store, "first correction");
+  await sendSupplement(store, "second correction"); await Promise.resolve(); await Promise.resolve();
   const inputs = store.getState().messages.filter(message => message.inputId).map(message => ({id: message.inputId!, content: message.content, createdAt: first.updatedAt}));
   expect(store.getState().messages.map(message => message.role)).toEqual(["user", "assistant", "user", "user"]);
   pending.resolve({...result(first, interrupted ? "partial" : "answer", true), interrupted, additionalInputs: inputs}); await running;
@@ -1938,4 +1944,29 @@ for (const interrupted of [false, true]) test(`completed supplemental input orde
   api.loads.set(first.id, async () => ({metadata: first, messages: expected.map(message => ({...message, role: message.role as "user" | "assistant", createdAt: first.updatedAt}))}));
   const reloaded = new ChatStore(api); await reloaded.initialize(); await reloaded.selectConversation(first.id);
   expect(reloaded.getState().messages.map(({role, content}) => ({role, content}))).toEqual(expected);
+});
+
+test("new messages wait by default and Steer moves only the selected queued input", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const submissions: string[] = [];
+  Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string, content: string) => {
+    submissions.push(content); return {id, accepted: true, finished: false};
+  }});
+  store.setDraft("start"); const running = store.send(); await Promise.resolve();
+  api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
+  store.setDraft("later"); await store.send(); store.setDraft("change now"); await store.send();
+  expect(submissions).toEqual([]);
+  const selected = store.getState().queuedInputs![1];
+  store.setDraft("unfinished draft"); await store.steerQueuedInput(selected.id); await Promise.resolve();
+  expect(submissions).toEqual(["change now"]);
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["later"]);
+  expect(store.getState().draftText).toBe("unfinished draft");
+  store.setDraft("still waits"); await store.send();
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["later", "still waits"]);
+  expect(submissions).toEqual(["change now"]);
+  await store.stopActiveRequest();
+  await store.steerQueuedInput(store.getState().queuedInputs![0].id);
+  expect(store.getState().queuedInputs).toHaveLength(2);
+  pending.resolve({...result(first, "", true), interrupted: true}); await running;
 });

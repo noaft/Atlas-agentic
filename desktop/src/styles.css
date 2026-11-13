@@ -795,11 +795,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 @keyframes agent-stop-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .agent-runs .agent-stop[data-state]::before { animation: none; } }
 
-.send-mode { max-width: 155px; min-width: 0; font: inherit; font-size: 11px; color: var(--muted); border: 0; background: transparent; }
-.stop-turn { flex: 0 0 auto; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
-.queued-inputs:empty { display: none; }
-.queued-inputs { display: grid; gap: 5px; margin: 6px 8px; font-size: 12px; }
-.queued-input { display: flex; gap: 8px; align-items: center; }
-.queued-input span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.queued-input button { background: transparent; border: 0; color: inherit; cursor: pointer; }
+.send-button { cursor: pointer; transition: background .15s, opacity .15s; }
+.send-button.is-stop { background: var(--ink); color: var(--surface); }
+.send-button.is-stop::before { content: ""; width: 11px; height: 11px; border-radius: 2px; background: currentColor; }
+.send-button.is-stopping::before { opacity: .45; }
+.send-button:disabled { cursor: default; opacity: .45; }
+.queued-inputs[hidden] { display: none; }
+.queued-inputs { margin: 0 0 9px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.queue-header { display: flex; align-items: center; justify-content: space-between; min-height: 20px; margin-bottom: 3px; color: var(--subtle); font-size: 11px; }
+.queue-list { max-height: 148px; overflow-y: auto; }
+.queued-input { display: flex; align-items: center; gap: 9px; min-height: 32px; font-size: 12px; }
+.queued-input-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.queued-input button, .queue-resume { flex: 0 0 auto; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--subtle); font: inherit; cursor: pointer; }
+.queued-input .queue-steer, .queue-resume { color: var(--accent); font-size: 11px; font-weight: 600; }
+.queued-input .queue-remove { font-size: 17px; line-height: 1; }
+.queued-input button:hover:not(:disabled), .queue-resume:hover:not(:disabled) { background: var(--accent-soft); color: var(--ink); }
+.queued-input button:disabled { opacity: .4; cursor: default; }
 .message-input-status { font-size: 11px; font-weight: normal; opacity: .7; }

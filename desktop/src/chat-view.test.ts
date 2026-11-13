@@ -1070,7 +1070,8 @@ test("streaming renders ordered assistant text and disables mutation controls", 
     "Hello desktop",
   );
   expect(composer(root).disabled).toBe(false);
-  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(true);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.disabled).toBe(false);
+  expect(root.querySelector<HTMLButtonElement>("[data-send]")!.getAttribute("aria-label")).toBe("Stop response");
   expect(root.querySelector<HTMLButtonElement>("[data-new-chat]")?.disabled).toBe(false);
   pending.resolve({ answer: "Hello desktop", metadata, created: true });
   await flushStreaming();

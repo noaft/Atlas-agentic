@@ -168,7 +168,7 @@ test("composer stays editable while send availability follows state", async () =
   composer.updateState({ ...store.getState(), status: "streaming" });
   expect(composer.textarea.disabled).toBe(false);
   expect(composer.sendButton.disabled).toBe(false);
-  expect(composer.element.querySelector<HTMLButtonElement>("[data-stop-turn]")?.hidden).toBe(false);
+  expect(composer.element.querySelector("[data-stop-turn]")).toBeNull();
 
   composer.updateState({ ...store.getState(), activeWorkspace: null });
   expect(composer.textarea.disabled).toBe(false);
@@ -362,4 +362,43 @@ test("switching to an equal-text session clears stale composition without rewrit
   expect(composer.sendButton.disabled).toBe(false);
   composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
   expect(submit).toHaveBeenCalledTimes(1);
+});
+
+test("one primary action switches between Stop and queueing without moving the button", async () => {
+  const {composer, store, submit} = await setup();
+  let state = {...store.getState(), status: "streaming" as const};
+  vi.spyOn(store, "getState").mockImplementation(() => state);
+  const stop = vi.spyOn(store, "stopActiveRequest").mockResolvedValue();
+  composer.updateState(state);
+  const button = composer.sendButton;
+  expect(composer.element.querySelector("[data-stop-turn]")).toBeNull();
+  expect(composer.element.querySelector("[data-send-mode]")).toBeNull();
+  expect(button.getAttribute("aria-label")).toBe("Stop response");
+  expect(button.disabled).toBe(false);
+  button.click(); expect(stop).toHaveBeenCalledTimes(1); expect(submit).not.toHaveBeenCalled();
+  composer.textarea.value = "next instruction";
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true}));
+  expect(button.getAttribute("aria-label")).toBe("Queue message");
+  button.click(); expect(submit).toHaveBeenCalledTimes(1); expect(stop).toHaveBeenCalledTimes(1);
+  composer.textarea.value = "";
+  state = {...state, stopping: true}; composer.updateState(state);
+  expect(button.getAttribute("aria-label")).toBe("Stopping response"); expect(button.disabled).toBe(true);
+  expect(composer.sendButton).toBe(button);
+});
+
+test("queue sits above the input with explicit Steer and stable focused controls", async () => {
+  const {composer, store} = await setup();
+  const steer = vi.fn(async (_id: string) => {});
+  Object.assign(store, {steerQueuedInput: steer});
+  const state = {...store.getState(), status: "streaming" as const, queuedInputs: [{id: "q1", content: "fix this"}]};
+  composer.updateState(state);
+  const queue = composer.element.querySelector<HTMLElement>("[data-queued-inputs]")!;
+  const box = composer.element.querySelector<HTMLElement>(".composer-box")!;
+  expect(queue.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const button = [...queue.querySelectorAll("button")].find(button => button.textContent === "Steer")!;
+  expect(button).toBeDefined(); button.focus();
+  composer.updateState({...state, toolActivity: [...state.toolActivity]});
+  expect(document.activeElement).toBe(button);
+  button.click(); expect(steer).toHaveBeenCalledWith("q1");
+  composer.updateState({...state, stopping: true}); expect(button.disabled).toBe(true);
 });

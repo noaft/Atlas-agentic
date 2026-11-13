@@ -53,7 +53,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
-  sendMode: "wait", queuedInputs: [], queuePaused: false, stopping: false,
+  queuedInputs: [], queuePaused: false, stopping: false,
   tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
   compactionFailure: null, memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
@@ -152,7 +152,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : configured ? [{ id: configured, name: configured }, ...models] : models;
 
 const sessionKeys = [
-  "sendMode", "queuedInputs", "queuePaused", "stopping",
+  "queuedInputs", "queuePaused", "stopping",
   "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
@@ -470,7 +470,23 @@ export class ChatStore {
     }
   }
 
-  setSendMode(mode: "wait" | "steer"): void { this.update({sendMode: mode}); }
+  async steerQueuedInput(id: string): Promise<void> {
+    const owner = this.state.activeSessionId;
+    const chat = this.chats.get(owner)!;
+    const input = chat.state.queuedInputs?.find(input => input.id === id);
+    if (!input || chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || !this.api.submitTurnInput) return;
+    const turnInputs = chat.state.messages.slice(chat.turn.assistantIndex + 1).filter(message => message.inputId);
+    if (turnInputs.length >= 32) {
+      this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. The message will stay queued."});
+      return;
+    }
+    chat.turn.pending.push(input);
+    this.updateSession(owner, {
+      queuedInputs: chat.state.queuedInputs?.filter(queued => queued.id !== id),
+      messages: [...chat.state.messages, {role: "user", content: input.content, createdAt: null, delivery: "pending", inputId: input.id, inputStatus: "pending"}],
+    });
+    void this.flushSteering(owner, chat.generation);
+  }
 
   removeQueuedInput(id: string): void {
     this.update({queuedInputs: this.state.queuedInputs?.filter(input => input.id !== id)});
@@ -506,15 +522,8 @@ export class ChatStore {
     const prompt = state.draftText.trim(); if (!prompt) return;
     const owner = state.activeSessionId;
     if (state.status === "streaming") {
-      const chat = this.chats.get(owner)!;
       const input = {id: crypto.randomUUID(), content: prompt};
-      if (state.sendMode === "steer" && chat.turn && !chat.turn.stopped && this.api.submitTurnInput) {
-        const turnInputs = chat.state.messages.slice(chat.turn.assistantIndex + 1).filter(message => message.inputId);
-        if (turnInputs.length >= 32) { this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. Use Wait until finished."}); return; }
-        chat.turn.pending.push(input);
-        this.updateSession(owner, {draftText: "", messages: [...chat.state.messages, {role: "user", content: prompt, createdAt: null, delivery: "pending", inputId: input.id, inputStatus: "pending"}]});
-        void this.flushSteering(owner, chat.generation);
-      } else if (this.enqueue(owner, input)) this.updateSession(owner, {draftText: ""});
+      if (this.enqueue(owner, input)) this.updateSession(owner, {draftText: ""});
       return;
     }
     return this.startTurn(owner, prompt, true);

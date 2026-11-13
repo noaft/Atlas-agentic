@@ -5,14 +5,22 @@ Status: implemented for desktop chat. Tool wakeup policy remains as described in
 
 ## User behavior
 
-The composer stays editable while Atlas is working. A busy chat offers two send
-modes:
+The composer stays editable while Atlas is working. Sending a new message during
+an active turn always puts it in that chat's FIFO queue, displayed above the
+input. After normal completion, Atlas starts the next queued message as a new
+turn. There is no send-mode selector.
 
-- **Wait until finished** puts the message in that chat's FIFO queue. After a
-  normal completion, Atlas starts the next queued message as a new turn.
-- **Supplement active turn** delivers a subsequent user instruction to the active turn.
-  Atlas applies it at the next safe runtime boundary and reconsiders any pending
-  answer or proposed action. It preserves work already completed.
+Each queued message has a **Steer** action. It removes only that message from the
+queue and submits it as a subsequent user instruction to the active turn. Atlas
+applies it at the next safe runtime boundary and reconsiders any pending answer
+or proposed action, preserving completed work. Other queued messages and the
+current composer draft are unchanged. If the active turn is stopping or cannot
+accept steering, the message stays queued. New messages still default to waiting
+after a Steer action.
+
+Send and Stop share one primary button: while a turn is active, an empty composer
+shows Stop; typing switches the same button to Queue message. Enter sends text
+and never implicitly stops a response. Composition input remains protected.
 
 Queue entries can be removed before dispatch. Stop and request errors pause the
 queue; Resume explicitly starts it again. Navigating to another chat or Settings
