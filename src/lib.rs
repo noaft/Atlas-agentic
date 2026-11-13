@@ -1,5 +1,6 @@
 pub mod agent_catalog;
 pub mod agent_output;
+pub mod agent_runs;
 pub mod agents;
 pub mod app;
 pub mod conversations;
