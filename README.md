@@ -32,8 +32,8 @@ folder in your home directory; you can choose another folder per chat.
 
 - **Chat:** streaming replies, independent conversations, local history and Activity.
   Messages sent while Atlas waits for tools join the active turn. During inference,
-  they wait in a queue above the input; **Steer** interrupts generation and applies
-  the selected message immediately.
+  they queue above the input and join the active turn at the next model pause.
+  **Steer** interrupts generation to apply a selected message sooner.
   Send and Stop share one button: an empty input shows Stop while Atlas is working.
   **Stop** retains the displayed partial answer and pauses the queue; remove queued
   messages or select Resume when ready. Queues are not restored after reload.

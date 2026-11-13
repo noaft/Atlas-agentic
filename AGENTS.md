@@ -793,13 +793,19 @@ command lifetime job/background and child execution_mode wait/parallel are separ
 All request-owned executions block final equally until terminal notifications are
 handled. Only explicitly user-requested background services may survive final.
 No model calls after final/restart. Desktop busy chats use native modelState events: Send supplements the active
-turn while waiting, and queues during inference. Start conservatively until a
+turn while waiting, and queues during inference. Forward queued messages into
+the active turn on the next native idle-model event instead of waiting for final;
+keep paused queues paused. Start conservatively until a
 phase event arrives. Show the queue above the composer, with per-message Steer
 to interrupt current inference and apply that input while preserving other queued
 messages and the composer draft.
 Send/Stop share one primary button: show Stop for an empty busy composer, and
 Queue message during inference or Add to active turn while waiting when it contains text. Enter never implicitly stops a turn. Keep
-queue controls mounted/focused during streaming updates.
+queue controls mounted/focused during streaming updates. Native chat channel fields
+requestId/responseEpoch must serialize in camelCase and match the shared frontend
+wire fixture. On native input acceptance, move the active reply below the accepted
+message immediately, clear superseded text, preserve the current request identity
+and default cursors, and ignore duplicate acknowledgements for reply resets.
 FIFO queues are frontend-local (16/chat), pause on Stop/error,
 and require explicit Resume after pausing. Active supplements use native
 owner/request/input identities with idempotent receipts, 32 inputs/request,

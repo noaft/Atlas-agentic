@@ -585,6 +585,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
     RequestStarted {
+        #[serde(rename = "requestId")]
         request_id: String,
     },
     ModelState {
@@ -611,7 +612,7 @@ pub enum ChatEvent {
     },
     Delta {
         content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "responseEpoch", skip_serializing_if = "Option::is_none")]
         response_epoch: Option<u64>,
     },
     RuntimeStatus {
@@ -1607,6 +1608,34 @@ mod tests {
         let dto = super::ActivityTurnDto::from(turn);
         let saved = serde_json::to_value(dto).unwrap();
         assert_eq!(saved["usage"], event["data"]["usage"]);
+    }
+
+    #[test]
+    fn live_chat_events_match_the_shared_frontend_wire_fixture() {
+        let events = vec![
+            ChatEvent::RequestStarted {
+                request_id: "wire-turn".into(),
+            },
+            ChatEvent::ModelState { generating: true },
+            ChatEvent::Delta {
+                content: "Đang tìm…".into(),
+                response_epoch: Some(7),
+            },
+            ChatEvent::ModelState { generating: false },
+        ];
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../src/test-fixtures/live-chat-events.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::to_value(events).unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(ChatEvent::Delta {
+                content: "legacy".into(),
+                response_epoch: None
+            })
+            .unwrap(),
+            serde_json::json!({"event":"delta","data":{"content":"legacy"}})
+        );
     }
 
     #[test]

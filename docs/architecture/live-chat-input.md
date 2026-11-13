@@ -8,8 +8,10 @@ Status: implemented for desktop chat. Tool wakeup policy remains as described in
 The composer stays editable while Atlas is working. Sending while the agent is
 waiting for a tool, approval, or another runtime boundary supplements the active
 turn immediately. Sending during model inference puts the message in that chat's
-FIFO queue, displayed above the input. After normal completion, Atlas starts the
-next queued message as a new turn. There is no send-mode selector.
+FIFO queue, displayed above the input. On the next native idle-model event,
+queued messages supplement the active turn automatically, without waiting for
+its final answer. If that turn has already sealed, unapplied messages fall back
+to the next turn. There is no send-mode selector.
 
 Each queued message has a **Steer** action. It removes only that message from the
 queue and submits it to the active turn. If inference is in flight, Steer aborts
@@ -47,6 +49,9 @@ accepting input or Stop. A request token alone grants no access to another chat.
 `requestStarted` publishes the active token. The adapter exposes
 `submit_chat_input(client, context, requestId, inputId, content)` and
 `stop_chat_request(client, context, requestId, responseEpoch?, displayedBytes?)`.
+Channel data uses `requestId` and `responseEpoch` in camelCase. A shared JSON
+fixture verifies native serialization and frontend delivery together, including
+buffered input before request identity arrives and the Stop snapshot epoch.
 All frontend calls go through `atlas-api.ts`; there are no new frontend OS
 permissions. Active input is limited to 32 messages, 64 KiB per message and
 256 KiB total per request. Repeating an input ID with identical bytes is
@@ -123,7 +128,10 @@ requested. They are distinct from explicit user Stop.
 
 On success, storage atomically writes the original User message, applied
 supplemental User messages in receipt order, and the final Assistant message.
-The frontend reconciles to that same order when a turn finishes. Activity points
+As soon as native acceptance arrives, the frontend clears the superseded answer
+and places the active reply below the accepted user instruction, so new decisions
+appear there during the same turn. Duplicate acceptance events do not clear new
+text. The frontend reconciles to the same persisted order when a turn finishes. Activity points
 to the final assistant index; tool events and wakeup logs stay out of ordinary
 message history.
 

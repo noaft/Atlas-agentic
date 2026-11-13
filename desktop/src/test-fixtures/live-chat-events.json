@@ -1,0 +1,6 @@
+[
+  {"event":"requestStarted","data":{"requestId":"wire-turn"}},
+  {"event":"modelState","data":{"generating":true}},
+  {"event":"delta","data":{"content":"Đang tìm…","responseEpoch":7}},
+  {"event":"modelState","data":{"generating":false}}
+]

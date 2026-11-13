@@ -1,3 +1,4 @@
+import nativeWireEvents from "./test-fixtures/live-chat-events.json";
 import { EmptySkillsApi } from "./skills-api.test-support";
 import { taskFixtures } from "./task-fixtures.test-support";
 import { expect, test } from "vitest";
@@ -1987,4 +1988,93 @@ test("Send supplements immediately while waiting for tools and queues during inf
   await store.steerQueuedInput(store.getState().queuedInputs![0].id); await Promise.resolve(); await Promise.resolve();
   expect(submitted).toEqual(["adjust while waiting", "queued during inference"]);
   await store.stopActiveRequest(); pending.resolve({...result(first, "", true), interrupted: true}); await running;
+});
+
+
+test("native wire events unblock supplemental delivery and preserve Stop epoch", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const submitted: Array<{request: string; content: string}> = [];
+  const snapshots: unknown[] = [];
+  Object.assign(api, {
+    submitTurnInput: async (_context: unknown, request: string, id: string, content: string) => {submitted.push({request, content}); return {id, accepted: true, finished: false};},
+    stopChatRequest: async (_context: unknown, _request: string, snapshot: unknown) => {snapshots.push(snapshot);},
+  });
+  store.setDraft("find 50 news"); const running = store.send(); await Promise.resolve();
+  store.setDraft("only 5 news"); await store.send();
+  const queued = store.getState().queuedInputs![0]; await store.steerQueuedInput(queued.id);
+  expect(submitted).toEqual([]);
+  const events = nativeWireEvents as ChatEvent[];
+  for (const event of events) api.eventSinks[0](event);
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(submitted).toEqual([{request: "wire-turn", content: "only 5 news"}]);
+  await store.stopActiveRequest();
+  expect(snapshots).toEqual([{responseEpoch: 7, displayedBytes: new TextEncoder().encode("Đang tìm…").byteLength}]);
+  pending.resolve({...result(first, "Đang tìm…", true), interrupted: true}); await running;
+});
+
+test("accepted steering renders its next answer below the instruction before turn completion", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string) => ({id, accepted: true, finished: false})});
+  store.setDraft("find 50 news"); const running = store.send(); await Promise.resolve();
+  api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
+  api.eventSinks[0]({event: "delta", data: {content: "old decision"}});
+  await sendSupplement(store, "actually only 5 news");
+  const input = {id: store.getState().messages.at(-1)!.inputId!, content: "actually only 5 news", createdAt: first.updatedAt};
+  api.eventSinks[0]({event: "userInputAccepted", data: {input}});
+  api.eventSinks[0]({event: "responseReset"});
+  api.eventSinks[0]({event: "delta", data: {content: "new decision for 5 news"}});
+  expect(store.getState().messages.map(({role, content}) => ({role, content}))).toEqual([
+    {role: "user", content: "find 50 news"}, {role: "user", content: "actually only 5 news"}, {role: "assistant", content: "new decision for 5 news"},
+  ]);
+  api.eventSinks[0]({event: "userInputAccepted", data: {input}});
+  expect(store.getState().messages.at(-1)?.content).toBe("new decision for 5 news");
+  pending.resolve({...result(first, "new decision for 5 news", true), additionalInputs: [input]}); await running;
+  expect(store.getState().messages.filter(message => message.inputId === input.id)).toHaveLength(1);
+  expect(store.getState().messages.at(-1)?.content).toBe("new decision for 5 news");
+});
+
+test("accepted inputs still count toward the supplement limit after reply relocation", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  let submissions = 0;
+  Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string, content: string) => {
+    submissions++;
+    api.eventSinks[0]({event: "userInputAccepted", data: {input: {id, content, createdAt: first.updatedAt}}});
+    return {id, accepted: true, finished: false};
+  }});
+  store.setDraft("start"); const running = store.send(); await Promise.resolve();
+  api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
+  for (let index = 0; index < 32; index++) {
+    await sendSupplement(store, `instruction ${index}`); await Promise.resolve(); await Promise.resolve();
+  }
+  await sendSupplement(store, "overflow"); await Promise.resolve(); await Promise.resolve();
+  expect(submissions).toBe(32);
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["overflow"]);
+  const inputs = store.getState().messages.filter(message => message.inputId && message.inputStatus === "received").map(message => ({id: message.inputId!, content: message.content, createdAt: first.updatedAt}));
+  await store.stopActiveRequest(); pending.resolve({...result(first, "", true), interrupted: true, additionalInputs: inputs}); await running;
+});
+
+test("queued input enters the active turn at the next idle model boundary", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const submitted: string[] = [];
+  Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string, content: string) => {submitted.push(content); return {id, accepted: true, finished: false};}});
+  store.setDraft("find 50 news"); const running = store.send(); await Promise.resolve();
+  api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
+  api.eventSinks[0]({event: "modelState", data: {generating: true}});
+  store.setDraft("actually 5 news"); await store.send(); expect(submitted).toEqual([]);
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(submitted).toEqual(["actually 5 news"]); expect(api.askCalls).toHaveLength(1);
+  expect(store.getState().queuedInputs).toEqual([]);
+  api.eventSinks[0]({event: "modelState", data: {generating: true}});
+  store.setDraft("keep paused"); await store.send();
+  await store.stopActiveRequest();
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  await Promise.resolve(); await Promise.resolve();
+  expect(submitted).toEqual(["actually 5 news"]);
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["keep paused"]);
+  pending.resolve({...result(first, "", true), interrupted: true}); await running;
 });

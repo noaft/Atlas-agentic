@@ -162,7 +162,7 @@ type SessionState = Pick<ChatState, typeof sessionKeys[number]>;
 interface ChatSession {
   state: SessionState;
   generation: number;
-  turn?: {responseEpoch: number; stopSnapshot?: {responseEpoch: number; displayedBytes: number}; inFlight?: {id: string; content: string}; requestId: string | null; assistantIndex: number; pending: Array<{id: string; content: string}>; flushing?: boolean; stopped: boolean};
+  turn?: {responseEpoch: number; stopSnapshot?: {responseEpoch: number; displayedBytes: number}; inFlight?: {id: string; content: string}; requestId: string | null; assistantIndex: number; baseAssistantIndex: number; pending: Array<{id: string; content: string}>; flushing?: boolean; stopped: boolean};
 }
 const sessionState = (state: ChatState): SessionState =>
   Object.fromEntries(sessionKeys.map((key) => [key, state[key]])) as SessionState;
@@ -480,7 +480,7 @@ export class ChatStore {
   private submitSupplement(owner: string, input: {id: string; content: string}): boolean {
     const chat = this.chats.get(owner)!;
     if (chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || !this.api.submitTurnInput) return false;
-    const turnInputs = chat.state.messages.slice(chat.turn.assistantIndex + 1).filter(message => message.inputId);
+    const turnInputs = chat.state.messages.slice(chat.turn.baseAssistantIndex).filter(message => message.inputId);
     if (turnInputs.length >= 32) {
       this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. The message will stay queued."});
       return false;
@@ -562,7 +562,7 @@ export class ChatStore {
       createdAt: null,
       delivery: "pending",
     };
-    chat.turn = {responseEpoch: 0, requestId: null, assistantIndex: stableMessages.length + 1, pending: [], stopped: false};
+    chat.turn = {responseEpoch: 0, requestId: null, assistantIndex: stableMessages.length + 1, baseAssistantIndex: stableMessages.length + 1, pending: [], stopped: false};
     this.updateSession(owner, {
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: clearDraft ? "" : state.draftText,
@@ -618,10 +618,10 @@ export class ChatStore {
         return message ? [message] : [];
       });
       const orderedMessages = [
-        ...visibleMessages.slice(0, assistantIndex),
+        ...visibleMessages.slice(0, chat.turn!.baseAssistantIndex),
         ...appliedMessages,
         visibleMessages[assistantIndex],
-        ...visibleMessages.slice(assistantIndex + 1).filter(message => !message.inputId || !appliedIds.has(message.inputId)),
+        ...visibleMessages.slice(chat.turn!.baseAssistantIndex).filter((message, index) => index + chat.turn!.baseAssistantIndex !== assistantIndex && (!message.inputId || !appliedIds.has(message.inputId))),
       ];
       const conversations = moveToTop(this.state.conversations, completed.metadata);
       this.state = { ...this.state, conversations, conversationGroups: groupConversations(conversations) };
@@ -697,9 +697,10 @@ export class ChatStore {
     } finally { turn.flushing = false; }
   }
 
-  private reconcileAppliedInputs(owner: string, inputs: import("./types").TurnInput[]): void {
+  private reconcileAppliedInputs(owner: string, inputs: import("./types").TurnInput[], moveReply = false): void {
     if (!inputs.length) return;
     const chat = this.chats.get(owner)!;
+    const newlyApplied = inputs.some(input => !chat.state.messages.some(message => message.inputId === input.id && message.inputStatus === "received"));
     const applied = new Map(inputs.map(input => [input.id, input]));
     const seen = new Set<string>();
     const messages = chat.state.messages.map(message => {
@@ -710,6 +711,16 @@ export class ChatStore {
     });
     for (const input of inputs) {
       if (!seen.has(input.id)) messages.push({role: "user", content: input.content, createdAt: input.createdAt, delivery: "pending", inputId: input.id, inputStatus: "received"});
+    }
+    const turn = chat.turn;
+    if (moveReply && newlyApplied && turn && !turn.stopped && messages[turn.assistantIndex]?.role === "assistant") {
+      const [assistant] = messages.splice(turn.assistantIndex, 1);
+      let nextIndex = turn.baseAssistantIndex;
+      for (let index = turn.baseAssistantIndex; index < messages.length; index++) {
+        if (messages[index].inputId && messages[index].inputStatus === "received") nextIndex = index + 1;
+      }
+      messages.splice(nextIndex, 0, {...assistant, content: "", progressMessage: undefined, progressPreview: undefined});
+      turn.assistantIndex = nextIndex;
     }
     this.updateSession(owner, {messages, queuedInputs: chat.state.queuedInputs?.filter(input => !applied.has(input.id))});
   }
@@ -1242,14 +1253,18 @@ export class ChatStore {
     if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
     const state = chat.state;
     if (event.event === "modelState") {
-      this.updateSession(owner, {generating: event.data.generating}); return;
+      this.updateSession(owner, {generating: event.data.generating});
+      if (!event.data.generating && !chat.state.queuePaused && !chat.turn?.stopped) {
+        for (const input of [...chat.state.queuedInputs ?? []]) this.submitSupplement(owner, input);
+      }
+      return;
     }
     if (event.event === "requestStarted") {
       if (chat.turn) { chat.turn.requestId = event.data.requestId; if (chat.turn.stopped) void this.requestStop(owner, generation); else void this.flushSteering(owner, generation); }
       return;
     }
     if (event.event === "userInputAccepted") {
-      this.reconcileAppliedInputs(owner, [event.data.input]);
+      this.reconcileAppliedInputs(owner, [event.data.input], true);
       this.updateSession(owner, {pendingApproval: null}); return;
     }
     if (chat.turn?.stopped) return;
