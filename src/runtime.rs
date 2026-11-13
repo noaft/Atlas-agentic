@@ -48,6 +48,7 @@ pub struct Runtime {
     pub(crate) execution_scope: crate::executions::ExecutionScope,
     pub(crate) delegation: Option<crate::delegation::Delegation>,
     pub(crate) run_control: Option<crate::agent_runs::RunControl>,
+    pub(crate) turn_control: Option<crate::turns::TurnControl>,
     #[cfg(any(unix, windows))]
     pub(crate) owned_process_scope: Option<crate::tools::ProcessScope>,
 }
@@ -67,9 +68,60 @@ impl Runtime {
                 .scope(&uuid::Uuid::new_v4().to_string()),
             delegation: None,
             run_control: None,
+            turn_control: None,
             #[cfg(any(unix, windows))]
             owned_process_scope: None,
         }
+    }
+
+    pub fn with_turn_control(mut self, control: crate::turns::TurnControl) -> Self {
+        self.turn_control = Some(control);
+        self
+    }
+    pub fn user_stop_requested(&self) -> bool {
+        self.turn_control
+            .as_ref()
+            .is_some_and(|c| c.user_stop_requested())
+    }
+    pub fn record_displayed_delta(&self, delta: &str) {
+        if let Some(control) = &self.turn_control {
+            control.record_displayed_delta(delta);
+        }
+    }
+    pub fn reset_displayed_output(&self) {
+        if let Some(control) = &self.turn_control {
+            control.reset_displayed_output();
+        }
+    }
+    pub fn stopped_prefix(&self) -> Result<Option<String>, String> {
+        self.turn_control
+            .as_ref()
+            .map(|c| c.stopped_prefix())
+            .unwrap_or(Ok(None))
+    }
+    pub fn applied_user_inputs(&self) -> Vec<crate::turns::TurnInput> {
+        self.turn_control
+            .as_ref()
+            .map(|c| c.applied())
+            .unwrap_or_default()
+    }
+    fn check_turn(&self) -> Result<(), String> {
+        if let Some(control) = &self.turn_control {
+            control.check()?;
+        }
+        Ok(())
+    }
+    fn drain_user_inputs(&self, events: &mut dyn FnMut(&ToolEvent)) -> bool {
+        let inputs = self
+            .turn_control
+            .as_ref()
+            .map(|c| c.drain())
+            .unwrap_or_default();
+        let changed = !inputs.is_empty();
+        for input in inputs {
+            events(&ToolEvent::UserInputAccepted { input });
+        }
+        changed
     }
 
     pub fn with_execution_scope(mut self, scope: crate::executions::ExecutionScope) -> Self {
@@ -229,6 +281,11 @@ impl Runtime {
         permission_mode: PermissionMode,
         callbacks: RuntimeAskCallbacks<'_>,
     ) -> Result<String, String> {
+        let _turn_consumer = self
+            .turn_control
+            .as_ref()
+            .map(|c| c.acquire_consumer())
+            .transpose()?;
         let _execution_consumer = self.execution_scope.acquire_consumer()?;
         let _tool_request_scope = self.tools.request_scope();
         let RuntimeAskCallbacks {
@@ -244,6 +301,11 @@ impl Runtime {
         let max_tool_calls = agent.max_tool_calls();
         let max_protocol_repairs = agent.max_protocol_repairs();
 
+        if let Some(control) = &self.turn_control {
+            on_tool_event(&ToolEvent::RequestStarted {
+                request_id: control.request_id().into(),
+            });
+        }
         let mut pending_request = prompt.to_string();
         let mut input = pending_request.clone();
         let mut tool_results = Vec::new();
@@ -260,6 +322,10 @@ impl Runtime {
         let mut has_wakeup_controls = false;
 
         loop {
+            self.check_turn()?;
+            if self.drain_user_inputs(on_tool_event) {
+                protocol_repairs = 0;
+            }
             context.check_cancelled()?;
             self.execution_scope.check_open()?;
             if protocol_repairs == 0 {
@@ -306,6 +372,20 @@ impl Runtime {
             if let Some(control) = &self.run_control {
                 control.check()?;
             }
+            if !self.applied_user_inputs().is_empty() {
+                let continuation = if protocol_repairs > 0 {
+                    input.clone()
+                } else {
+                    pending_request.clone()
+                };
+                input = serde_json::to_string(&serde_json::json!({
+                    "type":"live_user_input", "original_user_request":prompt,
+                    "latest_user_messages":self.applied_user_inputs(), "continuation":continuation,
+                    "instruction":include_str!("../config/live-input-prompt.md")
+                }))
+                .map_err(|_| "Could not encode live user input")?;
+            }
+            self.check_turn()?;
             on_tool_event(&ToolEvent::Status {
                 status: if first_model_request {
                     RuntimeStatus::Thinking
@@ -328,6 +408,12 @@ impl Runtime {
             if let Some(control) = &self.run_control {
                 control.check()?;
             }
+            self.check_turn()?;
+            context.check_cancelled()?;
+            if self.drain_user_inputs(on_tool_event) {
+                protocol_repairs = 0;
+                continue;
+            }
             let response_result = agent.process_request_with_usage(
                 &crate::agents::AgentRequest {
                     input: &input,
@@ -340,6 +426,9 @@ impl Runtime {
                     max_output_tokens: prepared.max_output_tokens,
                 },
                 &mut |delta| {
+                    if self.check_turn().is_err() {
+                        return;
+                    }
                     final_stream.push(delta, on_delta);
                     final_stream.preview_progress(on_tool_event);
                 },
@@ -349,14 +438,23 @@ impl Runtime {
             if final_stream.progress_preview.is_some() {
                 on_tool_event(&ToolEvent::ProgressPreview { message: None });
             }
-            let (response, response_error) = match response_result {
-                Ok(response) => {
-                    latest_usage = response.usage.clone();
-                    on_tool_event(&ToolEvent::Usage {
-                        usage: response.usage,
-                    });
-                    (response.content, None)
+            if let Ok(response) = &response_result {
+                latest_usage = response.usage.clone();
+                on_tool_event(&ToolEvent::Usage {
+                    usage: response.usage.clone(),
+                });
+            }
+            self.check_turn()?;
+            context.check_cancelled()?;
+            if self.drain_user_inputs(on_tool_event) {
+                if !final_stream.emitted_content.is_empty() {
+                    on_tool_event(&ToolEvent::ResponseReset);
                 }
+                protocol_repairs = 0;
+                continue;
+            }
+            let (response, response_error) = match response_result {
+                Ok(response) => (response.content, None),
                 Err(error) if agent.is_response_repairable(&error) => {
                     (std::mem::take(&mut final_stream.response), Some(error))
                 }
@@ -578,18 +676,30 @@ impl Runtime {
                         if !final_stream.emitted_content.is_empty() {
                             on_tool_event(&ToolEvent::ResponseReset);
                         }
-                        wakeup_batch = Some(self.wait_scheduled_executions(
+                        wakeup_batch = self.wait_scheduled_executions(
                             &pending_executions.iter().cloned().collect::<Vec<_>>(),
                             authorizer,
                             on_tool_event,
                             context,
-                        )?);
+                        )?;
                         continue;
                     }
                     if let Some(control) = &self.run_control {
                         control.check()?;
                     }
-                    final_stream.finish(&content, on_delta)?;
+                    self.check_turn()?;
+                    if self.turn_control.as_ref().is_some_and(|c| !c.try_finish()) {
+                        if !final_stream.emitted_content.is_empty() {
+                            on_tool_event(&ToolEvent::ResponseReset);
+                        }
+                        continue;
+                    }
+                    final_stream.finish(&content, &mut |delta| {
+                        if self.check_turn().is_ok() {
+                            on_delta(delta);
+                        }
+                    })?;
+                    self.check_turn()?;
                     return Ok(content);
                 }
                 AgentOutput::ToolCall {
@@ -659,7 +769,20 @@ impl Runtime {
                             sequence,
                             request: request.clone(),
                         });
-                        if authorizer.authorize(&request)? == AuthorizationDecision::Deny {
+                        let decision = authorizer.authorize(&request);
+                        self.check_turn()?;
+                        context.check_cancelled()?;
+                        if self.drain_user_inputs(on_tool_event) {
+                            on_tool_event(&ToolEvent::Finished {
+                                sequence,
+                                tool: tool.clone(),
+                                success: false,
+                                summary: format!("{tool} superseded by new user input"),
+                                details: None,
+                            });
+                            continue;
+                        }
+                        if decision? == AuthorizationDecision::Deny {
                             crate::diagnostics::event(
                                 "INFO",
                                 "tool.denied",
@@ -681,6 +804,17 @@ impl Runtime {
                             continue;
                         }
                     }
+                    self.check_turn()?;
+                    if self.drain_user_inputs(on_tool_event) {
+                        on_tool_event(&ToolEvent::Finished {
+                            sequence,
+                            tool: tool.clone(),
+                            success: false,
+                            summary: format!("{tool} superseded by new user input"),
+                            details: None,
+                        });
+                        continue;
+                    }
                     self.execution_scope.check_open()?;
                     on_tool_event(&ToolEvent::Started {
                         sequence,
@@ -699,6 +833,18 @@ impl Runtime {
                     );
                     if let Some(control) = &self.run_control {
                         control.check()?;
+                    }
+                    self.check_turn()?;
+                    context.check_cancelled()?;
+                    if self.drain_user_inputs(on_tool_event) {
+                        on_tool_event(&ToolEvent::Finished {
+                            sequence,
+                            tool: tool.clone(),
+                            success: false,
+                            summary: format!("{tool} superseded by new user input"),
+                            details: None,
+                        });
+                        continue;
                     }
                     if let Some(policy) = execution_policy {
                         let start = self.execution_scope.reserve(&tool).and_then(|slot| {
@@ -764,12 +910,12 @@ impl Runtime {
                                         .map_err(|_| "Could not encode tool execution")?,
                                 });
                                 if policy.mode == crate::executions::protocol::WakeupMode::Hard {
-                                    wakeup_batch = Some(self.wait_scheduled_executions(
+                                    wakeup_batch = self.wait_scheduled_executions(
                                         &[info.execution_id],
                                         authorizer,
                                         on_tool_event,
                                         context,
-                                    )?);
+                                    )?;
                                 }
                             }
                             Err(error) => {

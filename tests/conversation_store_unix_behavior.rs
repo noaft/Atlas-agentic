@@ -61,6 +61,7 @@ fn storage_permissions_are_private_with_permissive_umask() {
                 None,
                 None,
                 ActivityTurn {
+                    interrupted: false,
                     version: 1,
                     turn_id: "private-turn".to_string(),
                     assistant_message_index: usize::MAX,

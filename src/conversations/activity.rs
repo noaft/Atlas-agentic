@@ -10,7 +10,7 @@ pub const TURN_DETAIL_LIMIT: usize = 32_768;
 pub const ACTIVITY_CONTEXT_LIMIT: usize = 8_192;
 
 const TRUNCATION_SUFFIX: &str = "… [truncated]";
-const CONTEXT_HEADING: &str = "Recent Atlas activity (facts from earlier successful turns):\n";
+const CONTEXT_HEADING: &str = "Recent Atlas activity (facts from earlier turns):\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +56,8 @@ pub struct ActivityTurn {
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::models::ModelUsage>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
     pub records: Vec<ActivityRecord>,
 }
 
@@ -169,6 +171,7 @@ impl ActivityCollector {
             assistant_message_index,
             duration_ms: None,
             usage: None,
+            interrupted: false,
             records: self.records,
         }
     }
@@ -265,7 +268,10 @@ fn display_tail(value: &str, budget: usize) -> String {
 
 pub fn render_activity_context(turns: &[ActivityTurn]) -> String {
     let mut selected = Vec::new();
-    let mut used = CONTEXT_HEADING.chars().count();
+    let interruptions = turns.iter().rev().filter(|turn| turn.interrupted).take(32)
+        .map(|turn| format!("- Assistant message {} was interrupted by the user; its partial text is incomplete and does not establish task completion.\n", turn.assistant_message_index))
+        .collect::<Vec<_>>().join("");
+    let mut used = CONTEXT_HEADING.chars().count() + interruptions.chars().count();
     for record in turns
         .iter()
         .rev()
@@ -280,11 +286,11 @@ pub fn render_activity_context(turns: &[ActivityTurn]) -> String {
             break;
         }
     }
-    if selected.is_empty() {
+    if selected.is_empty() && interruptions.is_empty() {
         return String::new();
     }
     selected.reverse();
-    format!("{CONTEXT_HEADING}{}", selected.concat())
+    format!("{CONTEXT_HEADING}{interruptions}{}", selected.concat())
         .trim_end()
         .to_string()
 }

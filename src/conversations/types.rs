@@ -97,7 +97,15 @@ pub fn select_recent_history(
     messages: &[ConversationMessage],
     limit: usize,
 ) -> Vec<ConversationMessage> {
-    let start = messages.len().saturating_sub(limit);
+    let mut start = messages.len().saturating_sub(limit);
+    if matches!(
+        messages.get(start).map(|message| &message.role),
+        Some(MessageRole::User)
+    ) {
+        while start > 0 && matches!(messages[start - 1].role, MessageRole::User) {
+            start -= 1;
+        }
+    }
     let mut recent = messages[start..].to_vec();
 
     if start > 0
@@ -110,4 +118,24 @@ pub fn select_recent_history(
     }
 
     recent
+}
+
+/// Annotate model-facing history copies; durable history and its fingerprints stay unchanged.
+pub fn annotate_interrupted_history(
+    messages: &mut [ConversationMessage],
+    first_index: usize,
+    activities: &[ActivityTurn],
+) {
+    const LABEL: &str = "[Interrupted assistant response: this partial text is incomplete and does not establish task completion.]\n";
+    for activity in activities.iter().filter(|activity| activity.interrupted) {
+        let Some(index) = activity.assistant_message_index.checked_sub(first_index) else {
+            continue;
+        };
+        if let Some(message) = messages.get_mut(index) {
+            if matches!(message.role, MessageRole::Assistant) && !message.content.starts_with(LABEL)
+            {
+                message.content.insert_str(0, LABEL);
+            }
+        }
+    }
 }

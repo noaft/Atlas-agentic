@@ -1061,12 +1061,25 @@ impl ExecutionScope {
         ids: &[String],
         mut check: impl FnMut() -> Result<(), String>,
     ) -> Result<WakeupBatch, String> {
+        self.wait_scheduled_interruptible_checked(ids, || {
+            check()?;
+            Ok(false)
+        })?
+        .ok_or_else(|| "Execution wait unexpectedly interrupted".into())
+    }
+    pub fn wait_scheduled_interruptible_checked(
+        &self,
+        ids: &[String],
+        mut check: impl FnMut() -> Result<bool, String>,
+    ) -> Result<Option<WakeupBatch>, String> {
         if ids.is_empty() || ids.len() > 32 {
             return Err("Wait for 1–32 owned executions".into());
         }
         let shared = &self.manager.0.shared;
         loop {
-            check()?;
+            if check()? {
+                return Ok(None);
+            }
             let mut s = shared
                 .store
                 .lock()
@@ -1078,14 +1091,14 @@ impl ExecutionScope {
             s = state;
             result?;
             if let Some(batch) = claim(&mut s, &self.owner) {
-                return Ok(batch);
+                return Ok(Some(batch));
             }
             // A terminal snapshot is explicit inspection, not a new completion notification.
             if ids.iter().all(|id| terminal(s.records[id].status)) {
                 for id in ids {
                     enqueue(&mut s, id, "snapshot");
                 }
-                return Ok(claim(&mut s, &self.owner).unwrap());
+                return Ok(Some(claim(&mut s, &self.owner).unwrap()));
             }
             drop(
                 shared

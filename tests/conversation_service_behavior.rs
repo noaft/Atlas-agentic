@@ -1179,3 +1179,204 @@ fn failed_turn_does_not_persist_progress_as_chat_or_activity() {
     assert!(store.list().unwrap().is_empty());
     assert!(!root.join("activities").exists());
 }
+
+#[test]
+fn explicit_stop_preserves_partial_text_and_skips_title_inference() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let (runtime, requests) = runtime(
+        &store,
+        vec![Response::success(vec!["partial answer", " late answer"])],
+        Ok("must not title"),
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let manager = atlas_agentic::turns::TurnManager::default();
+    let lease = manager
+        .begin_with_cancellation("stop-test", cancelled.clone())
+        .unwrap();
+    let control = lease.control();
+    let runtime = runtime.with_turn_control(control.clone());
+    let result = ConversationService::new(&runtime, &store, 40)
+        .with_cancellation(&cancelled)
+        .ask("question", None, &mut |_| {
+            manager.cancel("stop-test", control.request_id()).unwrap();
+        })
+        .unwrap();
+    assert!(result.interrupted);
+    assert_eq!(result.answer, "partial answer");
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages[1].content, "partial answer");
+    assert!(saved.activities[0].interrupted);
+    assert!(
+        atlas_agentic::conversations::render_activity_context(&saved.activities)
+            .contains("incomplete")
+    );
+    assert_eq!(requests.borrow().len(), 1);
+}
+
+#[test]
+fn applied_live_inputs_are_returned_and_persisted_in_acceptance_order() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let initial = store.create_turn("old", "answer").unwrap();
+    let (runtime, _) = runtime(&store, vec![Response::success(vec!["done"])], Ok("unused"));
+    let manager = atlas_agentic::turns::TurnManager::default();
+    let lease = manager.begin("steer-test").unwrap();
+    let control = lease.control();
+    control.submit("one", "first supplement").unwrap();
+    control.submit("two", "second supplement").unwrap();
+    let runtime = runtime.with_turn_control(control);
+    let result = ConversationService::new(&runtime, &store, 40)
+        .ask("question", Some(&initial.id), &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        result
+            .additional_inputs
+            .iter()
+            .map(|input| input.id.as_str())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    let saved = store.load(&initial.id).unwrap();
+    assert_eq!(
+        saved
+            .messages
+            .iter()
+            .skip(2)
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        ["question", "first supplement", "second supplement", "done"]
+    );
+    assert_eq!(saved.activities[0].assistant_message_index, 5);
+}
+
+#[test]
+fn owner_teardown_does_not_preserve_partial_turn() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let (runtime, _) = runtime(
+        &store,
+        vec![Response::success(vec!["partial answer", " late answer"])],
+        Ok("unused"),
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let manager = atlas_agentic::turns::TurnManager::default();
+    let lease = manager
+        .begin_with_cancellation("closed-owner", cancelled.clone())
+        .unwrap();
+    let runtime = runtime.with_turn_control(lease.control());
+    let result = ConversationService::new(&runtime, &store, 40)
+        .with_cancellation(&cancelled)
+        .ask("question", None, &mut |_| {
+            cancelled.store(true, Ordering::Relaxed);
+        });
+    assert!(result.is_err());
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn stop_before_answer_saves_empty_interrupted_assistant_without_model_call() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let (runtime, requests) = runtime(&store, vec![], Ok("unused"));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let manager = atlas_agentic::turns::TurnManager::default();
+    let lease = manager
+        .begin_with_cancellation("early-stop", cancelled.clone())
+        .unwrap();
+    let control = lease.control();
+    manager.cancel("early-stop", control.request_id()).unwrap();
+    let runtime = runtime.with_turn_control(control);
+    let result = ConversationService::new(&runtime, &store, 40)
+        .with_cancellation(&cancelled)
+        .ask("question", None, &mut |_| {})
+        .unwrap();
+    assert!(result.interrupted);
+    assert!(result.answer.is_empty());
+    let saved = store.load(&result.metadata.id).unwrap();
+    assert_eq!(saved.messages.len(), 2);
+    assert!(saved.activities[0].interrupted);
+    assert!(requests.borrow().is_empty());
+}
+
+#[test]
+fn stop_cursor_preserves_only_the_frontend_visible_utf8_prefix() {
+    use atlas_agentic::turns::{DisplayCursor, TurnManager};
+    use std::sync::atomic::AtomicBool;
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let (runtime, _) = runtime(
+        &store,
+        vec![Response::success(vec!["visible é", " late chunk"])],
+        Ok("unused"),
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let manager = TurnManager::default();
+    let lease = manager
+        .begin_with_cancellation("cursor-stop", cancelled.clone())
+        .unwrap();
+    let control = lease.control();
+    let runtime = runtime.with_turn_control(control.clone());
+    let mut callbacks = 0;
+    let result = ConversationService::new(&runtime, &store, 40)
+        .with_cancellation(&cancelled)
+        .ask("question", None, &mut |_| {
+            callbacks += 1;
+            if callbacks == 2 {
+                manager
+                    .cancel_with_cursor(
+                        "cursor-stop",
+                        control.request_id(),
+                        Some(DisplayCursor {
+                            response_epoch: 0,
+                            displayed_bytes: "visible é".len(),
+                        }),
+                    )
+                    .unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(callbacks, 2);
+    assert!(result.interrupted);
+    assert_eq!(result.answer, "visible é");
+    assert_eq!(
+        store.load(&result.metadata.id).unwrap().messages[1].content,
+        "visible é"
+    );
+}
+
+#[test]
+fn owner_teardown_after_explicit_stop_does_not_save_an_abandoned_turn() {
+    use atlas_agentic::turns::TurnManager;
+    use std::sync::atomic::AtomicBool;
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let (runtime, _) = runtime(
+        &store,
+        vec![Response::success(vec!["partial answer", " late answer"])],
+        Ok("unused"),
+    );
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let manager = TurnManager::default();
+    let lease = manager
+        .begin_with_cancellation("abandoned-stop", cancelled.clone())
+        .unwrap();
+    let control = lease.control();
+    let runtime = runtime.with_turn_control(control.clone());
+    let result = ConversationService::new(&runtime, &store, 40)
+        .with_cancellation(&cancelled)
+        .ask("question", None, &mut |_| {
+            manager
+                .cancel("abandoned-stop", control.request_id())
+                .unwrap();
+            manager.close_owner("abandoned-stop");
+        });
+    assert!(result.is_err());
+    assert!(store.list().unwrap().is_empty());
+}

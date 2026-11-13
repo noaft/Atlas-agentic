@@ -21,6 +21,7 @@ fn record(sequence: u32, summary: impl Into<String>) -> ActivityRecord {
 #[test]
 fn activity_turn_round_trips_as_one_versioned_json_line() {
     let turn = ActivityTurn {
+        interrupted: false,
         version: 1,
         turn_id: "turn-1".to_string(),
         assistant_message_index: 3,
@@ -49,6 +50,7 @@ fn legacy_activity_turn_without_duration_loads_normally() {
     let turn = serde_json::from_str::<ActivityTurn>(line).unwrap();
 
     assert_eq!(turn.duration_ms, None);
+    assert!(!turn.interrupted);
 }
 
 #[test]
@@ -120,6 +122,7 @@ fn collector_enforces_the_per_turn_detail_budget() {
 #[test]
 fn context_keeps_newest_complete_summaries_within_8192_characters() {
     let oldest = ActivityTurn {
+        interrupted: false,
         version: 1,
         turn_id: "oldest".to_string(),
         assistant_message_index: 1,
@@ -128,6 +131,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
         records: vec![record(0, "oldest should stay behind the oversized gap")],
     };
     let old = ActivityTurn {
+        interrupted: false,
         version: 1,
         turn_id: "old".to_string(),
         assistant_message_index: 3,
@@ -137,6 +141,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
     };
     let newest_summary = format!("new {}", "y".repeat(4_000));
     let newest = ActivityTurn {
+        interrupted: false,
         version: 1,
         turn_id: "new".to_string(),
         assistant_message_index: 5,
@@ -147,7 +152,7 @@ fn context_keeps_newest_complete_summaries_within_8192_characters() {
 
     let context = render_activity_context(&[oldest, old, newest]);
 
-    assert!(context.starts_with("Recent Atlas activity (facts from earlier successful turns):\n"));
+    assert!(context.starts_with("Recent Atlas activity (facts from earlier turns):\n"));
     assert!(context.contains(&newest_summary));
     assert!(!context.contains("old "));
     assert!(!context.contains("oldest should"));

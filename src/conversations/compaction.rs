@@ -197,18 +197,29 @@ fn source_units(conversation: &Conversation, boundary: usize) -> Result<Vec<Memo
         .memory
         .as_ref()
         .map_or(0, |m| m.compacted_message_count);
-    for start in (old_end..boundary).step_by(2) {
-        let end = (start + 2).min(boundary);
+    let mut start = old_end;
+    while start < boundary {
+        let end = conversation.messages[start..boundary]
+            .iter()
+            .position(|message| matches!(message.role, MessageRole::Assistant))
+            .map_or(boundary, |offset| start + offset + 1);
         let mut sources = Vec::new();
         for (index, message) in conversation.messages[start..end].iter().enumerate() {
             sources.push(SourceFragment {
                 start_index: start + index,
                 end_index_exclusive: start + index + 1,
-                source_roles: vec![match message.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                }
-                .into()],
+                source_roles: if matches!(message.role, MessageRole::Assistant)
+                    && conversation.activities.iter().any(|activity| {
+                        activity.interrupted && activity.assistant_message_index == start + index
+                    }) {
+                    vec!["assistant".into(), "interrupted_partial_response".into()]
+                } else {
+                    vec![match message.role {
+                        MessageRole::User => "user",
+                        MessageRole::Assistant => "assistant",
+                    }
+                    .into()]
+                },
                 fragment_start_byte: 0,
                 intermediate_summary: false,
                 content: message.content.clone(),
@@ -236,6 +247,7 @@ fn source_units(conversation: &Conversation, boundary: usize) -> Result<Vec<Memo
             end_index_exclusive: end,
             content: serde_json::to_string(&sources).map_err(|e| e.to_string())?,
         });
+        start = end;
     }
     Ok(units)
 }

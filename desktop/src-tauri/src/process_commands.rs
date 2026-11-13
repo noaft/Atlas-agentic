@@ -17,6 +17,7 @@ pub(crate) struct DesktopProcesses {
     manager: ProcessManager,
     pub(crate) executions: atlas_agentic::executions::ToolExecutionManager,
     pub(crate) agents: atlas_agentic::agent_runs::AgentRunManager,
+    pub(crate) turns: atlas_agentic::turns::TurnManager,
     registry: Arc<Mutex<Registry>>,
 }
 #[derive(Default)]
@@ -79,6 +80,7 @@ impl DesktopProcesses {
                 .collect::<Vec<_>>()
         };
         for scope in old {
+            self.turns.close_owner(scope.id());
             self.executions.close_owner(scope.id());
             self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
@@ -286,6 +288,7 @@ impl DesktopProcesses {
             registry.drafts.remove(id);
             scope
         };
+        self.turns.close_owner(scope.id());
         self.executions.close_owner(scope.id());
         self.agents.close_owner(scope.id());
         scope.close(Duration::from_secs(3))
@@ -299,6 +302,7 @@ impl DesktopProcesses {
             .get(id)
             .cloned();
         if let Some(scope) = scope {
+            self.turns.close_owner(scope.id());
             self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
             self.executions.remove_persistence_owner(&id.to_string())?;
@@ -318,6 +322,15 @@ impl DesktopProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .closing = true;
+        if let Ok(registry) = self.registry.lock() {
+            for scope in registry
+                .saved
+                .values()
+                .chain(registry.drafts.values().map(|entry| &entry.2))
+            {
+                self.turns.close_owner(scope.id());
+            }
+        }
         self.agents.shutdown();
         let executions = self.executions.shutdown(Duration::from_secs(3));
         let processes = self.manager.shutdown(Duration::from_secs(3));

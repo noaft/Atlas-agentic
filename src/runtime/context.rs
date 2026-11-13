@@ -111,6 +111,7 @@ impl ConversationContext<'_> {
                 .map(|m| m.blocks.clone())
                 .unwrap_or_default();
             result.history = conversation.messages[start..].to_vec();
+            annotate_interrupted_history(&mut result.history, start, &conversation.activities);
             let activities = conversation
                 .activities
                 .iter()
@@ -168,6 +169,7 @@ impl ConversationContext<'_> {
         );
         let mut protected = self.prepared();
         protected.history = conversation.messages[boundary..].to_vec();
+        annotate_interrupted_history(&mut protected.history, boundary, &conversation.activities);
         protected.activity_context = render_activity_context(
             &conversation
                 .activities

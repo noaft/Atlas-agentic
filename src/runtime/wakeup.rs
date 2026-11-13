@@ -7,21 +7,31 @@ impl Runtime {
         authorizer: &dyn ToolAuthorizer,
         events: &mut dyn FnMut(&ToolEvent),
         context: &dyn context::RuntimeContext,
-    ) -> Result<WakeupBatch, String> {
-        self.execution_scope.wait_scheduled_checked(ids, || {
-            context.check_cancelled()?;
-            if let Some(control) = &self.run_control {
-                control.check()?;
-            }
-            if let Some(delegation) = &self.delegation {
-                delegation.service_wakeup_approvals(
-                    authorizer,
-                    events,
-                    self.run_control.is_some(),
-                )?;
-            }
-            Ok(())
-        })
+    ) -> Result<Option<WakeupBatch>, String> {
+        self.execution_scope
+            .wait_scheduled_interruptible_checked(ids, || {
+                self.check_turn()?;
+                context.check_cancelled()?;
+                if let Some(control) = &self.run_control {
+                    control.check()?;
+                }
+                if self.turn_control.as_ref().is_some_and(|c| c.has_pending()) {
+                    return Ok(true);
+                }
+                if let Some(delegation) = &self.delegation {
+                    let result = delegation.service_wakeup_approvals(
+                        authorizer,
+                        events,
+                        self.run_control.is_some(),
+                    );
+                    self.check_turn()?;
+                    if self.turn_control.as_ref().is_some_and(|c| c.has_pending()) {
+                        return Ok(true);
+                    }
+                    result?;
+                }
+                Ok(self.turn_control.as_ref().is_some_and(|c| c.has_pending()))
+            })
     }
 
     pub(crate) fn execution_control(
@@ -81,6 +91,10 @@ impl Runtime {
                     if authorizer.authorize(&request)? == AuthorizationDecision::Deny {
                         return Err("Execution cancellation was denied".into());
                     }
+                }
+                self.check_turn()?;
+                if self.turn_control.as_ref().is_some_and(|c| c.has_pending()) {
+                    return Err("Execution cancellation superseded by user input".into());
                 }
                 serde_json::to_value(self.execution_scope.cancel(&id)?)
                     .map_err(|_| "Could not encode execution status".into())

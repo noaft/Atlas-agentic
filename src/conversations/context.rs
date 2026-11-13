@@ -50,7 +50,7 @@ pub fn choose_block_count(trigger: CompactionTrigger, percent: f64) -> usize {
 }
 pub fn retained_start(messages: &[ConversationMessage], keep: usize) -> usize {
     let mut start = messages.len().saturating_sub(keep);
-    while start > 0 && matches!(messages[start].role, MessageRole::Assistant) {
+    while start > 0 && !matches!(messages[start - 1].role, MessageRole::Assistant) {
         start -= 1;
     }
     start

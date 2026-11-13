@@ -13,6 +13,8 @@ use super::{
 #[derive(Debug)]
 pub struct ConversationAskResult {
     pub answer: String,
+    pub additional_inputs: Vec<crate::turns::TurnInput>,
+    pub interrupted: bool,
     pub metadata: ConversationMetadata,
     pub activities: Vec<ActivityRecord>,
     pub activity_duration_ms: u64,
@@ -254,13 +256,14 @@ impl<'a> ConversationService<'a> {
                     .metadata
                     .permission_mode
                     .unwrap_or(PermissionMode::Ask);
-                let history = select_recent_history(&conversation.messages, self.history_limit);
+                let mut history = select_recent_history(&conversation.messages, self.history_limit);
                 let first_message_index = conversation.messages.len().saturating_sub(history.len());
                 let activities = conversation
                     .activities
                     .into_iter()
                     .filter(|turn| turn.assistant_message_index >= first_message_index)
                     .collect::<Vec<_>>();
+                super::annotate_interrupted_history(&mut history, first_message_index, &activities);
                 let activity_context = render_activity_context(&activities);
                 (history, activity_context, permission_mode)
             }
@@ -269,6 +272,7 @@ impl<'a> ConversationService<'a> {
         let mut sink_error = None;
         let mut collector = ActivityCollector::new();
         let mut latest_usage = None;
+        let displayed_answer = std::cell::RefCell::new(String::new());
         let mut capture_event = |event: &ToolEvent| {
             match event {
                 ToolEvent::Progress { message } => collector.progress(message),
@@ -293,8 +297,13 @@ impl<'a> ConversationService<'a> {
                     summary,
                     details.as_deref().unwrap_or_default(),
                 ),
+                ToolEvent::ResponseReset => {
+                    self.runtime.reset_displayed_output();
+                    displayed_answer.borrow_mut().clear();
+                }
                 ToolEvent::ProgressPreview { .. }
-                | ToolEvent::ResponseReset
+                | ToolEvent::RequestStarted { .. }
+                | ToolEvent::UserInputAccepted { .. }
                 | ToolEvent::ApprovalRequested { .. }
                 | ToolEvent::Started { .. }
                 | ToolEvent::Compaction { .. }
@@ -325,6 +334,10 @@ impl<'a> ConversationService<'a> {
                 on_delta: &mut |delta| {
                     if sink_error.is_none() {
                         sink_error = (callbacks.on_delta)(delta).err();
+                        if sink_error.is_none() {
+                            self.runtime.record_displayed_delta(delta);
+                            displayed_answer.borrow_mut().push_str(delta);
+                        }
                     }
                 },
                 on_tool_event: &mut capture_event,
@@ -333,36 +346,53 @@ impl<'a> ConversationService<'a> {
         if let Some(error) = sink_error {
             return Err(error);
         }
-        let answer = answer?;
+        let interrupted = self.runtime.user_stop_requested()
+            && self
+                .cancelled
+                .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        let answer = if interrupted {
+            self.runtime
+                .stopped_prefix()?
+                .unwrap_or_else(|| displayed_answer.into_inner())
+        } else {
+            answer?
+        };
+        let additional_inputs = self.runtime.applied_user_inputs();
         let activity_duration_ms =
             u64::try_from(activity_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut activity_turn = collector.into_unassociated_turn();
         activity_turn.duration_ms = Some(activity_duration_ms);
+        activity_turn.interrupted = interrupted;
         activity_turn.usage = latest_usage.clone();
         let activities = activity_turn.records.clone();
 
         let metadata = match id {
-            Some(id) => self.store.append_turn_with_activity(
+            Some(id) => self.store.append_turn_with_inputs_and_activity(
                 id,
                 prompt,
+                &additional_inputs,
                 &answer,
                 new_workspace,
                 Some(permission_mode),
                 activity_turn,
             )?,
             None => {
-                let metadata = self.store.create_turn_with_activity(
+                let metadata = self.store.create_turn_with_inputs_and_activity(
                     prompt,
+                    &additional_inputs,
                     &answer,
                     new_workspace,
                     Some(permission_mode),
                     activity_turn,
                 )?;
-                let title = self
-                    .runtime
-                    .generate_conversation_title(prompt)
-                    .ok()
-                    .and_then(|raw| sanitize_title(&raw));
+                let title = if interrupted {
+                    None
+                } else {
+                    self.runtime
+                        .generate_conversation_title(prompt)
+                        .ok()
+                        .and_then(|raw| sanitize_title(&raw))
+                };
                 self.store
                     .record_title_attempt(&metadata.id, title.as_deref())?
             }
@@ -371,6 +401,8 @@ impl<'a> ConversationService<'a> {
         Ok(ConversationAskResult {
             memory: self.store.load_memory(&metadata.id)?,
             answer,
+            additional_inputs,
+            interrupted,
             metadata,
             activities,
             activity_duration_ms,

@@ -14,7 +14,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::permissions::PermissionMode;
+use crate::{permissions::PermissionMode, turns::TurnInput};
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -111,7 +111,7 @@ impl ConversationStore {
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
-        self.create_turn_inner(user, assistant, workspace, permission_mode, None)
+        self.create_turn_inner(user, &[], assistant, workspace, permission_mode, None)
     }
 
     pub fn create_turn_with_activity(
@@ -122,12 +122,39 @@ impl ConversationStore {
         permission_mode: Option<PermissionMode>,
         activity: ActivityTurn,
     ) -> Result<ConversationMetadata, String> {
-        self.create_turn_inner(user, assistant, workspace, permission_mode, Some(activity))
+        self.create_turn_with_inputs_and_activity(
+            user,
+            &[],
+            assistant,
+            workspace,
+            permission_mode,
+            activity,
+        )
+    }
+
+    pub fn create_turn_with_inputs_and_activity(
+        &self,
+        user: &str,
+        additional_inputs: &[TurnInput],
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: ActivityTurn,
+    ) -> Result<ConversationMetadata, String> {
+        self.create_turn_inner(
+            user,
+            additional_inputs,
+            assistant,
+            workspace,
+            permission_mode,
+            Some(activity),
+        )
     }
 
     fn create_turn_inner(
         &self,
         user: &str,
+        additional_inputs: &[TurnInput],
         assistant: &str,
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
@@ -155,22 +182,11 @@ impl ConversationStore {
                 }
             };
             let now = Utc::now();
-            let messages = [
-                ConversationMessage {
-                    role: MessageRole::User,
-                    content: user.to_string(),
-                    created_at: now,
-                },
-                ConversationMessage {
-                    role: MessageRole::Assistant,
-                    content: assistant.to_string(),
-                    created_at: now,
-                },
-            ];
+            let messages = turn_messages(user, additional_inputs, assistant, now);
             let history_path = self.history_path(&id);
             let activity_path = self.activity_path(&id);
             if let Some(mut activity) = activity {
-                activity.assistant_message_index = 1;
+                activity.assistant_message_index = messages.len() - 1;
                 create_private_dir_all(&self.activities_dir()).map_err(|error| {
                     format!(
                         "failed to create {}: {error}",
@@ -272,7 +288,7 @@ impl ConversationStore {
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
-        self.append_turn_inner(id, user, assistant, workspace, permission_mode, None)
+        self.append_turn_inner(id, user, &[], assistant, workspace, permission_mode, None)
     }
 
     pub fn append_turn_with_activity(
@@ -284,9 +300,32 @@ impl ConversationStore {
         permission_mode: Option<PermissionMode>,
         activity: ActivityTurn,
     ) -> Result<ConversationMetadata, String> {
+        self.append_turn_with_inputs_and_activity(
+            id,
+            user,
+            &[],
+            assistant,
+            workspace,
+            permission_mode,
+            activity,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_turn_with_inputs_and_activity(
+        &self,
+        id: &ConversationId,
+        user: &str,
+        additional_inputs: &[TurnInput],
+        assistant: &str,
+        workspace: Option<&Path>,
+        permission_mode: Option<PermissionMode>,
+        activity: ActivityTurn,
+    ) -> Result<ConversationMetadata, String> {
         self.append_turn_inner(
             id,
             user,
+            additional_inputs,
             assistant,
             workspace,
             permission_mode,
@@ -294,10 +333,12 @@ impl ConversationStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_turn_inner(
         &self,
         id: &ConversationId,
         user: &str,
+        additional_inputs: &[TurnInput],
         assistant: &str,
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
@@ -316,21 +357,10 @@ impl ConversationStore {
             };
 
             let now = Utc::now();
-            let messages = [
-                ConversationMessage {
-                    role: MessageRole::User,
-                    content: user.to_string(),
-                    created_at: now,
-                },
-                ConversationMessage {
-                    role: MessageRole::Assistant,
-                    content: assistant.to_string(),
-                    created_at: now,
-                },
-            ];
+            let messages = turn_messages(user, additional_inputs, assistant, now);
             let activity_path = self.activity_path(id);
             let activity_original_len = if let Some(mut activity) = activity {
-                activity.assistant_message_index = existing_messages.len() + 1;
+                activity.assistant_message_index = existing_messages.len() + messages.len() - 1;
                 create_private_dir_all(&self.activities_dir()).map_err(|error| {
                     format!(
                         "failed to create {}: {error}",
@@ -887,4 +917,31 @@ fn reconcile_metadata(metadata: &mut ConversationMetadata, messages: &[Conversat
     if let Some(message) = messages.last() {
         metadata.updated_at = metadata.updated_at.max(message.created_at);
     }
+}
+
+fn turn_messages(
+    user: &str,
+    additional_inputs: &[TurnInput],
+    assistant: &str,
+    now: chrono::DateTime<Utc>,
+) -> Vec<ConversationMessage> {
+    let mut messages = Vec::with_capacity(additional_inputs.len() + 2);
+    messages.push(ConversationMessage {
+        role: MessageRole::User,
+        content: user.into(),
+        created_at: additional_inputs
+            .first()
+            .map_or(now, |input| input.created_at.min(now)),
+    });
+    messages.extend(additional_inputs.iter().map(|input| ConversationMessage {
+        role: MessageRole::User,
+        content: input.content.clone(),
+        created_at: input.created_at,
+    }));
+    messages.push(ConversationMessage {
+        role: MessageRole::Assistant,
+        content: assistant.into(),
+        created_at: now,
+    });
+    messages
 }

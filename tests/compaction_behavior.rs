@@ -243,3 +243,46 @@ fn truncated_summary_keeps_an_existing_checkpoint_and_full_history() {
     assert!(error.contains("output limit"));
     assert_eq!(store.load(&meta.id).unwrap(), before);
 }
+
+#[test]
+fn compaction_blocks_end_at_assistants_after_multiple_user_inputs() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let input = atlas_agentic::turns::TurnInput {
+        id: "steer".into(),
+        content: "second instruction".into(),
+        created_at: chrono::Utc::now(),
+    };
+    let mut activity = ActivityCollector::new().into_unassociated_turn();
+    activity.interrupted = true;
+    let meta = store
+        .create_turn_with_inputs_and_activity(
+            "first instruction",
+            &[input],
+            "first answer",
+            None,
+            None,
+            activity,
+        )
+        .unwrap();
+    for _ in 0..9 {
+        store.append_turn(&meta.id, "more", "answer").unwrap();
+    }
+    let calls = Rc::new(RefCell::new(vec![]));
+    let runtime = runtime(calls.clone(), false);
+    let result = ConversationService::new(&runtime, &store, 40)
+        .compact(&meta.id, &mut |_| {})
+        .unwrap();
+    let memory = result.memory.unwrap();
+    assert_eq!(memory.compacted_message_count, 11);
+    let saved = store.load(&meta.id).unwrap();
+    for block in memory.blocks {
+        assert_eq!(
+            saved.messages[block.end_index_exclusive - 1].role,
+            MessageRole::Assistant
+        );
+    }
+    assert!(calls.borrow()[0].contains("second instruction"));
+    assert!(calls.borrow()[0].contains("interrupted_partial_response"));
+    assert!(calls.borrow()[0].contains("incomplete"));
+}

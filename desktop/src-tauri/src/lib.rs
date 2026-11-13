@@ -1,4 +1,5 @@
 mod agent_commands;
+mod chat_input_commands;
 mod commands;
 mod mcp_commands;
 mod mcp_inspection;
@@ -86,7 +87,9 @@ pub fn run() {
             commands::compact_conversation,
             commands::list_tasks,
             commands::run_task,
-            commands::ask
+            commands::ask,
+            chat_input_commands::submit_chat_input,
+            chat_input_commands::stop_chat_request
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {

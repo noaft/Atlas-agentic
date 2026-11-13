@@ -23,6 +23,7 @@ const FALLBACK_TITLE: &str = "Untitled conversation";
 
 fn activity_turn(id: &str) -> ActivityTurn {
     ActivityTurn {
+        interrupted: false,
         version: 1,
         turn_id: id.to_string(),
         assistant_message_index: usize::MAX,

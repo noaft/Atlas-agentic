@@ -229,6 +229,14 @@ impl DesktopState {
             .as_ref()
             .map(|scope| self.processes.lease(scope))
             .transpose()?;
+        let turn_lease = process_scope
+            .as_ref()
+            .map(|scope| {
+                self.processes
+                    .turns
+                    .begin_with_cancellation(scope.id(), _request.cancelled.clone())
+            })
+            .transpose()?;
         let permission_mode = if process_scope.is_some() {
             conversation_id
                 .map(|id| {
@@ -261,6 +269,10 @@ impl DesktopState {
                 )
                 .with_process_scope(&workspace, scope.clone())
                 .with_execution_scope(self.processes.executions.scope(scope.id())),
+            None => runtime,
+        };
+        let runtime = match &turn_lease {
+            Some(lease) => runtime.with_turn_control(lease.control()),
             None => runtime,
         };
         let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
@@ -510,6 +522,7 @@ impl From<ActivityRecord> for ActivityRecordDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityTurnDto {
+    pub interrupted: bool,
     pub turn_id: String,
     pub assistant_message_index: usize,
     pub duration_ms: Option<u64>,
@@ -521,6 +534,7 @@ impl From<ActivityTurn> for ActivityTurnDto {
     fn from(turn: ActivityTurn) -> Self {
         Self {
             turn_id: turn.turn_id,
+            interrupted: turn.interrupted,
             assistant_message_index: turn.assistant_message_index,
             duration_ms: turn.duration_ms,
             usage: turn.usage,
@@ -537,6 +551,8 @@ pub struct DeleteResult {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAskResultDto {
+    pub additional_inputs: Vec<atlas_agentic::turns::TurnInput>,
+    pub interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_warning: Option<String>,
     pub memory: Option<atlas_agentic::conversations::MemoryCheckpoint>,
@@ -551,6 +567,8 @@ pub struct ConversationAskResultDto {
 impl From<ConversationAskResult> for ConversationAskResultDto {
     fn from(result: ConversationAskResult) -> Self {
         Self {
+            additional_inputs: result.additional_inputs,
+            interrupted: result.interrupted,
             process_warning: None,
             answer: result.answer,
             memory: result.memory,
@@ -566,6 +584,12 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ChatEvent {
+    RequestStarted {
+        request_id: String,
+    },
+    UserInputAccepted {
+        input: atlas_agentic::turns::TurnInput,
+    },
     ProgressPreview {
         message: Option<String>,
     },
@@ -584,6 +608,8 @@ pub enum ChatEvent {
     },
     Delta {
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response_epoch: Option<u64>,
     },
     RuntimeStatus {
         status: RuntimeStatus,
@@ -689,6 +715,7 @@ impl PendingApprovals {
 }
 
 struct DesktopAuthorizer {
+    turn_owner: Option<(atlas_agentic::turns::TurnManager, String)>,
     approvals: Arc<PendingApprovals>,
     channel: Channel<ChatEvent>,
 }
@@ -701,6 +728,12 @@ impl ToolAuthorizer for DesktopAuthorizer {
         let receiver = self.approvals.register(&request.id)?;
         let deadline = Instant::now() + APPROVAL_TIMEOUT;
         loop {
+            if let Some((turns, owner)) = &self.turn_owner {
+                if turns.is_cancelled(owner) || turns.has_pending(owner) {
+                    self.approvals.cancel(&request.id);
+                    return Err("Request cancelled or updated before tool approval".into());
+                }
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 self.approvals.cancel(&request.id);
@@ -1367,11 +1400,17 @@ pub async fn ask(
         Ok((scope, context.conversation_id.map(|id| id.to_string())))
     })
     .await?;
+    let turn_owner = (
+        state.processes.turns.clone(),
+        process_scope.id().to_string(),
+    );
     let authorizer = DesktopAuthorizer {
+        turn_owner: Some(turn_owner.clone()),
         approvals: state.pending_approvals.clone(),
         channel: channel.clone(),
     };
     let delta_channel = channel.clone();
+    let delta_turn = turn_owner.clone();
     ask_in_background_scoped(
         prompt,
         conversation_id,
@@ -1385,11 +1424,21 @@ pub async fn ask(
                 delta_channel
                     .send(ChatEvent::Delta {
                         content: delta.to_string(),
+                        response_epoch: delta_turn.0.response_epoch(&delta_turn.1),
                     })
-                    .map_err(|error| format!("failed to stream response: {error}"))
+                    .map_err(|error| {
+                        delta_turn.0.close_owner(&delta_turn.1);
+                        format!("failed to stream response: {error}")
+                    })
             },
             on_tool_event: move |event: &ToolEvent| {
                 let event = match event {
+                    ToolEvent::RequestStarted { request_id } => ChatEvent::RequestStarted {
+                        request_id: request_id.clone(),
+                    },
+                    ToolEvent::UserInputAccepted { input } => ChatEvent::UserInputAccepted {
+                        input: input.clone(),
+                    },
                     ToolEvent::ProgressPreview { message } => ChatEvent::ProgressPreview {
                         message: message.clone(),
                     },
@@ -1451,7 +1500,9 @@ pub async fn ask(
                         details: details.clone(),
                     },
                 };
-                let _ = channel.send(event);
+                if channel.send(event).is_err() {
+                    turn_owner.0.close_owner(&turn_owner.1);
+                }
             },
         },
     )
@@ -1481,8 +1532,8 @@ mod tests {
         },
         models::deepseek::{DeepSeekConfig, DeepSeekProvider},
         permissions::{
-            AuthorizationDecision, AuthorizationRequest, PermissionMode, RuntimeStatus, ToolEvent,
-            ToolRisk,
+            AuthorizationDecision, AuthorizationRequest, PermissionMode, RuntimeStatus,
+            ToolAuthorizer, ToolEvent, ToolRisk,
         },
         settings::{AtlasSettings, SettingsStore},
         tools::ToolDefinition,
@@ -1667,6 +1718,8 @@ mod tests {
         assert_eq!(loaded.activities[0].records[0].summary, "Thinking");
 
         let completed: ConversationAskResultDto = ConversationAskResult {
+            additional_inputs: Vec::new(),
+            interrupted: false,
             memory: None,
             answer: "answer".to_string(),
             metadata,
@@ -1961,6 +2014,212 @@ mod tests {
         let store = ConversationStore::at(data.path().to_path_buf());
         let state = DesktopState::new(store.clone());
         (data, store, state)
+    }
+
+    #[test]
+    fn native_steering_discards_a_stale_tool_and_saves_distinct_inputs() {
+        use super::{parse_id, AskCallbacks};
+        use crate::process_commands::ProcessContext;
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("work");
+        std::fs::create_dir(&workspace).unwrap();
+        let store = ConversationStore::at(dir.path().join("data"));
+        let state = state_with_responses_and_automatic(
+            store.clone(),
+            SettingsStore::at(dir.path().join("settings.json")),
+            workspace.clone(),
+            vec![
+                FakeResponse {
+                    chunks: vec![
+                        r#"{"type":"tool_call","tool":"exec_command","args":{"command":"echo old decision > stale.txt"}}"#,
+                    ],
+                    error: None,
+                },
+                FakeResponse {
+                    chunks: vec![r#"{"type":"final","content":"Updated request handled."}"#],
+                    error: None,
+                },
+            ],
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let client = state.processes.initialize("main").unwrap();
+        let context = ProcessContext {
+            conversation_id: None,
+            scope_id: None,
+        };
+        let scope = state.processes.resolve("main", &client, &context).unwrap();
+        let context = ProcessContext {
+            conversation_id: None,
+            scope_id: Some(scope.id().into()),
+        };
+        let mut request = String::new();
+        let mut submitted = false;
+        let result = state
+            .ask_with_process_scope(
+                "Original request",
+                None,
+                Some(&workspace),
+                PermissionMode::FullAccess,
+                AskCallbacks {
+                    authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                    on_delta: &mut |_| Ok(()),
+                    on_tool_event: &mut |event| match event {
+                        ToolEvent::RequestStarted { request_id } => request = request_id.clone(),
+                        ToolEvent::Started { tool, .. } if tool == "exec_command" && !submitted => {
+                            submitted = true;
+                            crate::chat_input_commands::submit_impl(
+                                &state,
+                                "main",
+                                &client,
+                                &context,
+                                &request,
+                                "steer-1",
+                                "Do not create that file",
+                            )
+                            .unwrap();
+                        }
+                        _ => {}
+                    },
+                },
+                Some(scope),
+            )
+            .unwrap();
+        assert!(submitted);
+        assert!(!workspace.join("stale.txt").exists());
+        assert_eq!(result.additional_inputs.len(), 1);
+        let saved = store.load(&parse_id(&result.metadata.id).unwrap()).unwrap();
+        assert_eq!(
+            saved
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Original request",
+                "Do not create that file",
+                "Updated request handled."
+            ]
+        );
+        assert_eq!(saved.activities[0].assistant_message_index, 2);
+    }
+
+    #[test]
+    fn native_stop_preserves_partial_but_window_teardown_does_not_create_history() {
+        use super::{parse_id, AskCallbacks};
+        use crate::process_commands::ProcessContext;
+        for explicit_stop in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let workspace = dir.path().join("work");
+            std::fs::create_dir(&workspace).unwrap();
+            let store = ConversationStore::at(dir.path().join("data"));
+            let state = state_with_responses_and_automatic(
+                store.clone(),
+                SettingsStore::at(dir.path().join("settings.json")),
+                workspace.clone(),
+                vec![FakeResponse {
+                    chunks: vec![r#"{"type":"final","content":"visible"#, r#" late"}"#],
+                    error: None,
+                }],
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let client = state.processes.initialize("main").unwrap();
+            let scope = state
+                .processes
+                .resolve(
+                    "main",
+                    &client,
+                    &ProcessContext {
+                        conversation_id: None,
+                        scope_id: None,
+                    },
+                )
+                .unwrap();
+            let context = ProcessContext {
+                conversation_id: None,
+                scope_id: Some(scope.id().into()),
+            };
+            let request = std::cell::RefCell::new(String::new());
+            let mut displayed = String::new();
+            let mut stopped = false;
+            let result = state.ask_with_process_scope(
+                "Write something",
+                None,
+                Some(&workspace),
+                PermissionMode::FullAccess,
+                AskCallbacks {
+                    authorizer: &atlas_agentic::permissions::AllowAllAuthorizer,
+                    on_delta: &mut |delta| {
+                        displayed.push_str(delta);
+                        if !stopped {
+                            stopped = true;
+                            if explicit_stop {
+                                crate::chat_input_commands::stop_impl(
+                                    &state,
+                                    "main",
+                                    &client,
+                                    &context,
+                                    &request.borrow(),
+                                )
+                                .unwrap();
+                            } else {
+                                state.processes.initialize("main").unwrap();
+                            }
+                        }
+                        Ok(())
+                    },
+                    on_tool_event: &mut |event| {
+                        if let ToolEvent::RequestStarted { request_id } = event {
+                            request.replace(request_id.clone());
+                        }
+                    },
+                },
+                Some(scope),
+            );
+            assert_eq!(displayed, "visible");
+            if explicit_stop {
+                let result = result.unwrap();
+                assert!(result.interrupted);
+                assert_eq!(result.answer, "visible");
+                let saved = store.load(&parse_id(&result.metadata.id).unwrap()).unwrap();
+                assert_eq!(saved.messages[1].content, "visible");
+                assert!(saved.activities[0].interrupted);
+                assert!(load_impl(&result.metadata.id, &state).unwrap().activities[0].interrupted);
+            } else {
+                assert!(result.is_err());
+                assert!(store.list().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn pending_desktop_approval_is_withdrawn_on_stop_or_new_input() {
+        use super::{DesktopAuthorizer, PendingApprovals};
+        use tauri::ipc::Channel;
+        for stop in [false, true] {
+            let turns = atlas_agentic::turns::TurnManager::default();
+            let lease = turns.begin("owner").unwrap();
+            if stop {
+                turns.cancel("owner", lease.control().request_id()).unwrap();
+            } else {
+                turns
+                    .submit(
+                        "owner",
+                        lease.control().request_id(),
+                        "update",
+                        "new direction",
+                    )
+                    .unwrap();
+            }
+            let approvals = Arc::new(PendingApprovals::default());
+            let authorizer = DesktopAuthorizer {
+                turn_owner: Some((turns, "owner".into())),
+                approvals: approvals.clone(),
+                channel: Channel::new(|_| Ok(())),
+            };
+            let request = AuthorizationRequest::new("exec_command", "{}".into(), ToolRisk::Command);
+            assert!(authorizer.authorize(&request).is_err());
+            assert!(approvals.senders.lock().unwrap().is_empty());
+        }
     }
 
     #[cfg(unix)]

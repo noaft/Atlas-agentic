@@ -127,6 +127,12 @@ pub enum RuntimeStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum ToolEvent {
+    RequestStarted {
+        request_id: String,
+    },
+    UserInputAccepted {
+        input: crate::turns::TurnInput,
+    },
     /// Transient, cumulative display text. None discards the preview.
     ProgressPreview {
         message: Option<String>,
