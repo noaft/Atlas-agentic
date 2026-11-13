@@ -172,6 +172,35 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 .conversation-item.active { background: var(--accent-soft); color: var(--ink); font-weight: 680; box-shadow: inset 2px 0 0 var(--accent); }
 
+.conversation-row { position: relative; margin-bottom: 4px; border-radius: 10px; }
+.conversation-row .conversation-item { margin-bottom: 0; padding-right: 42px; }
+.conversation-delete {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease, background .12s ease, color .12s ease;
+}
+.conversation-delete svg { width: 16px; height: 16px; }
+.conversation-row:hover .conversation-delete,
+.conversation-row:focus-within .conversation-delete { opacity: 1; pointer-events: auto; }
+.conversation-delete:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+.conversation-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conversation-delete:disabled { cursor: not-allowed; }
+@media (hover: none) { .conversation-delete { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { .conversation-delete { transition: none; } }
+
 .sidebar-status { margin: 8px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .sidebar-error { color: var(--danger); }

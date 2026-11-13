@@ -171,6 +171,7 @@ export class ChatStore {
   private selectionToken = 0;
   private nextSession = 1;
   private readonly chats = new Map<string, ChatSession>();
+  private readonly deletingChats = new Set<string>();
   private workspaceToken = 0;
   private settingsToken = 0;
   private modelListToken = 0;
@@ -373,6 +374,7 @@ export class ChatStore {
   }
 
   async selectConversation(id: string): Promise<void> {
+    if (this.deletingChats.has(id)) return;
     this.settingsDiscoveryToken++;
     const existing = [...this.chats].find(([, chat]) => chat.state.activeConversationId === id);
     if (existing?.[1].state.historyLoaded) return this.selectSession(existing[0]);
@@ -1016,24 +1018,44 @@ export class ChatStore {
   }
 
   async deleteActive(): Promise<void> {
-    const id = this.state.activeConversationId;
-    if (this.state.status === "streaming" || this.state.status === "loading") return;
-    const owner = this.state.activeSessionId;
-    this.update({ status: "loading", errorMessage: null });
+    await this.deleteSession(this.state.activeSessionId);
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    if (!this.state.conversations.some(item => item.id === id)) return;
+    const owner = [...this.chats].find(([, chat]) => chat.state.activeConversationId === id)?.[0] ?? null;
+    await this.deleteChat(owner, id);
+  }
+
+  async deleteSession(owner: string): Promise<void> {
+    const chat = this.chats.get(owner);
+    if (chat) await this.deleteChat(owner, chat.state.activeConversationId);
+  }
+
+  private async deleteChat(owner: string | null, id: string | null): Promise<void> {
+    const key = id ?? owner!;
+    const status = owner ? this.chats.get(owner)?.state.status : null;
+    if (status === "streaming" || status === "loading" || this.deletingChats.has(key)) return;
+    this.deletingChats.add(key);
+    if (owner) this.updateSession(owner, { status: "loading", errorMessage: null });
     try {
       if(id) await this.api.deleteConversation(id);
-      else {
+      else if (owner) {
         const pending=this.pendingProcessScopes.get(owner);if(pending)await pending;
         const scopeId=this.processScopes.get(owner);
         if(scopeId)await this.api.releaseProcessScope({conversationId:null,scopeId});
       }
-      this.processScopes.delete(owner);
-      if (this.state.activeSessionId === owner) await this.newChat();
-      this.chats.delete(owner);
-      this.processScopes.delete(owner);
+      if (owner) {
+        this.processScopes.delete(owner);
+        if (this.state.activeSessionId === owner) await this.newChat();
+        this.chats.delete(owner);
+      }
       this.update({ conversations: this.state.conversations.filter((item) => item.id !== id) });
     } catch (error) {
-      this.updateSession(owner, { status: "error", errorMessage: errorMessage(error) });
+      if (owner) this.updateSession(owner, { status: "error", errorMessage: errorMessage(error) });
+      else this.update({ errorMessage: errorMessage(error) });
+    } finally {
+      this.deletingChats.delete(key);
     }
   }
 

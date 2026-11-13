@@ -32,6 +32,16 @@ function button(label: string, className?: string): HTMLButtonElement {
   return element;
 }
 
+function sidebarDeleteButton(title: string, status: string | undefined, onDelete: () => Promise<void>): HTMLButtonElement {
+  const remove = button("", "conversation-delete");
+  remove.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6m4-6v6"/></svg>';
+  remove.setAttribute("aria-label", `Delete conversation: ${title}`);
+  remove.disabled = status === "streaming" || status === "loading";
+  remove.title = remove.disabled ? "Wait for this conversation to finish" : "Delete conversation";
+  remove.addEventListener("click", () => void onDelete());
+  return remove;
+}
+
 function chatIsBusy(state: Readonly<ChatState>) {
   return (
     state.status === "streaming" ||
@@ -522,7 +532,15 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
             focusComposer();
             await store.selectConversation(conversation.id);
           });
-          list.append(item);
+          const row = document.createElement("div");
+          row.className = "conversation-row";
+          const remove = sidebarDeleteButton(conversation.title, session?.status, async () => {
+            if (!window.confirm(`Delete “${conversation.title}” and stop its processes? Its history will be moved to Atlas trash.`)) return;
+            await store.deleteConversation(conversation.id);
+          });
+          remove.dataset.deleteConversation = conversation.id;
+          row.append(item, remove);
+          list.append(row);
         }
       }
     }
@@ -546,8 +564,16 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
           void store.selectSession(session.id);
           focusComposer();
         });
-        previous.after(item);
-        previous = item;
+        const row = document.createElement("div");
+        row.className = "conversation-row";
+        const remove = sidebarDeleteButton(session.title, session.status, async () => {
+          if (!window.confirm("Close this draft and stop its processes? No conversation history has been saved.")) return;
+          await store.deleteSession(session.id);
+        });
+        remove.dataset.deleteSession = session.id;
+        row.append(item, remove);
+        previous.after(row);
+        previous = row;
       }
     }
   };

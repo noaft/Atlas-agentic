@@ -1232,6 +1232,105 @@ test("rename closes through the dialog API and Escape does not reopen it", async
   expect(close).toHaveBeenCalledOnce();
 });
 
+test("sidebar deletion targets an unopened conversation without changing the current chat", async () => {
+  const other = { ...metadata, id: "00000000-0000-4000-8000-000000000002", title: "Other chat" };
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata, other]);
+  const deleting = deferred<void>();
+  api.deleteImpl = vi.fn(() => deleting.promise);
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.selectConversation(metadata.id);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const selector = `[data-delete-conversation="${other.id}"]`;
+  const remove = root.querySelector<HTMLButtonElement>(selector);
+  expect(remove?.getAttribute("aria-label")).toBe("Delete conversation: Other chat");
+  expect(remove?.closest("button button")).toBeNull();
+  click(root, selector);
+  expect(api.deleteImpl).not.toHaveBeenCalled();
+  confirm.mockReturnValue(true);
+  click(root, selector);
+  expect(api.deleteImpl).toHaveBeenCalledExactlyOnceWith(other.id);
+  await store.newChat();
+  store.setDraft("Keep this draft");
+  deleting.resolve();
+  await flush();
+  expect(store.getState().draftText).toBe("Keep this draft");
+  expect(store.getState().conversations.map(item => item.id)).toEqual([metadata.id]);
+  expect(api.loadCount).toBe(1);
+});
+
+test("sidebar deletion of a loaded inactive chat preserves the active conversation", async () => {
+  const other = { ...metadata, id: "00000000-0000-4000-8000-000000000002", title: "Other chat" };
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata, other]);
+  api.load = async id => ({ ...conversation(), metadata: id === other.id ? other : metadata });
+  api.deleteImpl = vi.fn(async () => {});
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.selectConversation(other.id);
+  await store.selectConversation(metadata.id);
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  click(root, `[data-delete-conversation="${other.id}"]`);
+  await flush();
+  expect(api.deleteImpl).toHaveBeenCalledExactlyOnceWith(other.id);
+  expect(store.getState().activeConversationId).toBe(metadata.id);
+  expect(store.getState().messages.at(-1)?.content).toBe("Through the runtime.");
+});
+
+test("sidebar deletion keeps a conversation on failure and permits retry", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  api.deleteImpl = vi.fn(async () => { throw new Error("Cannot delete chat"); });
+  const { root, store } = setup(api);
+  await store.initialize();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const selector = `[data-delete-conversation="${metadata.id}"]`;
+  click(root, selector);
+  await flush();
+  expect(store.getState().conversations).toEqual([metadata]);
+  expect(store.getState().errorMessage).toBe("Cannot delete chat");
+  api.deleteImpl = vi.fn(async () => {});
+  click(root, selector);
+  await flush();
+  expect(store.getState().conversations).toEqual([]);
+});
+
+test("sidebar deletion is disabled for a running conversation", async () => {
+  const api = new ViewApi();
+  api.list = Promise.resolve([metadata]);
+  const answer = deferred<ConversationAskResult>();
+  api.askImpl = () => answer.promise;
+  api.deleteImpl = vi.fn(async () => {});
+  const { root, store } = setup(api);
+  await store.initialize();
+  await store.selectConversation(metadata.id);
+  store.setDraft("Continue");
+  const sending = store.send();
+  await flush();
+  expect(root.querySelector<HTMLButtonElement>(`[data-delete-conversation="${metadata.id}"]`)?.disabled).toBe(true);
+  await store.deleteConversation(metadata.id);
+  expect(api.deleteImpl).not.toHaveBeenCalled();
+  answer.resolve({ answer: "Done", metadata, created: false });
+  await sending;
+});
+
+test("sidebar can close an inactive draft without clearing the current draft", async () => {
+  const { root, store, api } = setup();
+  await store.initialize();
+  store.setDraft("Old draft");
+  const owner = store.getState().activeSessionId;
+  await store.newChat();
+  store.setDraft("Current draft");
+  api.deleteImpl = vi.fn(async () => {});
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  click(root, `[data-delete-session="${owner}"]`);
+  await flush();
+  expect(store.getState().sessions.some(session => session.id === owner)).toBe(false);
+  expect(store.getState().draftText).toBe("Current draft");
+  expect(api.deleteImpl).not.toHaveBeenCalled();
+});
+
 test("delete requires confirmation and returns the active view to a draft", async () => {
   const api = new ViewApi();
   api.list = Promise.resolve([metadata]);
