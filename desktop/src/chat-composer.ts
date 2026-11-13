@@ -102,7 +102,7 @@ export function createChatComposer(
   const canStop = (state: Readonly<ChatState>) => state.status === "streaming" && !state.compactionProgress && !textarea.value.trim();
   const updateSendAvailability = (state: Readonly<ChatState>) => {
     const stop = canStop(state);
-    const label = stop ? (state.stopping ? "Stopping response" : "Stop response") : state.status === "streaming" ? "Queue message" : "Send message";
+    const label = stop ? (state.stopping ? "Stopping response" : "Stop response") : state.status === "streaming" ? (state.generating === false && !state.compactionProgress ? "Add to active turn" : "Queue message") : "Send message";
     sendButton.classList.toggle("is-stop", stop);
     sendButton.classList.toggle("is-stopping", stop && !!state.stopping);
     sendButton.textContent = stop ? "" : "↑";

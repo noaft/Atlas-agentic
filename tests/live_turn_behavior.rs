@@ -653,3 +653,73 @@ fn display_cursor_rejects_future_epochs_and_metadata_overrun() {
         .unwrap();
     assert_eq!(control.stopped_prefix().unwrap(), None);
 }
+
+#[test]
+fn steering_interrupts_inference_and_restarts_with_the_new_input() {
+    struct InterruptibleAgent {
+        control: atlas_agentic::turns::TurnControl,
+        calls: Cell<usize>,
+    }
+    impl atlas_agentic::models::ModelProvider for InterruptibleAgent {
+        fn complete(&self, _: &atlas_agentic::models::ModelRequest) -> Result<String, String> {
+            Err("uninterruptible inference entrypoint used".into())
+        }
+        fn stream_with_control(
+            &self,
+            request: &atlas_agentic::models::ModelRequest,
+            delta: &mut dyn FnMut(&str),
+            interrupted: &dyn Fn() -> bool,
+        ) -> Result<atlas_agentic::models::ModelResponse, String> {
+            self.calls.set(self.calls.get() + 1);
+            if self.calls.get() == 1 {
+                delta("old prefix");
+                self.control.submit("steer", "change direction").unwrap();
+                assert!(interrupted(), "Steer did not cancel inference");
+                delta("must be suppressed");
+                return Err("Inference interrupted".into());
+            }
+            assert!(!interrupted());
+            let input: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
+            assert_eq!(
+                input["latest_user_messages"][0]["content"],
+                "change direction"
+            );
+            delta("new answer");
+            Ok(atlas_agentic::models::ModelResponse {
+                content: "new answer".into(),
+                usage: None,
+            })
+        }
+    }
+    let manager = TurnManager::default();
+    let lease = manager.begin("owner").unwrap();
+    let definition = atlas_agentic::agents::LocalAgentDefinition::from_toml(
+        "name='test'\ndisplay_name='Test'\nmodel_provider='deepseek'\nmodel='fake'\nsystem_prompt='System'\nconversation_title_prompt='Title'\n",
+    ).unwrap();
+    let agent = atlas_agentic::agents::LocalAgent::new(
+        definition,
+        Box::new(InterruptibleAgent {
+            control: lease.control(),
+            calls: Cell::new(0),
+        }),
+    );
+    let runtime =
+        Runtime::new(AgentRegistry::new(vec![Box::new(agent)])).with_turn_control(lease.control());
+    let mut shown = String::new();
+    let mut resets = 0;
+    let result = runtime.ask_stream_with_history_and_authorization(
+        "original",
+        &[],
+        atlas_agentic::permissions::PermissionMode::Ask,
+        &atlas_agentic::permissions::MissingAuthorizer,
+        &mut |delta| shown.push_str(delta),
+        &mut |event| {
+            if matches!(event, atlas_agentic::permissions::ToolEvent::ResponseReset) {
+                resets += 1;
+            }
+        },
+    );
+    assert_eq!(result.unwrap(), "new answer");
+    assert_eq!(shown, "old prefixnew answer");
+    assert_eq!(resets, 1);
+}

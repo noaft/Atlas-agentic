@@ -10,7 +10,7 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::blocking::{Client, RequestBuilder};
 use serde_json::{json, Value};
-use std::{io::BufReader, sync::OnceLock};
+use std::sync::OnceLock;
 
 pub(crate) struct NativeProvider {
     pub config: EffectiveSettings,
@@ -256,48 +256,84 @@ impl ModelProvider for NativeProvider {
         request: &ModelRequest,
         delta: &mut dyn FnMut(&str),
     ) -> Result<ModelResponse, String> {
+        self.stream_with_control(request, delta, &|| false)
+    }
+    fn stream_with_control(
+        &self,
+        request: &ModelRequest,
+        delta: &mut dyn FnMut(&str),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<ModelResponse, String> {
         let body = self.payload(request, true)?;
-        let response = checked_response(
-            auth(self.client.post(self.endpoint(true)), &self.config)
-                .json(&body)
-                .send(),
-            &self.config,
-            "stream request",
-        )?;
         let mut state = StreamState::default();
-        super::sse::read_sse(&mut BufReader::new(response), &mut |event| {
-            if event.data == "[DONE]" {
-                if self.config.provider == ProviderId::OpenaiCompatible {
-                    state.terminal = true;
-                    return Ok(false);
+        super::streaming::read_response(
+            |client| {
+                let request = client.post(self.endpoint(true));
+                let request = match self.config.provider {
+                    ProviderId::Anthropic => request
+                        .header("x-api-key", self.config.api_key.as_deref().unwrap_or(""))
+                        .header(
+                            "anthropic-version",
+                            self.config
+                                .provider
+                                .descriptor()
+                                .api_version
+                                .unwrap_or_default(),
+                        ),
+                    ProviderId::Gemini => request.header(
+                        "x-goog-api-key",
+                        self.config.api_key.as_deref().unwrap_or(""),
+                    ),
+                    _ => {
+                        if let Some(key) =
+                            self.config.api_key.as_ref().filter(|key| !key.is_empty())
+                        {
+                            request.bearer_auth(key)
+                        } else {
+                            request
+                        }
+                    }
+                };
+                request.json(&body)
+            },
+            self.config.provider.as_str(),
+            Some(std::time::Duration::from_secs(120)),
+            interrupted,
+            &mut |event| {
+                if event.data == "[DONE]" {
+                    if self.config.provider == ProviderId::OpenaiCompatible {
+                        state.terminal = true;
+                        return Ok(false);
+                    }
+                    return Err(self.error("unexpected stream completion marker"));
                 }
-                return Err(self.error("unexpected stream completion marker"));
-            }
-            let mut raw: Value = serde_json::from_str(&event.data)
-                .map_err(|_| self.error("stream response was invalid"))?;
-            if !raw.is_object() {
-                return Err(self.error("stream event must be a JSON object"));
-            }
-            if raw.get("type").is_none() {
-                if let Some(name) = event.event {
-                    raw["type"] = json!(name);
+                let mut raw: Value = serde_json::from_str(&event.data)
+                    .map_err(|_| self.error("stream response was invalid"))?;
+                if !raw.is_object() {
+                    return Err(self.error("stream event must be a JSON object"));
                 }
-            }
-            if raw.get("error").is_some_and(|error| !error.is_null()) || raw["type"] == "error" {
-                return Err(self.error("stream returned an error"));
-            }
-            let prior = state.text.len();
-            match self.config.provider {
-                ProviderId::Openai => super::openai::event(&raw, &mut state)?,
-                ProviderId::Anthropic => super::anthropic::event(&raw, &mut state)?,
-                ProviderId::Gemini => super::gemini::event(&raw, &mut state)?,
-                _ => super::compatible::event(&raw, &mut state)?,
-            }
-            if state.text.len() > prior {
-                delta(&state.text[prior..]);
-            }
-            Ok(!state.terminal || self.config.provider == ProviderId::Gemini)
-        })?;
+                if raw.get("type").is_none() {
+                    if let Some(name) = event.event {
+                        raw["type"] = json!(name);
+                    }
+                }
+                if raw.get("error").is_some_and(|error| !error.is_null()) || raw["type"] == "error"
+                {
+                    return Err(self.error("stream returned an error"));
+                }
+                let prior = state.text.len();
+                match self.config.provider {
+                    ProviderId::Openai => super::openai::event(&raw, &mut state)?,
+                    ProviderId::Anthropic => super::anthropic::event(&raw, &mut state)?,
+                    ProviderId::Gemini => super::gemini::event(&raw, &mut state)?,
+                    _ => super::compatible::event(&raw, &mut state)?,
+                }
+                if state.text.len() > prior {
+                    delta(&state.text[prior..]);
+                }
+                Ok(!state.terminal || self.config.provider == ProviderId::Gemini)
+            },
+        )?;
         if !state.terminal || state.finish != "stop" || state.text.trim().is_empty() {
             return Err(self.error("stream ended without a complete answer"));
         }

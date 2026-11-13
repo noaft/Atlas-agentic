@@ -366,7 +366,7 @@ test("switching to an equal-text session clears stale composition without rewrit
 
 test("one primary action switches between Stop and queueing without moving the button", async () => {
   const {composer, store, submit} = await setup();
-  let state = {...store.getState(), status: "streaming" as const};
+  let state = {...store.getState(), status: "streaming" as const, generating: true};
   vi.spyOn(store, "getState").mockImplementation(() => state);
   const stop = vi.spyOn(store, "stopActiveRequest").mockResolvedValue();
   composer.updateState(state);
@@ -384,6 +384,9 @@ test("one primary action switches between Stop and queueing without moving the b
   state = {...state, stopping: true}; composer.updateState(state);
   expect(button.getAttribute("aria-label")).toBe("Stopping response"); expect(button.disabled).toBe(true);
   expect(composer.sendButton).toBe(button);
+  composer.textarea.value = "after compaction";
+  composer.updateState({...state, stopping: false, generating: false, compactionProgress: {completedBlocks: 0, totalBlocks: 1}});
+  expect(button.getAttribute("aria-label")).toBe("Queue message");
 });
 
 test("queue sits above the input with explicit Steer and stable focused controls", async () => {

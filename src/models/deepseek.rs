@@ -1,4 +1,4 @@
-use std::{io::BufReader, sync::OnceLock};
+use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::Client;
@@ -227,53 +227,63 @@ impl ModelProvider for DeepSeekProvider {
         request: &ModelRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelResponse, String> {
+        self.stream_with_control(request, on_delta, &|| false)
+    }
+
+    fn stream_with_control(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<ModelResponse, String> {
         let payload = self.chat_request(request, true)?;
-        let response = self
-            .client
-            .post(self.chat_url())
-            .bearer_auth(&self.config.api_key)
-            .json(&payload)
-            .send()
-            .map_err(|error| format!("DeepSeek request failed: {error}"))?;
-        if !response.status().is_success() {
-            return Err(format!("DeepSeek returned HTTP {}", response.status()));
-        }
         let mut content = String::new();
         let mut usage = None;
         let mut terminal = false;
         let mut finish = None;
         let mut reasoning_received = false;
-        let stream_result = super::sse::read_sse(&mut BufReader::new(response), &mut |event| {
-            if event.data == "[DONE]" {
-                terminal = true;
-                return Ok(false);
-            }
-            let raw: serde_json::Value = serde_json::from_str(&event.data)
-                .map_err(|_| "DeepSeek stream response was invalid".to_string())?;
-            if raw.get("error").is_some() || event.event.as_deref() == Some("error") {
-                return Err("DeepSeek stream returned an error".into());
-            }
-            let chunk: ChatStreamResponse = serde_json::from_value(raw)
-                .map_err(|_| "DeepSeek stream response was invalid".to_string())?;
-            if let Some(raw) = &chunk.usage {
-                usage = parse_usage(&self.config.model, raw);
-            }
-            if let Some(choice) = chunk.choices.into_iter().next() {
-                if let Some(reason) = choice.finish_reason {
-                    finish = Some(reason);
+        let stream_result = super::streaming::read_response(
+            |client| {
+                client
+                    .post(self.chat_url())
+                    .bearer_auth(&self.config.api_key)
+                    .json(&payload)
+            },
+            "DeepSeek",
+            None,
+            interrupted,
+            &mut |event| {
+                if event.data == "[DONE]" {
+                    terminal = true;
+                    return Ok(false);
                 }
-                reasoning_received |= choice
-                    .delta
-                    .reasoning_content
-                    .as_ref()
-                    .is_some_and(|text| !text.is_empty());
-                if let Some(delta) = choice.delta.content {
-                    on_delta(&delta);
-                    content.push_str(&delta);
+                let raw: serde_json::Value = serde_json::from_str(&event.data)
+                    .map_err(|_| "DeepSeek stream response was invalid".to_string())?;
+                if raw.get("error").is_some() || event.event.as_deref() == Some("error") {
+                    return Err("DeepSeek stream returned an error".into());
                 }
-            }
-            Ok(true)
-        });
+                let chunk: ChatStreamResponse = serde_json::from_value(raw)
+                    .map_err(|_| "DeepSeek stream response was invalid".to_string())?;
+                if let Some(raw) = &chunk.usage {
+                    usage = parse_usage(&self.config.model, raw);
+                }
+                if let Some(choice) = chunk.choices.into_iter().next() {
+                    if let Some(reason) = choice.finish_reason {
+                        finish = Some(reason);
+                    }
+                    reasoning_received |= choice
+                        .delta
+                        .reasoning_content
+                        .as_ref()
+                        .is_some_and(|text| !text.is_empty());
+                    if let Some(delta) = choice.delta.content {
+                        on_delta(&delta);
+                        content.push_str(&delta);
+                    }
+                }
+                Ok(true)
+            },
+        );
         let error = stream_result
             .as_ref()
             .err()

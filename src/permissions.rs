@@ -130,6 +130,9 @@ pub enum ToolEvent {
     RequestStarted {
         request_id: String,
     },
+    ModelState {
+        generating: bool,
+    },
     UserInputAccepted {
         input: crate::turns::TurnInput,
     },

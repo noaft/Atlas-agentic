@@ -7,6 +7,7 @@ mod native;
 mod openai;
 pub(crate) mod prompt;
 pub mod sse;
+mod streaming;
 pub(crate) mod usage;
 pub use budget::{ModelLimits, TokenEstimate};
 pub mod deepseek;
@@ -88,6 +89,16 @@ pub trait ModelProvider {
             content,
             usage: None,
         })
+    }
+
+    /// Controlled inference. Providers override this to abort blocked network I/O.
+    fn stream_with_control(
+        &self,
+        request: &ModelRequest,
+        on_delta: &mut dyn FnMut(&str),
+        _interrupted: &dyn Fn() -> bool,
+    ) -> Result<ModelResponse, String> {
+        self.stream_with_usage(request, on_delta)
     }
 
     fn validate_images(&self, images: &[ImageData]) -> Result<(), String> {

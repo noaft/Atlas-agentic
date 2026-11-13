@@ -587,6 +587,9 @@ pub enum ChatEvent {
     RequestStarted {
         request_id: String,
     },
+    ModelState {
+        generating: bool,
+    },
     UserInputAccepted {
         input: atlas_agentic::turns::TurnInput,
     },
@@ -1435,6 +1438,9 @@ pub async fn ask(
                 let event = match event {
                     ToolEvent::RequestStarted { request_id } => ChatEvent::RequestStarted {
                         request_id: request_id.clone(),
+                    },
+                    ToolEvent::ModelState { generating } => ChatEvent::ModelState {
+                        generating: *generating,
                     },
                     ToolEvent::UserInputAccepted { input } => ChatEvent::UserInputAccepted {
                         input: input.clone(),
@@ -3061,7 +3067,7 @@ conversation_title_prompt = "Return a short title."
         ))
         .unwrap_err();
 
-        assert!(error.contains("DeepSeek request failed"), "{error}");
+        assert!(error.contains("DeepSeek stream request failed"), "{error}");
         assert!(store.list().unwrap().is_empty());
     }
 

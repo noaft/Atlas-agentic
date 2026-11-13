@@ -1970,3 +1970,21 @@ test("new messages wait by default and Steer moves only the selected queued inpu
   expect(store.getState().queuedInputs).toHaveLength(2);
   pending.resolve({...result(first, "", true), interrupted: true}); await running;
 });
+
+test("Send supplements immediately while waiting for tools and queues during inference", async () => {
+  const api = new FakeApi(), store = new ChatStore(api); await store.initialize();
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const submitted: string[] = [];
+  Object.assign(api, {submitTurnInput: async (_context: unknown, _request: string, id: string, content: string) => {submitted.push(content); return {id, accepted: true, finished: false};}});
+  store.setDraft("start"); const running = store.send(); await Promise.resolve();
+  api.eventSinks[0]({event: "requestStarted", data: {requestId: "turn"}});
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  store.setDraft("adjust while waiting"); await store.send(); await Promise.resolve();
+  expect(submitted).toEqual(["adjust while waiting"]); expect(store.getState().queuedInputs).toEqual([]);
+  api.eventSinks[0]({event: "modelState", data: {generating: true}});
+  store.setDraft("queued during inference"); await store.send();
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["queued during inference"]);
+  await store.steerQueuedInput(store.getState().queuedInputs![0].id); await Promise.resolve(); await Promise.resolve();
+  expect(submitted).toEqual(["adjust while waiting", "queued during inference"]);
+  await store.stopActiveRequest(); pending.resolve({...result(first, "", true), interrupted: true}); await running;
+});

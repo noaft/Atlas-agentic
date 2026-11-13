@@ -53,7 +53,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
-  queuedInputs: [], queuePaused: false, stopping: false,
+  queuedInputs: [], queuePaused: false, stopping: false, generating: false,
   tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
   compactionFailure: null, memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
   activeSessionId: "local-1",
@@ -152,7 +152,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : configured ? [{ id: configured, name: configured }, ...models] : models;
 
 const sessionKeys = [
-  "queuedInputs", "queuePaused", "stopping",
+  "queuedInputs", "queuePaused", "stopping", "generating",
   "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
@@ -474,18 +474,24 @@ export class ChatStore {
     const owner = this.state.activeSessionId;
     const chat = this.chats.get(owner)!;
     const input = chat.state.queuedInputs?.find(input => input.id === id);
-    if (!input || chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || !this.api.submitTurnInput) return;
+    if (input) this.submitSupplement(owner, input);
+  }
+
+  private submitSupplement(owner: string, input: {id: string; content: string}): boolean {
+    const chat = this.chats.get(owner)!;
+    if (chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || !this.api.submitTurnInput) return false;
     const turnInputs = chat.state.messages.slice(chat.turn.assistantIndex + 1).filter(message => message.inputId);
     if (turnInputs.length >= 32) {
       this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. The message will stay queued."});
-      return;
+      return false;
     }
     chat.turn.pending.push(input);
     this.updateSession(owner, {
-      queuedInputs: chat.state.queuedInputs?.filter(queued => queued.id !== id),
+      queuedInputs: chat.state.queuedInputs?.filter(queued => queued.id !== input.id),
       messages: [...chat.state.messages, {role: "user", content: input.content, createdAt: null, delivery: "pending", inputId: input.id, inputStatus: "pending"}],
     });
     void this.flushSteering(owner, chat.generation);
+    return true;
   }
 
   removeQueuedInput(id: string): void {
@@ -523,7 +529,7 @@ export class ChatStore {
     const owner = state.activeSessionId;
     if (state.status === "streaming") {
       const input = {id: crypto.randomUUID(), content: prompt};
-      if (this.enqueue(owner, input)) this.updateSession(owner, {draftText: ""});
+      if ((!state.generating && this.submitSupplement(owner, input)) || this.enqueue(owner, input)) this.updateSession(owner, {draftText: ""});
       return;
     }
     return this.startTurn(owner, prompt, true);
@@ -561,7 +567,7 @@ export class ChatStore {
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: clearDraft ? "" : state.draftText,
       compactionMessage: null, contextStatus: null, compactionFailure: null,
-      status: "streaming",
+      status: "streaming", generating: true,
       errorMessage: null,
       pendingApproval: null,
       toolActivity: [],
@@ -626,7 +632,7 @@ export class ChatStore {
         activeWorkspace: completed.metadata.workspace ?? workspace,
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
         messages: orderedMessages,
-        status: "idle",
+        status: "idle", generating: false,
         stopping: false, queuePaused: completed.interrupted || chat.turn?.stopped || chat.state.queuePaused,
         errorMessage: completed.processWarning ?? null,
         pendingApproval: null,
@@ -650,7 +656,7 @@ export class ChatStore {
             : message.failureReason,
         })),
         draftText: chat.turn?.stopped ? chat.state.draftText : chat.state.draftText || prompt,
-        status: "error", stopping: false, queuePaused: true,
+        status: "error", stopping: false, queuePaused: true, generating: false,
         errorMessage: errorMessage(error),
         pendingApproval: null,
       });
@@ -1235,6 +1241,9 @@ export class ChatStore {
     const chat = this.chats.get(owner);
     if (!chat || generation !== chat.generation || chat.state.status !== "streaming") return;
     const state = chat.state;
+    if (event.event === "modelState") {
+      this.updateSession(owner, {generating: event.data.generating}); return;
+    }
     if (event.event === "requestStarted") {
       if (chat.turn) { chat.turn.requestId = event.data.requestId; if (chat.turn.stopped) void this.requestStop(owner, generation); else void this.flushSteering(owner, generation); }
       return;

@@ -792,18 +792,25 @@ bounded storage quotas. Reject old execution.mode job/task with a migration erro
 command lifetime job/background and child execution_mode wait/parallel are separate.
 All request-owned executions block final equally until terminal notifications are
 handled. Only explicitly user-requested background services may survive final.
-No model calls after final/restart. Desktop busy chats always queue newly sent messages. Show the queue above the
-composer, with an explicit per-message Steer action to move just that input into
-the active turn while preserving other queued messages and the composer draft.
+No model calls after final/restart. Desktop busy chats use native modelState events: Send supplements the active
+turn while waiting, and queues during inference. Start conservatively until a
+phase event arrives. Show the queue above the composer, with per-message Steer
+to interrupt current inference and apply that input while preserving other queued
+messages and the composer draft.
 Send/Stop share one primary button: show Stop for an empty busy composer, and
-Queue message when it contains text. Enter never implicitly stops a turn. Keep
+Queue message during inference or Add to active turn while waiting when it contains text. Enter never implicitly stops a turn. Keep
 queue controls mounted/focused during streaming updates.
 FIFO queues are frontend-local (16/chat), pause on Stop/error,
 and require explicit Resume after pausing. Active supplements use native
 owner/request/input identities with idempotent receipts, 32 inputs/request,
 64KiB/input and 256KiB total. One runtime consumer drains at safe boundaries,
 withdraws stale approvals/actions, and interrupts execution waits without parallel
-inference or fabricated tool events. Final seals acceptance atomically; reconcile
+inference or fabricated tool events. Agent/ModelProvider controlled entrypoints
+abort production inference HTTP send/body futures on pending input or Stop,
+including silent streams. Drop old inference before starting the next; do not
+replay/cancel managed tools implicitly. Keep transport cancellation provider-neutral,
+bounded SSE framing, existing timeout policies, no redirects/retries, and no
+detached reader. Remote compute/aborted-call usage cannot be assumed. Final seals acceptance atomically; reconcile
 receipt races against accepted events and authoritative additionalInputs.
 Stop freezes visible text and stays Stopping until worker exit. Persist only the
 backend-validated epoch/UTF8 byte prefix, never client-provided answer text.

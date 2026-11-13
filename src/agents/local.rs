@@ -109,6 +109,22 @@ impl Agent for LocalAgent {
         )
     }
 
+    fn process_request_with_control(
+        &self,
+        request: &super::AgentRequest,
+        on_delta: &mut dyn FnMut(&str),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<crate::models::ModelResponse, String> {
+        crate::diagnostics::run(
+            "model.chat",
+            serde_json::json!({"model": self.model_name()}),
+            || {
+                self.model
+                    .stream_with_control(&self.model_request(request), on_delta, interrupted)
+            },
+        )
+    }
+
     fn name(&self) -> &str {
         &self.definition.name
     }

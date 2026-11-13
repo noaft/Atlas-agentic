@@ -120,6 +120,7 @@ export interface AuthorizationRequest {
 
 export type ChatEvent =
   | { event: "requestStarted"; data: {requestId: string} }
+  | { event: "modelState"; data: {generating: boolean} }
   | { event: "userInputAccepted"; data: {input: TurnInput} }
   | { event: "progress"; data: { message: string } }
   | { event: "progressPreview"; data: { message: string | null } }
@@ -205,6 +206,7 @@ export interface ChatState {
   queuedInputs?: QueuedInput[];
   queuePaused?: boolean;
   stopping?: boolean;
+  generating?: boolean;
   compactionFailure: CompactionFailure | null;
   tasks: TaskDescriptor[];
   taskCatalogStatus: "idle" | "loading" | "ready" | "error";

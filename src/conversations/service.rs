@@ -303,6 +303,7 @@ impl<'a> ConversationService<'a> {
                 }
                 ToolEvent::ProgressPreview { .. }
                 | ToolEvent::RequestStarted { .. }
+                | ToolEvent::ModelState { .. }
                 | ToolEvent::UserInputAccepted { .. }
                 | ToolEvent::ApprovalRequested { .. }
                 | ToolEvent::Started { .. }

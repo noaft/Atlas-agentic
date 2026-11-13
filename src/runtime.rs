@@ -305,6 +305,7 @@ impl Runtime {
             on_tool_event(&ToolEvent::RequestStarted {
                 request_id: control.request_id().into(),
             });
+            on_tool_event(&ToolEvent::ModelState { generating: false });
         }
         let mut pending_request = prompt.to_string();
         let mut input = pending_request.clone();
@@ -414,7 +415,10 @@ impl Runtime {
                 protocol_repairs = 0;
                 continue;
             }
-            let response_result = agent.process_request_with_usage(
+            if self.turn_control.is_some() {
+                on_tool_event(&ToolEvent::ModelState { generating: true });
+            }
+            let response_result = agent.process_request_with_control(
                 &crate::agents::AgentRequest {
                     input: &input,
                     history: &prepared.history,
@@ -426,15 +430,30 @@ impl Runtime {
                     max_output_tokens: prepared.max_output_tokens,
                 },
                 &mut |delta| {
-                    if self.check_turn().is_err() {
+                    if self.check_turn().is_err()
+                        || self
+                            .turn_control
+                            .as_ref()
+                            .is_some_and(|control| control.has_pending())
+                    {
                         return;
                     }
                     final_stream.push(delta, on_delta);
                     final_stream.preview_progress(on_tool_event);
                 },
+                &|| {
+                    self.check_turn().is_err()
+                        || self
+                            .turn_control
+                            .as_ref()
+                            .is_some_and(|control| control.has_pending())
+                },
             );
             // A preview is never a committed progress record. Clear it on every exit,
             // including provider errors, repair limits, denied calls and validation errors.
+            if self.turn_control.is_some() {
+                on_tool_event(&ToolEvent::ModelState { generating: false });
+            }
             if final_stream.progress_preview.is_some() {
                 on_tool_event(&ToolEvent::ProgressPreview { message: None });
             }

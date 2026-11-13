@@ -67,6 +67,15 @@ pub trait Agent {
         )
     }
 
+    fn process_request_with_control(
+        &self,
+        request: &AgentRequest,
+        on_delta: &mut dyn FnMut(&str),
+        _interrupted: &dyn Fn() -> bool,
+    ) -> Result<crate::models::ModelResponse, String> {
+        self.process_request_with_usage(request, on_delta)
+    }
+
     fn name(&self) -> &str;
     fn system_prompt(&self) -> &str;
     fn max_tool_calls(&self) -> Option<usize> {
