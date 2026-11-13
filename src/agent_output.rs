@@ -163,6 +163,12 @@ impl RawAgentOutput {
                         }
                         None => None,
                     };
+                    if let Some(control) = execution_control_call(&tool, &args)? {
+                        if wake_up.is_some() {
+                            return Err("Execution controls do not start workers; use set_execution_wakeup to change a schedule".into());
+                        }
+                        return control.into_agent_output();
+                    }
                     if let Some(execution) = wake_up {
                         execution.validate()?;
                         return Ok(AgentOutput::ScheduledToolCall {
@@ -181,6 +187,32 @@ impl RawAgentOutput {
             }
         }
     }
+}
+
+fn execution_control_call(
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<Option<RawAgentOutput>, String> {
+    let fields: &[&str] = match tool {
+        "read_execution" => &["execution_id", "tail_lines", "cursor"],
+        "await_execution" => &["execution_id", "execution_ids", "yield_ms"],
+        "list_executions" => &[],
+        "cancel_execution" => &["execution_id"],
+        "set_execution_wakeup" => &["execution_id", "wake_up"],
+        _ => return Ok(None),
+    };
+    let mut envelope = match args {
+        serde_json::Value::Object(fields) => fields.clone(),
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => return Err("Execution control args must be an object".into()),
+    };
+    if envelope.keys().any(|key| !fields.contains(&key.as_str())) {
+        return Err("Execution control args contain unsupported fields".into());
+    }
+    envelope.insert("type".into(), tool.into());
+    serde_json::from_value(serde_json::Value::Object(envelope))
+        .map(Some)
+        .map_err(|error| format!("Invalid execution control arguments: {error}"))
 }
 
 fn default_wait() -> u64 {

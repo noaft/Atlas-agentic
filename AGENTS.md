@@ -794,6 +794,10 @@ set_execution_wakeup changes policy without replay. await_execution waits for
 scheduled events without changing policy; its legacy yield_ms field is validated
 in100–29999ms but never creates a notification deadline. Await and final guards wait on scheduled events without periodic model
 polling. Completion/error/input-needed enqueue immediately, including lazy.
+All five execution controls accept dedicated top-level types or tool_call with
+the reserved control name and args. Normalize both forms before registry dispatch;
+reject unknown control args and top-level wake_up. Never launch another execution
+for a control or bypass native ownership, read bounds or cancellation approval.
 Keep one consumer per agent, bounded coalesced batches, exact ack and stale timer
 invalidation. No raw logs in wakeups. Read1–200 lines or cursor pages, at most4096
 UTF-8 bytes; retain64KiB/execution, flags and cursor semantics. No read-all mode.

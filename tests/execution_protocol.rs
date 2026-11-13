@@ -1,6 +1,53 @@
 use atlas_agentic::agent_output::AgentOutput;
 
 #[test]
+fn execution_controls_accept_the_normal_tool_call_envelope() {
+    for (name, args) in [
+        (
+            "read_execution",
+            r#"{"execution_id":"owned","tail_lines":20}"#,
+        ),
+        ("await_execution", r#"{"execution_ids":["owned"]}"#),
+        ("list_executions", "{}"),
+        ("cancel_execution", r#"{"execution_id":"owned"}"#),
+        (
+            "set_execution_wakeup",
+            r#"{"execution_id":"owned","wake_up":{"mode":"lazy"}}"#,
+        ),
+    ] {
+        let top_level = format!(r#"{{"type":"{name}",{} }}"#, &args[1..args.len() - 1]);
+        let top_level = if args == "{}" {
+            format!(r#"{{"type":"{name}"}}"#)
+        } else {
+            top_level
+        };
+        let wrapped = format!(r#"{{"type":"tool_call","tool":"{name}","args":{args}}}"#);
+        assert_eq!(
+            AgentOutput::parse_tool_protocol(&wrapped).unwrap(),
+            AgentOutput::parse_tool_protocol(&top_level).unwrap(),
+            "{name} must route to runtime control instead of the tool registry"
+        );
+    }
+}
+
+#[test]
+fn wrapped_execution_controls_validate_arguments_and_cannot_start_a_worker() {
+    for input in [
+        r#"{"type":"tool_call","tool":"read_execution","args":{"execution_id":"owned","tail_lines":201}}"#,
+        r#"{"type":"tool_call","tool":"read_execution","args":{"execution_id":"owned","tail_lines":1,"cursor":0}}"#,
+        r#"{"type":"tool_call","tool":"read_execution","args":{"execution_id":"owned","owner":"other-chat"}}"#,
+        r#"{"type":"tool_call","tool":"list_executions","args":{"type":"cancel_execution"}}"#,
+        r#"{"type":"tool_call","tool":"read_execution","wake_up":{"mode":"lazy"},"args":{"execution_id":"owned"}}"#,
+        r#"{"type":"tool_call","tool":"list_executions","args":[]}"#,
+    ] {
+        assert!(
+            AgentOutput::parse_tool_protocol(input).is_err(),
+            "accepted invalid control {input}"
+        );
+    }
+}
+
+#[test]
 fn hard_and_lazy_wakeup_policies_are_parsed_and_bounded() {
     for (policy, milliseconds) in [
         (r#"{"mode":"hard","interval_seconds":0.1}"#, 100),

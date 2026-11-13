@@ -67,6 +67,19 @@ work lifetime.
 
 Controls are top-level protocol types:
 
+The same controls also accept the ordinary `tool_call` envelope. For example:
+
+```json
+{"type":"tool_call","tool":"read_execution","args":{"execution_id":"opaque-id","tail_lines":20}}
+```
+
+The parser normalizes this into the same runtime operation as the dedicated
+`read_execution` type. The five control names are reserved: they never look up
+an ordinary tool or start another execution. Wrapped args reject unknown fields;
+scope ownership, read limits, and cancellation authorization are unchanged.
+Use `args.wake_up` only for `set_execution_wakeup`; controls reject top-level
+`wake_up` because they do not launch workers.
+
 ```json
 {"type":"set_execution_wakeup","execution_id":"opaque-id","wake_up":{"mode":"hard","interval_seconds":5}}
 ```
@@ -234,7 +247,7 @@ there is no second timeout producing duplicate periodic model continuations.
 
 ## Verified commands
 
-Verified on Linux on 2026-11-13: 612 Rust tests, 74 native tests, and 336 frontend
+Verified on Linux on 2026-11-13: 615 Rust tests, 74 native tests, and 336 frontend
 tests, plus formatting, root/native Clippy, frontend/native builds and the no-key
 demo. Windows/macOS execution was not validated in this change.
 

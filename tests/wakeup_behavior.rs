@@ -490,6 +490,60 @@ mod runtime_wakeup {
         }
     }
     struct ImmediateModel(Cell<bool>);
+    struct ToolStyleReadModel(Cell<usize>);
+    impl ModelProvider for ToolStyleReadModel {
+        fn complete(&self, request: &ModelRequest) -> Result<String, String> {
+            let step = self.0.get();
+            self.0.set(step + 1);
+            if step == 0 {
+                return Ok(r#"{"type":"tool_call","tool":"immediate","args":{}}"#.into());
+            }
+            let input: serde_json::Value = serde_json::from_str(request.user_prompt).unwrap();
+            if step == 1 {
+                let id = input["executions"][0]["execution_id"].as_str().unwrap();
+                return Ok(format!(
+                    r#"{{"type":"tool_call","tool":"read_execution","args":{{"execution_id":"{id}","tail_lines":20}}}}"#
+                ));
+            }
+            assert_eq!(
+                step, 2,
+                "reading must not launch another worker or replay the original tool"
+            );
+            let last = input["tool_results"].as_array().unwrap().last().unwrap();
+            assert_eq!(
+                last["success"], true,
+                "runtime control failed: {}",
+                last["output"]
+            );
+            let result: serde_json::Value =
+                serde_json::from_str(last["output"].as_str().unwrap()).unwrap();
+            assert_eq!(result["result"]["text"], "stored result");
+            Ok(r#"{"type":"final","content":"result read"}"#.into())
+        }
+    }
+    #[test]
+    fn tool_call_read_execution_reads_the_original_result_without_a_registered_tool() {
+        let manager = ToolExecutionManager::new();
+        let scope = manager.scope("chat");
+        let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
+        let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+            definition,
+            Box::new(ToolStyleReadModel(Cell::new(0))),
+        ))]))
+        .with_tools(ToolRegistry::new(vec![
+            atlas_agentic::executions::worker::tool(ImmediateTool),
+        ]))
+        .with_execution_scope(scope.clone());
+        assert_eq!(
+            runtime.ask_stream("read result", &mut |_| {}).unwrap(),
+            "result read"
+        );
+        assert_eq!(
+            scope.list().unwrap().len(),
+            1,
+            "execution controls must not create another execution"
+        );
+    }
     impl ModelProvider for ImmediateModel {
         fn complete(&self, _: &ModelRequest) -> Result<String, String> {
             if !self.0.replace(true) {

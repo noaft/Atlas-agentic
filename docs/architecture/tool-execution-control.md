@@ -236,7 +236,7 @@ applied independently to shared journals and trash. Valid storage options are
 Sources include `src/executions/persistence.rs`,
 `config/execution-defaults.toml`, `tests/execution_protocol.rs`, and
 `tests/execution_manager_control.rs`. See [Wakeup](wakeup.md) for operational details.
-Verification passed on Linux: 612 Rust tests, 74 native desktop tests, and 336 frontend tests. Root/native Clippy, formatting, frontend/native builds, and the no-key demo passed. The checklist below describes the coverage requirements.
+Verification passed on Linux: 615 Rust tests, 74 native desktop tests, and 336 frontend tests. Root/native Clippy, formatting, frontend/native builds, and the no-key demo passed. The checklist below describes the coverage requirements.
 
 Required implementation verification:
 
