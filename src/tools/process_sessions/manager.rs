@@ -36,7 +36,58 @@ struct Store {
     sessions: HashMap<String, Session>,
     closing: bool,
     limits: ProcessLimits,
+    synchronous: HashMap<String, String>,
 }
+fn check_admission(store: &Store, owner: &str) -> Result<(), String> {
+    if store.closing {
+        return Err("Process manager is shutting down".into());
+    }
+    let active = store
+        .sessions
+        .values()
+        .filter(|s| !s.control.is_done())
+        .count()
+        + store.synchronous.len();
+    if active >= store.limits.total {
+        return Err(format!(
+            "App limit of {} concurrent commands reached; wait for or stop an existing command",
+            store.limits.total
+        ));
+    }
+    let chat_active = store
+        .sessions
+        .values()
+        .filter(|s| s.owner == owner && !s.control.is_done())
+        .count()
+        + store
+            .synchronous
+            .values()
+            .filter(|scope| scope.as_str() == owner)
+            .count();
+    if chat_active >= store.limits.per_chat {
+        return Err(format!(
+            "Chat limit of {} concurrent commands reached; wait for or stop an existing command",
+            store.limits.per_chat
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) struct SynchronousAdmission {
+    inner: Arc<Inner>,
+    id: String,
+}
+impl Drop for SynchronousAdmission {
+    fn drop(&mut self) {
+        self.inner
+            .store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .synchronous
+            .remove(&self.id);
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     store: Mutex<Store>,
@@ -367,6 +418,22 @@ impl ProcessSessions {
             persistent: true,
         }
     }
+    pub(crate) fn admit_synchronous(&self) -> Result<SynchronousAdmission, String> {
+        let mut store = self
+            .scope
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "Process registry unavailable")?;
+        self.scope.check()?;
+        check_admission(&store, &self.scope.id)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        store.synchronous.insert(id.clone(), self.scope.id.clone());
+        Ok(SynchronousAdmission {
+            inner: self.scope.inner.clone(),
+            id,
+        })
+    }
     pub(crate) fn set_limits(&self, limits: ProcessLimits) -> Result<(), String> {
         self.scope.inner.set_limits(limits)
     }
@@ -432,27 +499,7 @@ impl ProcessSessions {
                 .lock()
                 .map_err(|_| "Process registry unavailable")?;
             self.scope.check()?;
-            if store.closing {
-                return Err("Process manager is shutting down".into());
-            }
-            if store
-                .sessions
-                .values()
-                .filter(|s| !s.control.is_done())
-                .count()
-                >= store.limits.total
-            {
-                return Err(format!("App limit of {} concurrent commands reached; wait for or stop an existing command", store.limits.total));
-            }
-            if store
-                .sessions
-                .values()
-                .filter(|s| s.owner == self.scope.id && !s.control.is_done())
-                .count()
-                >= store.limits.per_chat
-            {
-                return Err(format!("Chat limit of {} concurrent commands reached; wait for or stop an existing command", store.limits.per_chat));
-            }
+            check_admission(&store, &self.scope.id)?;
             let scope_count = store
                 .sessions
                 .values()

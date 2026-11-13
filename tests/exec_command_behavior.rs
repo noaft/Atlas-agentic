@@ -203,3 +203,57 @@ fn exec_command_rejects_an_empty_command() {
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
+
+#[test]
+fn synchronous_cli_execution_reserves_capacity_against_yielded_commands() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    use std::sync::Arc;
+    let root = tempfile::tempdir().unwrap();
+    let tool = Arc::new(
+        ExecCommandTool::with_limits(root.path(), Duration::from_secs(3), 1024)
+            .with_process_limits(ProcessLimits {
+                per_chat: 32,
+                total: 1,
+            })
+            .unwrap(),
+    );
+    let worker_tool = tool.clone();
+    let worker = std::thread::spawn(move || {
+        worker_tool.execute(&json!({"command":"touch started; while [ ! -f release ]; do sleep 0.01; done; printf finished"})).map(|r|r.message)
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !root.path().join("started").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let denied = tool.execute(&json!({"command":"touch should-not-start","yield_time_ms":0}));
+    std::fs::write(root.path().join("release"), "").unwrap();
+    let first = worker.join().unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&first).unwrap()["stdout"],
+        "finished"
+    );
+    assert!(denied.is_err());
+    assert!(!root.path().join("should-not-start").exists());
+    assert_eq!(execute(&tool, "printf again")["stdout"], "again");
+}
+
+#[test]
+fn synchronous_capacity_is_released_after_prelaunch_failure() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    let root = tempfile::tempdir().unwrap();
+    let tool = ExecCommandTool::with_limits(root.path(), Duration::MAX, 1024)
+        .with_process_limits(ProcessLimits {
+            per_chat: 1,
+            total: 1,
+        })
+        .unwrap();
+    assert!(tool.execute(&json!({"command":"touch invalid"})).is_err());
+    assert!(!root.path().join("invalid").exists());
+    let result = tool
+        .execute(&json!({"command":"printf recovered","timeout_ms":1000}))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&result.message).unwrap()["stdout"],
+        "recovered"
+    );
+}

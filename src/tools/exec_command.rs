@@ -92,6 +92,13 @@ impl Tool for ExecCommandTool {
         if (args.yield_time_ms.is_some() || self.sessions.is_scoped()) && self.control.is_none() {
             return self.sessions.start(args);
         }
+        // CLI synchronous execution keeps its original output/timeout behavior,
+        // but reserves capacity alongside yielded sessions until this call exits.
+        let _admission = if self.control.is_none() {
+            Some(self.sessions.admit_synchronous()?)
+        } else {
+            None
+        };
         if self
             .control
             .as_ref()

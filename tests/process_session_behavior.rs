@@ -388,6 +388,13 @@ fn configured_cli_sessions_keep_request_local_background_rejection() {
         json!({"command":"touch rejected","yield_time_ms":0})
     )
     .is_err());
+    assert!(run(
+        &registry,
+        "exec_command",
+        json!({"command":"touch synchronous-rejected"})
+    )
+    .is_err());
+    assert!(!root.path().join("synchronous-rejected").exists());
     let background = run(
         &registry,
         "exec_command",
