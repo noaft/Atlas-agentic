@@ -1,5 +1,9 @@
 # Quản lý tool, process session và tài nguyên theo chat
 
+> Thiết kế đích 2026-11-13: [Tool execution control và hard/lazy](tool-execution-control.md)
+> đưa mọi tool qua một đầu mối và lưu kết quả có giới hạn. Chưa triển khai;
+> nhánh tool trả ngay và phân loại vòng đời bên dưới mô tả thiết kế/hành vi cũ.
+
 > UI update (2026-11-10): theo yêu cầu user, bỏ Processes disclosure riêng. Tool
 > execution hiện inline dạng terminal (command/status/output), chi tiết thô thu
 > gọn, lịch sử trong Activity. Process manager và native ownership không đổi.

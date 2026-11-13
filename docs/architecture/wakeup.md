@@ -2,6 +2,11 @@
 
 Status: approved on2026-11-13 and implemented; verification/demo commands below.
 
+Design update (2026-11-13): the user approved replacing execution job/task modes
+with hard/lazy wakeups, unified control for every tool, and durable bounded results.
+See [Tool execution control](tool-execution-control.md) for the target architecture.
+That replacement is not implemented yet; this page describes the current protocol.
+
 ## Purpose
 
 Tools execute once. Atlas owns their execution IDs and wakes the requesting agent

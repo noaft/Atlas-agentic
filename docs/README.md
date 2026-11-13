@@ -10,6 +10,7 @@ không đồng nghĩa với đã có trong sản phẩm.
 | [Tool/resource lifecycle](architecture/tool-resource-lifecycle.md) | User duyệt triển khai 2026-11-09; process scope desktop đã triển khai |
 | [Demo và cách thử trên Tauri](guides/process-manager-demo.md) | Demo local không cần API key và hướng dẫn UI |
 | [Wakeup](architecture/wakeup.md) | User duyệt 2026-11-13; scheduler, mailbox và đọc output có giới hạn |
+| [Tool execution control: hard/lazy](architecture/tool-execution-control.md) | User chốt 2026-11-13; thiết kế thay job/task, quản lý mọi tool và lưu kết quả; chưa triển khai |
 | [Delegated agents](architecture/delegated-agents.md) | User duyệt triển khai 2026-11-13; runtime và UI theo dõi agent con đã triển khai |
 | [Process sessions](architecture/process-sessions.md) | Tham chiếu hành vi hiện tại, 2026-11-09 |
 | [UniKey trên WSLg](platforms/wslg-unikey.md) | Ghi nhận tái hiện và cách khắc phục đã kiểm chứng |

@@ -4,6 +4,11 @@ Trạng thái: triển khai desktop manager theo chat, ngày 2026-11-09. Quyết
 ownership được mô tả trong [Tool/resource lifecycle](tool-resource-lifecycle.md).
 Hướng dẫn thử: [Xem process manager hoạt động](../guides/process-manager-demo.md).
 
+Thiết kế đích đã chốt ngày 2026-11-13: [Tool execution control và hard/lazy](tool-execution-control.md).
+Mọi tool sẽ có execution record chung; ProcessManager tiếp tục quản lý OS process
+bên dưới. Thiết kế mới chưa triển khai; `lifetime: job/background` bên dưới là
+vòng đời command hiện tại, không phải lựa chọn nhịp wake_up hard/lazy.
+
 ## Ba khái niệm khác nhau
 
 - **Chat session** là cuộc hội thoại/frontend draft.
