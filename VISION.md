@@ -6,6 +6,12 @@ multi-agent system will choose the right AI worker for each task.
 
 The first goal is not to build every agent at once. The first goal is to build a clean agent runtime where a router can look at a user request and choose the best agent name to process it.
 
+## Implemented delegation
+
+Atlas can create reusable Personal/Project agents and delegate explicit tasks with caller-selected tools. Each call chooses fork/task-only context and wait/parallel execution. Desktop owns independent runs and scoped approvals, with progress and structured reports in Agent runs. Agents do not retain independent cross-run memory. See [delegated agents](docs/architecture/delegated-agents.md).
+
+This runtime orchestration is separate from the planned router below. The router remains a selector.
+
 ## Core Idea
 
 Atlas uses a Jev-like router as the decision layer.

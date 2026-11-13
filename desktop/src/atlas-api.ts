@@ -1,3 +1,4 @@
+import type { AgentRunsApi, AgentRunView } from "./agent-types";
 import type { ProcessesApi, ProcessInfo, ProcessOutput } from "./process-types";
 import type { McpOnboardingApi, McpSettingsView, McpCheckEvent, McpCheckResult } from "./mcp-types";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -22,7 +23,7 @@ import type {
   Workspace,
 } from "./types";
 
-export interface AtlasApi extends SkillsApi, McpOnboardingApi, ProcessesApi {
+export interface AtlasApi extends SkillsApi, McpOnboardingApi, ProcessesApi, AgentRunsApi {
   listMcpConnections(): Promise<McpConnectionStatus[]>;
   connectMcpServer(server: string): Promise<void>;
   disconnectMcpServer(server: string): Promise<void>;
@@ -67,6 +68,9 @@ export function createTauriAtlasApi(): AtlasApi {
     return processClient;
   };
   return {
+    listAgentRuns: async (context) => invoke<AgentRunView[]>("list_agent_runs", {client: await client(), context}),
+    cancelAgentRun: async (context, runId) => invoke<AgentRunView>("cancel_agent_run", {client: await client(), context, runId}),
+    resolveAgentRunApproval: async (context, runId, approvalId, allow) => invoke<void>("resolve_agent_run_approval", {client: await client(), context, runId, approvalId, allow}),
     openProcessScope: async (context) => invoke<{scopeId: string}>("open_process_scope", {client: await client(), context}),
     releaseProcessScope: async (context) => invoke<void>("release_process_scope", {client: await client(), context}),
     listProcesses: async (context) => invoke<ProcessInfo[]>("list_processes", {client: await client(), context}),

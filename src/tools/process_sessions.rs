@@ -237,3 +237,16 @@ pub fn register_process_tools_in_scope(
     }
     registry.register(Box::new(exec));
 }
+
+pub(crate) fn register_request_process_tools(
+    registry: &mut ToolRegistry,
+    workspace: &Path,
+    scope: ProcessScope,
+    managed: bool,
+) {
+    let exec = ExecCommandTool::new(workspace).with_request_scope(scope, managed);
+    for tool in exec.session_tools() {
+        registry.register(tool);
+    }
+    registry.register(Box::new(exec));
+}

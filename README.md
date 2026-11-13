@@ -4,7 +4,7 @@ A desktop-first AI assistant for chat, files, shell commands, computer control,
 and coding. The Tauri desktop app and Rust CLI share a Rust runtime and local
 conversation history.
 
-**Status:** one default Atlas agent is implemented. Multi-agent routing is planned.
+**Status:** Atlas supports reusable child agents with parent-selected tools. Automatic routing is planned.
 
 ## Run the desktop app
 
@@ -41,6 +41,8 @@ folder in your home directory; you can choose another folder per chat.
 - **Skills:** Personal and Project libraries; import from GitHub, folders, or files;
   preview, edit, search, and enable/disable skills.
 - **MCP:** local stdio and remote HTTP servers, OAuth sign-in, and explicit tool checks.
+- **Agents:** reusable Personal/Project definitions, fork or task-only runs, parallel
+  delegation, scoped approvals, and live run/results inspection.
 - **Context:** token-usage display and automatic/manual conversation compaction.
 
 ## CLI
@@ -97,6 +99,7 @@ npm --prefix desktop run build
 
 - [Detailed reference](docs/guides/reference.md): provider configuration, tools,
   Skills, MCP, memory, storage paths, and logs.
+- [Delegated agents](docs/architecture/delegated-agents.md): definitions, tools, runs and reports.
 - [Process demo](docs/guides/process-manager-demo.md): try command sessions without
   provider credentials.
 - [Documentation index](docs/README.md), including the Vietnamese input fix for WSLg.

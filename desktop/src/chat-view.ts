@@ -1,3 +1,4 @@
+import { agentRunsRevision, createAgentRuns } from "./agent-runs";
 import type { ProcessOutputView } from "./process-types";
 import { createCompactionStatus } from "./compaction-status";
 import { taskUnavailableReason } from "./slash-commands";
@@ -326,6 +327,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     () => {void syncComposerRequest(() => store.retryCompaction());},
   );
   notices.before(compactionStatus.element);
+  const agentRuns = createAgentRuns({list: store.listAgentRuns, cancel: store.cancelAgentRun, approve: store.resolveAgentRunApproval});
+  composer.element.prepend(agentRuns.element);
   chatScreen.append(composer.element, dialog);
   composer.replaceDraft(store.getState().draftText);
 
@@ -977,6 +980,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     else window.clearTimeout(id);
   };
   const renderImmediate = (state: Readonly<ChatState>) => {
+    agentRuns.update(state.screen === "chat" ? state.activeSessionId : null,
+      agentRunsRevision(state));
     const previous = renderedState;
     const sidebarOnly = previous && activeMetadata(previous) === activeMetadata(state) &&
       (Object.keys(previous) as Array<keyof ChatState>).every((key) =>
@@ -1021,6 +1026,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     if (pendingFrame !== null) cancelFrame(pendingFrame);
     pickerCleanups.splice(0).forEach((cleanup) => cleanup());
     composer.destroy();
+    agentRuns.destroy();
     window.removeEventListener("keydown", onWindowKeydown);
     unsubscribe();
     root.replaceChildren();

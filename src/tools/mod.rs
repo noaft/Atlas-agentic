@@ -58,6 +58,8 @@ pub(crate) use platform::system_launcher;
 #[doc(hidden)]
 pub use platform::{application_command, file_command, CommandSpec, Platform, ProcessLauncher};
 #[cfg(any(unix, windows))]
+pub(crate) use process_sessions::register_request_process_tools;
+#[cfg(any(unix, windows))]
 pub use process_sessions::{
     register_process_tools, register_process_tools_in_scope, ProcessCursor, ProcessInfo,
     ProcessLifetime, ProcessManager, ProcessOutputView, ProcessRead, ProcessScope,
@@ -286,6 +288,14 @@ impl ToolRegistry {
     pub(crate) fn request_scope(&self) -> ToolRequestScope<'_> {
         self.reset_request_state();
         ToolRequestScope(self)
+    }
+
+    pub(crate) fn retain_names(&mut self, names: &[String]) {
+        self.tools.retain(|name, _| names.contains(name));
+    }
+
+    pub(crate) fn remove(&mut self, name: &str) {
+        self.tools.remove(name);
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

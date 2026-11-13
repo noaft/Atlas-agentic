@@ -63,6 +63,18 @@ impl ExecCommandTool {
         self.sessions = Arc::new(ProcessSessions::for_scope(&self.workspace, scope));
         self
     }
+    pub(super) fn with_request_scope(
+        mut self,
+        scope: process_sessions::ProcessScope,
+        managed: bool,
+    ) -> Self {
+        self.sessions = Arc::new(ProcessSessions::for_request_scope(
+            &self.workspace,
+            scope,
+            managed,
+        ));
+        self
+    }
     pub fn with_process_limits(
         self,
         limits: crate::process_limits::ProcessLimits,

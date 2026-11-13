@@ -4,6 +4,7 @@ pub mod agent_runs;
 pub mod agents;
 pub mod app;
 pub mod conversations;
+pub mod delegation;
 pub mod diagnostics;
 pub mod mcp;
 pub mod media;

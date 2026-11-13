@@ -198,6 +198,15 @@ export class ChatStore {
     this.pendingProcessScopes.set(owner, pending);
     return pending;
   };
+  listAgentRuns = async (owner: string) => this.api.listAgentRuns?.(await this.processContext(owner)) ?? [];
+  cancelAgentRun = async (owner: string, id: string) => {
+    if (!this.api.cancelAgentRun) throw new Error("Agent controls are unavailable");
+    return this.api.cancelAgentRun(await this.processContext(owner), id);
+  };
+  resolveAgentRunApproval = async (owner: string, id: string, approval: string, allow: boolean) => {
+    if (!this.api.resolveAgentRunApproval) throw new Error("Agent approvals are unavailable");
+    return this.api.resolveAgentRunApproval(await this.processContext(owner), id, approval, allow);
+  };
   listProcesses = async (owner: string) => this.api.listProcesses(await this.processContext(owner));
   readProcessOutput = async (owner: string, id: string, cursor: ProcessCursor) => this.api.readProcessOutput(await this.processContext(owner), id, cursor);
   stopProcess = async (owner: string, id: string) => this.api.stopProcess(await this.processContext(owner), id);

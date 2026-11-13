@@ -397,6 +397,8 @@ pub(crate) struct ProcessSessions {
     workspace: PathBuf,
     output_limit: usize,
     persistent: bool,
+    shared: bool,
+    managed: bool,
 }
 impl ProcessSessions {
     pub(crate) fn new(workspace: &Path, limit: usize) -> Self {
@@ -407,6 +409,8 @@ impl ProcessSessions {
             workspace: workspace.into(),
             output_limit: limit,
             persistent: false,
+            shared: false,
+            managed: false,
         }
     }
     pub(crate) fn for_scope(workspace: &Path, scope: ProcessScope) -> Self {
@@ -416,7 +420,15 @@ impl ProcessSessions {
             workspace: workspace.into(),
             output_limit: OUTPUT_LIMIT,
             persistent: true,
+            shared: true,
+            managed: true,
         }
+    }
+    pub(crate) fn for_request_scope(workspace: &Path, scope: ProcessScope, managed: bool) -> Self {
+        let mut sessions = Self::for_scope(workspace, scope);
+        sessions.persistent = false;
+        sessions.managed = managed;
+        sessions
     }
     pub(crate) fn admit_synchronous(&self) -> Result<SynchronousAdmission, String> {
         let mut store = self
@@ -463,7 +475,7 @@ impl ProcessSessions {
         self.scope.control(id).map(|_| ())
     }
     pub(crate) fn is_scoped(&self) -> bool {
-        self.persistent
+        self.managed
     }
     pub(crate) fn start(&self, args: ExecArgs) -> Result<ToolResult, String> {
         if args.lifetime == ProcessLifetime::Background && !self.persistent {
@@ -593,7 +605,7 @@ impl ProcessSessions {
                 .iter()
                 .filter(|(_, s)| {
                     s.owner == self.scope.id
-                        && (!self.persistent
+                        && ((!self.persistent && !self.shared)
                             || (s.request == self.request && s.lifetime == ProcessLifetime::Job))
                 })
                 .map(|(id, _)| id.clone())
@@ -607,12 +619,82 @@ impl ProcessSessions {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .sessions
-                .retain(|_, s| s.owner != self.scope.id || !s.control.is_done());
+                .retain(|_, s| {
+                    s.owner != self.scope.id
+                        || !s.control.is_done()
+                        || (self.shared && s.request != self.request)
+                });
         }
     }
 }
 impl Drop for ProcessSessions {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod delegated_scope_tests {
+    use super::*;
+    #[test]
+    fn cli_worker_synchronous_commands_are_contained_and_stopped_on_scope_exit() {
+        let folder = tempfile::tempdir().unwrap();
+        let manager = ProcessManager::new();
+        let scope = manager.create_scope().unwrap();
+        let workspace = folder.path().to_path_buf();
+        let owned = scope.clone();
+        let worker = std::thread::spawn(move || {
+            crate::tools::ExecCommandTool::new(workspace)
+                .with_request_scope(owned, true)
+                .execute(&serde_json::json!({"command":"sleep 30","timeout_ms":60000}))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if scope.list().unwrap().iter().any(|session| session.running) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker command must be tracked by its shared scope"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        scope.close(Duration::from_secs(3)).unwrap();
+        let output = worker.join().unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output.message).unwrap();
+        assert_eq!(parsed["running"], false);
+    }
+    #[test]
+    fn request_workers_share_chat_command_caps_and_preserve_other_requests_jobs() {
+        let folder = tempfile::tempdir().unwrap();
+        let manager = ProcessManager::new();
+        manager
+            .set_limits(crate::process_limits::ProcessLimits {
+                per_chat: 1,
+                total: 1,
+            })
+            .unwrap();
+        let scope = manager.create_scope().unwrap();
+        let root = ProcessSessions::for_scope(folder.path(), scope.clone());
+        let child = ProcessSessions::for_request_scope(folder.path(), scope.clone(), true);
+        root.start(ExecArgs {
+            command: "sleep 5".into(),
+            yield_time_ms: Some(0),
+            timeout_ms: Some(10000),
+            lifetime: ProcessLifetime::Job,
+        })
+        .unwrap();
+        assert!(child.admit_synchronous().is_err());
+        child.clear();
+        assert!(scope.list().unwrap().iter().any(|process| process.running));
+        assert!(child
+            .start(ExecArgs {
+                command: "true".into(),
+                yield_time_ms: Some(0),
+                timeout_ms: Some(1000),
+                lifetime: ProcessLifetime::Background
+            })
+            .is_err());
+        root.clear();
     }
 }

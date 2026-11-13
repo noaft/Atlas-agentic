@@ -11,7 +11,7 @@ conversation and OS tasks as well as coding. The desktop app adds an automatic
 Atlas home, optional native project-folder selection, per-conversation starting
 folder persistence, grouped history, and local Settings.
 
-The planned direction is a multi-agent system with a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
+Reusable child agents and parent-selected tool delegation are implemented. The planned direction includes a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
 
 Read `RULE.md` before changing agent, provider, runtime, router, or tool architecture.
 
@@ -22,6 +22,9 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 ├── agents/                 Local agent definitions
 │   └── atlas.toml          Default Atlas agent configuration
 ├── src/
+│   ├── agent_catalog.rs     Safe scoped reusable TOML definitions
+│   ├── agent_runs.rs        Owner-scoped background workers, approvals and results
+│   ├── delegation.rs        Runtime delegation, snapshots and per-call tool grants
 │   ├── main.rs             CLI entrypoint and command execution
 │   ├── lib.rs              CLI command parsing and rendering
 │   ├── app.rs              Shared runtime and default-tool construction
@@ -54,6 +57,10 @@ Read `RULE.md` before changing agent, provider, runtime, router, or tool archite
 ```
 
 The built-in runtime tools are:
+
+- `create_agent`, `list_agents`: explicitly save and discover reusable scoped agent definitions
+- `call_agent`: delegate with parent-selected tools, fork/task_only context and wait/parallel execution
+- `list_agent_runs`, `read_agent_run`, `wait_agent_run`, `cancel_agent_run`: inspect/control owned child runs
 
 - `create_skill`: save an explicitly requested new Personal or Project skill without overwriting
 - `load_skill`: preload enabled skill metadata, then lazily read instructions or a registered UTF-8 resource
@@ -336,6 +343,37 @@ paths. Filesystem/network work runs on workers without broader frontend access.
 Folders installed by other tools using the shared locations require no
 Atlas-specific manifest.
 Never reuse development .env.local credentials for skill operations.
+
+## Delegated agents
+
+Reusable definitions live in SettingsStore.directory()/agents (Personal) or
+workspace/.agents/agents (Project), with distinct scoped IDs. Keep their schema
+separate from the bundled entry agent. No fixed tools or credentials in definitions:
+every call explicitly grants a subset of the caller's real registry. Register native
+process/delegation tools before filtering; never reintroduce a removed tool. Skills
+are selected scoped IDs and need granted load_skill access. Provider overrides use
+their own Settings profile; children otherwise inherit the parent's effective model.
+
+AgentRunManager owns4 active/chat16/app and32 retained/chat128/app. Native ProcessScope
+is the authority; never accept model-selected chat owners. All descendant commands
+share root chat/app quotas while keeping request-local cleanup. Child process reads
+use explicit cursors/tail to preserve the parent's default reader. Fork snapshots
+prepared history/summary blocks/activity/current continuation; task_only excludes
+parent history. No independent memory or restart restoration. Budget every model call.
+
+Per-run approvals use native owner/run/approval identity and UI-owned controls;
+never route child usage, answer streams or tool events into the parent's current
+row/context meter. Cooperative cancellation must remain Cancelling until worker exit.
+Native scope deletion/reload/shutdown cancels owned children. Normal draft promotion
+retains scope identity; reject different-scope merges with active child workers.
+Agent runs UI refreshes only while explicitly expanded with unfinished work; ignore
+stale callbacks, preserve focus, and keep all native calls in atlas-api.ts.
+
+Reports follow config/agent-result-prompt.md, strict64KiB JSON with outcome,summary,
+work_done,findings,artifacts,verification,remaining. Runtime supplies actual lifecycle
+and metrics separately. Model-facing lists are metadata-only/bounded; long reports
+use UTF-8 byte pages through read_agent_run. No image payloads or child ordinary
+conversation persistence. See docs/architecture/delegated-agents.md for contracts.
 
 ## Model providers
 

@@ -15,6 +15,7 @@ use tauri::{State, WebviewWindow};
 #[derive(Clone, Default)]
 pub(crate) struct DesktopProcesses {
     manager: ProcessManager,
+    pub(crate) agents: atlas_agentic::agent_runs::AgentRunManager,
     registry: Arc<Mutex<Registry>>,
 }
 #[derive(Default)]
@@ -77,6 +78,7 @@ impl DesktopProcesses {
                 .collect::<Vec<_>>()
         };
         for scope in old {
+            self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
         }
         Ok(token)
@@ -202,11 +204,24 @@ impl DesktopProcesses {
             .get(id)
             .cloned()
             .unwrap_or_else(|| scope.clone());
+        if target.id() != scope.id()
+            && self
+                .agents
+                .list(scope.id())?
+                .iter()
+                .chain(self.agents.list(target.id())?.iter())
+                .any(|run| !run.status.is_terminal())
+        {
+            return Err("Cannot merge native scopes while child agents are active".into());
+        }
         if target.id() != scope.id() && target.adopt_from(scope).is_err() {
             registry.drafts.remove(scope.id());
             drop(registry);
             let _ = scope.close(Duration::from_secs(3));
             return Err("Background processes could not be transferred to the saved chat".into());
+        }
+        if target.id() != scope.id() {
+            self.agents.adopt_owner(scope.id(), target.id())?;
         }
         registry.saved.insert(id.clone(), target);
         registry.drafts.remove(scope.id());
@@ -236,7 +251,13 @@ impl DesktopProcesses {
             if registry.clients.get(window).map(String::as_str) != Some(client) {
                 return Err("Process client expired".into());
             }
-            if registry.active.contains(id) {
+            if registry.active.contains(id)
+                || self
+                    .agents
+                    .list(id)?
+                    .iter()
+                    .any(|run| !run.status.is_terminal())
+            {
                 return Err("A request is still running in this draft".into());
             }
             let entry = registry
@@ -248,6 +269,7 @@ impl DesktopProcesses {
             registry.drafts.remove(id);
             scope
         };
+        self.agents.close_owner(scope.id());
         scope.close(Duration::from_secs(3))
     }
     pub(crate) fn delete(&self, id: &ConversationId) -> Result<(), String> {
@@ -259,6 +281,7 @@ impl DesktopProcesses {
             .get(id)
             .cloned();
         if let Some(scope) = scope {
+            self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
             let mut registry = self
                 .registry
@@ -274,13 +297,14 @@ impl DesktopProcesses {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .closing = true;
+        self.agents.shutdown();
         self.manager.shutdown(Duration::from_secs(3))
     }
 }
 fn uuid() -> String {
     atlas_agentic::conversations::ConversationId::new().to_string()
 }
-fn resolve(
+pub(crate) fn resolve(
     state: &DesktopState,
     window: &str,
     client: &str,
@@ -533,5 +557,123 @@ mod tests {
         assert!(hub.lease(&draft).is_err());
         drop(lease);
         assert!(hub.lease(&draft).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod agent_scope_tests {
+    use super::*;
+    use atlas_agentic::agent_runs::{AgentRunRequest, AgentRunView, ContextMode, ExecutionMode};
+    fn start(hub: &DesktopProcesses, scope: &ProcessScope) -> AgentRunView {
+        hub.agents
+            .start(
+                scope.id(),
+                AgentRunRequest {
+                    agent: "personal:test".into(),
+                    task: "Work".into(),
+                    tools: vec![],
+                    context_mode: ContextMode::TaskOnly,
+                    execution_mode: ExecutionMode::Parallel,
+                },
+                Duration::from_secs(10),
+                |control| loop {
+                    control.check()?;
+                    std::thread::sleep(Duration::from_millis(2));
+                },
+            )
+            .unwrap()
+    }
+    fn draft(hub: &DesktopProcesses, client: &str) -> ProcessScope {
+        hub.resolve(
+            "main",
+            client,
+            &ProcessContext {
+                conversation_id: None,
+                scope_id: None,
+            },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn active_child_survives_draft_promotion_and_saved_chat_navigation() {
+        let hub = DesktopProcesses::default();
+        let client = hub.initialize("main").unwrap();
+        let scope = draft(&hub, &client);
+        let run = start(&hub, &scope);
+        let id = ConversationId::new();
+        assert!(hub
+            .release(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: Some(scope.id().into())
+                }
+            )
+            .is_err());
+        hub.bind(&scope, &id).unwrap();
+        let next = hub.initialize("main").unwrap();
+        let restored = hub
+            .resolve(
+                "main",
+                &next,
+                &ProcessContext {
+                    conversation_id: Some(id.clone()),
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(restored.id(), scope.id());
+        assert!(!hub
+            .agents
+            .read(restored.id(), &run.run_id)
+            .unwrap()
+            .status
+            .is_terminal());
+        hub.delete(&id).unwrap();
+        let view = hub
+            .agents
+            .wait(scope.id(), &run.run_id, Duration::from_secs(1))
+            .unwrap();
+        assert!(view.status.is_terminal());
+        assert!(hub
+            .agents
+            .resolve_approval("foreign", &run.run_id, "not-pending", true)
+            .is_err());
+    }
+    #[test]
+    fn draft_epoch_reload_cancels_children_and_rejects_foreign_client() {
+        let hub = DesktopProcesses::default();
+        let client = hub.initialize("main").unwrap();
+        let scope = draft(&hub, &client);
+        let run = start(&hub, &scope);
+        let context = ProcessContext {
+            conversation_id: None,
+            scope_id: Some(scope.id().into()),
+        };
+        assert!(hub.resolve("other-window", &client, &context).is_err());
+        hub.initialize("main").unwrap();
+        assert!(hub.resolve("main", &client, &context).is_err());
+        assert!(hub
+            .agents
+            .wait(scope.id(), &run.run_id, Duration::from_secs(1))
+            .unwrap()
+            .status
+            .is_terminal());
+    }
+    #[test]
+    fn cross_scope_merge_with_active_children_is_rejected_before_process_adoption() {
+        let hub = DesktopProcesses::default();
+        let client = hub.initialize("main").unwrap();
+        let saved = draft(&hub, &client);
+        let source = draft(&hub, &client);
+        let id = ConversationId::new();
+        hub.bind(&saved, &id).unwrap();
+        let run = start(&hub, &source);
+        assert!(hub.bind(&source, &id).is_err());
+        assert!(source.list().is_ok());
+        assert!(hub.agents.read(source.id(), &run.run_id).is_ok());
+        assert!(hub.agents.read(saved.id(), &run.run_id).is_err());
+        hub.shutdown().unwrap();
     }
 }

@@ -726,3 +726,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 
 .activity-row pre.tool-terminal-output { max-height: 320px; min-height: 64px; padding: 12px; color: var(--terminal-ink); background: var(--terminal); font-size: 12px; line-height: 1.7; }
+
+.agent-runs { width: 100%; margin: 0 0 .5rem; color: var(--muted); font-size: .82rem; max-height: 34vh; overflow: auto; }
+.agent-runs > summary { cursor: pointer; padding: .4rem 0; }
+.agent-runs [data-agent-run] { border-top: 1px solid var(--border, #ddd8ce); padding: .6rem 0; }
+.agent-runs [data-agent-run] > summary { cursor: pointer; color: var(--ink); }
+.agent-runs button { margin: .5rem .4rem 0 0; }
+.agent-runs p { margin: .5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-runs pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; font-size: .8rem; }
+.agent-runs [hidden] { display: none; }

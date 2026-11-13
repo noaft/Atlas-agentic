@@ -572,3 +572,11 @@ npm --prefix desktop run tauri -- build --debug --no-bundle
 See [AGENTS.md](../../AGENTS.md) for repository structure, storage paths, configuration
 details, and the full verification commands; [RULE.md](../../RULE.md) for architecture
 rules; and [VISION.md](../../VISION.md) for product direction.
+
+## Delegated agents
+
+Use `create_agent` for explicitly requested reusable Personal/Project definitions,
+then `call_agent` with task, caller-selected tools, context_mode and execution_mode.
+Desktop Agent runs shows ongoing work, independent tool approvals and final reports.
+See [the delegation reference](../architecture/delegated-agents.md) for storage,
+limits, CLI lifetime, cancellation semantics and report paging.

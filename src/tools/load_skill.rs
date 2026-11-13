@@ -9,6 +9,24 @@ pub struct LoadSkillTool {
     headers: BTreeMap<String, String>,
 }
 impl LoadSkillTool {
+    pub(crate) fn selected(store: &SkillStore, ids: &[String]) -> Result<Option<Self>, String> {
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let Some(mut selected) = Self::new(store)? else {
+            return Err("Selected agent skills are unavailable".into());
+        };
+        if ids
+            .iter()
+            .any(|id| !selected.catalog.iter().any(|skill| &skill.id == id))
+        {
+            return Err("Selected agent skill is missing or disabled".into());
+        }
+        selected.catalog.retain(|skill| ids.contains(&skill.id));
+        selected.files.retain(|id, _| ids.contains(id));
+        selected.headers.retain(|id, _| ids.contains(id));
+        Ok(Some(selected))
+    }
     pub fn new(store: &SkillStore) -> Result<Option<Self>, String> {
         let snapshot = store.snapshot()?;
         let mut catalog = vec![];
@@ -82,5 +100,42 @@ impl Tool for LoadSkillTool {
             return Ok(ToolResult::text(format!("{header}{text}")));
         }
         Ok(ToolResult::text(text.clone()))
+    }
+}
+
+#[cfg(test)]
+mod delegated_tests {
+    use super::*;
+    use crate::skills::{SkillDraftInput, SkillScope};
+    #[test]
+    fn delegated_skill_catalog_exposes_only_selected_enabled_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(dir.path().join("personal"), dir.path().to_path_buf());
+        for name in ["review", "other"] {
+            store
+                .create(
+                    SkillDraftInput {
+                        name: name.into(),
+                        title: None,
+                        description: "Use this guide".into(),
+                        instructions: "Follow this guide.".into(),
+                        files: None,
+                    },
+                    SkillScope::Personal,
+                )
+                .unwrap();
+        }
+        let selected = LoadSkillTool::selected(&store, &["personal:review".into()])
+            .unwrap()
+            .unwrap();
+        assert!(selected
+            .execute(&serde_json::json!({"id":"personal:review"}))
+            .is_ok());
+        assert!(selected
+            .execute(&serde_json::json!({"id":"personal:other"}))
+            .is_err());
+        assert!(!selected.definition().description.contains("personal:other"));
+        assert!(LoadSkillTool::selected(&store, &["personal:missing".into()]).is_err());
+        assert!(LoadSkillTool::selected(&store, &[]).unwrap().is_none());
     }
 }

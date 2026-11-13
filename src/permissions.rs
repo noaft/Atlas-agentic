@@ -90,6 +90,11 @@ pub enum AuthorizationDecision {
 }
 
 pub trait ToolAuthorizer {
+    /// Native run views resolve child approvals independently of the parent request.
+    fn approvals_in_run_view(&self) -> bool {
+        false
+    }
+
     fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizationDecision, String>;
 }
 

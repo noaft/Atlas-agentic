@@ -236,7 +236,20 @@ impl DesktopState {
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
         let runtime = (self.runtime_factory)(&workspace, &effective)?;
         let runtime = match &process_scope {
-            Some(scope) => runtime.with_process_scope(&workspace, scope.clone()),
+            Some(scope) => runtime
+                .with_agent_catalog(atlas_agentic::agent_catalog::AgentCatalog::for_settings(
+                    &self.settings_store,
+                    &workspace,
+                ))
+                .with_delegation(
+                    atlas_agentic::delegation::Delegation::new(
+                        &workspace,
+                        effective.clone(),
+                        self.settings_store.clone(),
+                    )?
+                    .with_manager(self.processes.agents.clone(), scope.id().into()),
+                )
+                .with_process_scope(&workspace, scope.clone()),
             None => runtime,
         };
         let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
@@ -255,8 +268,9 @@ impl DesktopState {
                 .bind(scope, &parse_id(&result.metadata.id)?)
                 .is_err()
             {
+                self.processes.agents.close_owner(scope.id());
                 let _ = scope.close(Duration::from_secs(3));
-                result.process_warning=Some("Background processes were stopped because ownership transfer failed. Check Processes before retrying a service.".into());
+                result.process_warning=Some("Background work was stopped because ownership transfer failed. Check Agent runs before retrying.".into());
                 diagnostics::event(
                     "WARN",
                     "process.scope.transfer_failed",
@@ -672,6 +686,9 @@ struct DesktopAuthorizer {
 }
 
 impl ToolAuthorizer for DesktopAuthorizer {
+    fn approvals_in_run_view(&self) -> bool {
+        true
+    }
     fn authorize(&self, request: &AuthorizationRequest) -> Result<AuthorizationDecision, String> {
         let receiver = self.approvals.register(&request.id)?;
         let deadline = Instant::now() + APPROVAL_TIMEOUT;

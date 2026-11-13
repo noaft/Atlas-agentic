@@ -44,6 +44,10 @@ struct ProtocolRepair<'a> {
 pub struct Runtime {
     agents: AgentRegistry,
     tools: ToolRegistry,
+    pub(crate) delegation: Option<crate::delegation::Delegation>,
+    pub(crate) run_control: Option<crate::agent_runs::RunControl>,
+    #[cfg(any(unix, windows))]
+    pub(crate) owned_process_scope: Option<crate::tools::ProcessScope>,
 }
 
 pub struct RuntimeAskCallbacks<'a> {
@@ -57,6 +61,10 @@ impl Runtime {
         Self {
             agents,
             tools: ToolRegistry::empty(),
+            delegation: None,
+            run_control: None,
+            #[cfg(any(unix, windows))]
+            owned_process_scope: None,
         }
     }
 
@@ -71,9 +79,60 @@ impl Runtime {
         workspace: &std::path::Path,
         scope: crate::tools::ProcessScope,
     ) -> Self {
-        crate::tools::register_process_tools_in_scope(&mut self.tools, workspace, scope);
+        self.owned_process_scope = None;
+        crate::tools::register_process_tools_in_scope(&mut self.tools, workspace, scope.clone());
+        if let Some(delegation) = &mut self.delegation {
+            delegation.set_process_scope(scope);
+        }
         self
     }
+    #[cfg(any(unix, windows))]
+    pub(crate) fn with_request_process_scope(
+        mut self,
+        workspace: &std::path::Path,
+        scope: crate::tools::ProcessScope,
+        managed: bool,
+    ) -> Self {
+        crate::tools::register_request_process_tools(
+            &mut self.tools,
+            workspace,
+            scope.clone(),
+            managed,
+        );
+        if let Some(delegation) = &mut self.delegation {
+            delegation.set_request_process_scope(scope);
+        }
+        self
+    }
+
+    pub fn with_delegation(mut self, delegation: crate::delegation::Delegation) -> Self {
+        crate::delegation::register_tools(&mut self.tools);
+        self.delegation = Some(delegation);
+        self
+    }
+
+    pub fn with_agent_catalog(mut self, catalog: crate::agent_catalog::AgentCatalog) -> Self {
+        crate::tools::register_agent_catalog_tools(&mut self.tools, catalog);
+        self
+    }
+
+    pub(crate) fn select_skills(
+        mut self,
+        store: &crate::skills::SkillStore,
+        ids: &[String],
+    ) -> Result<Self, String> {
+        self.tools.remove("load_skill");
+        if let Some(tool) = crate::tools::LoadSkillTool::selected(store, ids)? {
+            self.tools.register(Box::new(tool));
+        }
+        Ok(self)
+    }
+
+    pub fn restrict_tools(mut self, allowed: &[String]) -> Self {
+        self.tools.retain_names(allowed);
+        self
+    }
+
     pub fn default_agent(&self) -> Result<&dyn crate::agents::Agent, String> {
         self.agents
             .default_agent()
@@ -181,6 +240,9 @@ impl Runtime {
         let mut latest_usage = None;
 
         loop {
+            if let Some(control) = &self.run_control {
+                control.check()?;
+            }
             on_tool_event(&ToolEvent::Status {
                 status: if first_model_request {
                     RuntimeStatus::Thinking
@@ -200,6 +262,9 @@ impl Runtime {
                 },
                 on_tool_event,
             )?;
+            if let Some(control) = &self.run_control {
+                control.check()?;
+            }
             let response_result = agent.process_request_with_usage(
                 &crate::agents::AgentRequest {
                     input: &input,
@@ -271,6 +336,9 @@ impl Runtime {
 
             match output {
                 AgentOutput::Final { content } => {
+                    if let Some(control) = &self.run_control {
+                        control.check()?;
+                    }
                     final_stream.finish(&content, on_delta)?;
                     return Ok(content);
                 }
@@ -294,7 +362,18 @@ impl Runtime {
                         arguments: sanitize_arguments(&args),
                     });
 
-                    let authorization = match self.tools.authorization(&tool, &args) {
+                    let child_read_error = self.run_control.is_some()
+                        && tool == "read_process"
+                        && args.get("cursor").is_none_or(serde_json::Value::is_null)
+                        && args
+                            .get("tail_lines")
+                            .is_none_or(serde_json::Value::is_null);
+                    let authorization_result = if child_read_error {
+                        Err("Child reads require an explicit cursor or tail_lines; default chat cursor is reserved for the parent".into())
+                    } else {
+                        self.tools.authorization(&tool, &args)
+                    };
+                    let authorization = match authorization_result {
                         Ok(authorization) => authorization,
                         Err(error) => {
                             on_tool_event(&ToolEvent::Finished {
@@ -366,7 +445,32 @@ impl Runtime {
                         "tool.started",
                         serde_json::json!({"tool": tool, "sequence": sequence}),
                     );
-                    let result = self.tools.execute_authorized(&tool_call, &authorization);
+                    if let Some(control) = &self.run_control {
+                        control.check()?;
+                    }
+                    let result = if crate::delegation::is_run_tool(&tool) {
+                        match &self.delegation {
+                            Some(delegation) => delegation
+                                .execute(
+                                    &tool,
+                                    &args,
+                                    crate::delegation::CallContext {
+                                        prepared: &prepared,
+                                        parent_input: &pending_request,
+                                        available_tools: &tool_definitions,
+                                        permission_mode,
+                                        authorizer,
+                                        on_tool_event,
+                                        sequence,
+                                        control: self.run_control.as_ref(),
+                                    },
+                                )
+                                .map(crate::tools::ToolResult::text),
+                            None => Err("Agent delegation is unavailable".into()),
+                        }
+                    } else {
+                        self.tools.execute_authorized(&tool_call, &authorization)
+                    };
                     let (success, output) = match result {
                         Ok(result) => {
                             let images = result
@@ -767,4 +871,16 @@ fn skip_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
         cursor += 1;
     }
     cursor
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        #[cfg(any(unix, windows))]
+        if let Some(scope) = &self.owned_process_scope {
+            if let Some(delegation) = &self.delegation {
+                delegation.close_owner();
+            }
+            let _ = scope.close(std::time::Duration::from_secs(3));
+        }
+    }
 }

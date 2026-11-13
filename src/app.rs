@@ -51,13 +51,35 @@ pub fn build_runtime_with_settings(
     settings: &EffectiveSettings,
 ) -> Result<Runtime, String> {
     let definition = LocalAgentDefinition::from_file(agent_file)?;
+    let store = SettingsStore::from_user_config()?;
+    let runtime = build_runtime_from_definition(workspace_root, definition, settings, &store)?;
+    let runtime = runtime.with_delegation(crate::delegation::Delegation::new(
+        workspace_root,
+        settings.clone(),
+        store,
+    )?);
+    #[cfg(any(unix, windows))]
+    let runtime = {
+        let manager = crate::tools::ProcessManager::new();
+        manager.set_limits(settings.process_limits)?;
+        let scope = manager.create_scope()?;
+        let mut runtime = runtime.with_request_process_scope(workspace_root, scope.clone(), false);
+        runtime.owned_process_scope = Some(scope);
+        runtime
+    };
+    Ok(runtime)
+}
+
+pub(crate) fn build_runtime_from_definition(
+    workspace_root: &Path,
+    definition: LocalAgentDefinition,
+    settings: &EffectiveSettings,
+    store: &SettingsStore,
+) -> Result<Runtime, String> {
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
     let mut tools = build_default_tools(workspace_root, settings.process_limits)?;
-    let skill_store = crate::skills::SkillStore::for_settings(
-        &SettingsStore::from_user_config()?,
-        workspace_root.to_path_buf(),
-    )?;
+    let skill_store = crate::skills::SkillStore::for_settings(store, workspace_root.to_path_buf())?;
     if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&skill_store) {
         tools.register(Box::new(tool));
     }
@@ -69,6 +91,10 @@ pub fn build_runtime_with_settings(
         workspace_root,
     );
 
+    crate::tools::register_agent_catalog_tools(
+        &mut tools,
+        crate::agent_catalog::AgentCatalog::for_settings(store, workspace_root),
+    );
     Ok(
         Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
             definition, provider,
