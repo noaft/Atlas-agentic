@@ -120,11 +120,28 @@ pub trait Tool {
     fn authorize(
         &self,
         args: &serde_json::Value,
-    ) -> Result<(ToolRisk, Option<Box<dyn Any>>), String> {
+    ) -> Result<(ToolRisk, Option<Box<dyn Any + Send>>), String> {
         Ok((self.risk(args)?, None))
     }
     fn summarize(&self, args: &serde_json::Value) -> String {
         summarize_arguments(args)
+    }
+    fn prepare_execution(
+        &self,
+        _args: serde_json::Value,
+        _context: Option<Box<dyn Any + Send>>,
+    ) -> Result<crate::executions::worker::Work, String> {
+        Err("This tool has no Wakeup worker adapter".into())
+    }
+    fn poll_execution(
+        &self,
+        _result: &ToolResult,
+        _wait_ms: u64,
+    ) -> Result<Option<ToolResult>, String> {
+        Ok(None)
+    }
+    fn cancel_execution(&self, _result: &ToolResult) -> Result<bool, String> {
+        Ok(false)
     }
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String>;
     fn execute_authorized(
@@ -198,7 +215,7 @@ pub struct ToolAuthorization {
     args: serde_json::Value,
     risk: ToolRisk,
     arguments: String,
-    context: Option<Box<dyn Any>>,
+    context: Option<Box<dyn Any + Send>>,
 }
 
 impl ToolAuthorization {
@@ -232,6 +249,9 @@ impl ToolRegistry {
 
     pub fn execute(&self, output: &AgentOutput) -> Result<ToolResult, String> {
         match output {
+            AgentOutput::ScheduledToolCall { .. } | AgentOutput::Execution { .. } => {
+                Err("Wakeup controls require the runtime".into())
+            }
             AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
             AgentOutput::ToolCall { tool, args, .. } => self
                 .tools
@@ -247,6 +267,9 @@ impl ToolRegistry {
         authorization: &ToolAuthorization,
     ) -> Result<ToolResult, String> {
         match output {
+            AgentOutput::ScheduledToolCall { .. } | AgentOutput::Execution { .. } => {
+                Err("Wakeup controls require the runtime".into())
+            }
             AgentOutput::Final { content } => Ok(ToolResult::text(content.clone())),
             AgentOutput::ToolCall { tool, args, .. } => {
                 if tool != &authorization.tool || args != &authorization.args {
@@ -255,9 +278,25 @@ impl ToolRegistry {
                 self.tools
                     .get(tool)
                     .ok_or_else(|| format!("unknown tool: {tool}"))?
-                    .execute_authorized(args, authorization.context.as_deref())
+                    .execute_authorized(
+                        args,
+                        authorization
+                            .context
+                            .as_deref()
+                            .map(|context| context as &dyn Any),
+                    )
             }
         }
+    }
+
+    pub fn prepare_execution(
+        &self,
+        authorization: ToolAuthorization,
+    ) -> Result<crate::executions::worker::Work, String> {
+        self.tools
+            .get(&authorization.tool)
+            .ok_or("Unknown tool")?
+            .prepare_execution(authorization.args, authorization.context)
     }
 
     pub fn authorization(

@@ -1,5 +1,8 @@
 //! Preview and install public skill packages as data through runtime approvals.
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,7 +16,7 @@ use crate::{
 const MAX_CANDIDATES: usize = 8;
 const MAX_PREVIEW_BYTES: usize = 64 * 1024;
 
-trait ImportSource {
+trait ImportSource: Send + Sync {
     fn fetch(&self, url: &str) -> Result<Vec<SkillPackage>, String>;
 }
 struct GithubSource;
@@ -41,23 +44,27 @@ impl ImportSource for GithubSource {
 struct Imports {
     store: SkillStore,
     packages: BTreeMap<String, SkillPackage>,
+    epoch: u64,
 }
 struct PreviewSkillTool {
-    imports: Rc<RefCell<Imports>>,
-    source: Box<dyn ImportSource>,
+    imports: Arc<Mutex<Imports>>,
+    source: Arc<dyn ImportSource>,
+    epoch: Option<u64>,
 }
 struct InstallSkillTool {
-    imports: Rc<RefCell<Imports>>,
+    imports: Arc<Mutex<Imports>>,
 }
 fn tools(store: SkillStore, source: Box<dyn ImportSource>) -> (PreviewSkillTool, InstallSkillTool) {
-    let imports = Rc::new(RefCell::new(Imports {
+    let imports = Arc::new(Mutex::new(Imports {
         store,
         packages: BTreeMap::new(),
+        epoch: 0,
     }));
     (
         PreviewSkillTool {
             imports: imports.clone(),
-            source,
+            source: Arc::from(source),
+            epoch: None,
         },
         InstallSkillTool { imports },
     )
@@ -66,7 +73,7 @@ fn tools(store: SkillStore, source: Box<dyn ImportSource>) -> (PreviewSkillTool,
 pub fn register_skill_import_tools(registry: &mut ToolRegistry, store: SkillStore) {
     let (preview, install) = tools(store, Box::new(GithubSource));
     registry.register(Box::new(preview));
-    registry.register(Box::new(install));
+    registry.register(crate::executions::worker::tool(install));
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,8 +148,24 @@ fn package_preview(package: &SkillPackage) -> Result<Preview, String> {
     })
 }
 impl Tool for PreviewSkillTool {
+    fn prepare_execution(
+        &self,
+        args: Value,
+        _context: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<crate::executions::worker::Work, String> {
+        let epoch = self.imports.lock().unwrap_or_else(|e| e.into_inner()).epoch;
+        let tool = Self {
+            imports: self.imports.clone(),
+            source: self.source.clone(),
+            epoch: Some(epoch),
+        };
+        Ok(Box::new(move |_| tool.execute(&args)))
+    }
+
     fn reset_request_state(&self) {
-        self.imports.borrow_mut().packages.clear();
+        let mut imports = self.imports.lock().unwrap_or_else(|e| e.into_inner());
+        imports.epoch = imports.epoch.wrapping_add(1);
+        imports.packages.clear();
     }
     fn name(&self) -> &str {
         "preview_skill"
@@ -160,6 +183,11 @@ impl Tool for PreviewSkillTool {
     }
     fn execute(&self, args: &Value) -> Result<ToolResult, String> {
         let args = PreviewArgs::parse(args)?;
+        let current = self.imports.lock().unwrap_or_else(|e| e.into_inner()).epoch;
+        let epoch = self.epoch.unwrap_or(current);
+        if current != epoch {
+            return Err("Skill preview request expired before download".into());
+        }
         let packages = self.source.fetch(&args.url)?;
         if packages.is_empty() || packages.len() > MAX_CANDIDATES {
             return Err(
@@ -182,7 +210,11 @@ impl Tool for PreviewSkillTool {
         if message.len() > MAX_PREVIEW_BYTES {
             return Err("Preview instructions exceed 64 KiB; use a smaller skill folder or import through Settings.".into());
         }
-        self.imports.borrow_mut().packages = previews
+        let mut imports = self.imports.lock().unwrap_or_else(|e| e.into_inner());
+        if imports.epoch != epoch {
+            return Err("Skill preview request expired before publication".into());
+        }
+        imports.packages = previews
             .into_iter()
             .zip(packages)
             .map(|(preview, package)| (preview.token, package))
@@ -193,7 +225,13 @@ impl Tool for PreviewSkillTool {
 impl InstallSkillTool {
     fn parse(&self, value: &Value) -> Result<InstallArgs, String> {
         let args = InstallArgs::parse(value)?;
-        if !self.imports.borrow().packages.contains_key(&args.token) {
+        if !self
+            .imports
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .packages
+            .contains_key(&args.token)
+        {
             return Err(
                 "Unknown or expired skill preview token; call preview_skill again in this request."
                     .into(),
@@ -204,7 +242,9 @@ impl InstallSkillTool {
 }
 impl Tool for InstallSkillTool {
     fn reset_request_state(&self) {
-        self.imports.borrow_mut().packages.clear();
+        let mut imports = self.imports.lock().unwrap_or_else(|e| e.into_inner());
+        imports.epoch = imports.epoch.wrapping_add(1);
+        imports.packages.clear();
     }
     fn name(&self) -> &str {
         "install_skill"
@@ -226,7 +266,7 @@ impl Tool for InstallSkillTool {
         let Ok(args) = self.parse(args) else {
             return "Invalid skill installation".into();
         };
-        let imports = self.imports.borrow();
+        let imports = self.imports.lock().unwrap_or_else(|e| e.into_inner());
         let package = &imports.packages[&args.token];
         summarize_arguments(
             &json!({"scope":args.scope,"source":package.source,"fingerprint":skills::fingerprint(&package.files)}),
@@ -234,7 +274,7 @@ impl Tool for InstallSkillTool {
     }
     fn execute(&self, args: &Value) -> Result<ToolResult, String> {
         let args = self.parse(args)?;
-        let mut imports = self.imports.borrow_mut();
+        let mut imports = self.imports.lock().unwrap_or_else(|e| e.into_inner());
         let package = imports.packages[&args.token].clone();
         let info = imports.store.install(package, args.scope, false)?;
         imports.packages.remove(&args.token);
@@ -257,17 +297,21 @@ mod tests {
         Runtime,
     };
     use serde_json::{json, Value};
-    use std::{cell::Cell, collections::VecDeque};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     const URL: &str = "https://github.com/team/skills";
     struct Source {
-        calls: Rc<Cell<usize>>,
+        calls: Arc<AtomicUsize>,
         packages: Vec<SkillPackage>,
     }
     impl ImportSource for Source {
         fn fetch(&self, url: &str) -> Result<Vec<SkillPackage>, String> {
             assert_eq!(url, URL);
-            self.calls.set(self.calls.get() + 1);
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.packages.clone())
         }
     }
@@ -286,10 +330,10 @@ mod tests {
         tempfile::TempDir,
         PreviewSkillTool,
         InstallSkillTool,
-        Rc<Cell<usize>>,
+        Arc<AtomicUsize>,
     ) {
         let root = tempfile::tempdir().unwrap();
-        let calls = Rc::new(Cell::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
         let store = SkillStore::new(root.path().join("personal"), root.path().join("workspace"));
         let (preview, install) = tools(
             store,
@@ -318,7 +362,7 @@ mod tests {
         let (root, preview, install, calls) = fixture(vec![package()]);
         let token = preview_token(&preview);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         let args = json!({"token": token, "scope": "project"});
         assert_eq!(install.risk(&args).unwrap(), ToolRisk::ModifyWorkspace);
         let result: Value = serde_json::from_str(&install.execute(&args).unwrap().message).unwrap();
@@ -332,7 +376,7 @@ mod tests {
             b"Frozen supporting instructions"
         );
         assert_eq!(
-            calls.get(),
+            calls.load(Ordering::SeqCst),
             1,
             "installation must not refetch a mutable remote source"
         );
@@ -368,7 +412,7 @@ mod tests {
             assert!(preview.risk(&args).is_err());
             assert!(preview.execute(&args).is_err());
         }
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         for args in [
             json!({"token":"forged","scope":"project"}),
             json!({"token":uuid::Uuid::new_v4().to_string(),"scope":"project"}),
@@ -412,7 +456,12 @@ mod tests {
         ] {
             let (root, preview, install, _) = fixture(packages);
             assert!(preview.execute(&json!({"url": URL})).is_err());
-            assert!(install.imports.borrow().packages.is_empty());
+            assert!(install
+                .imports
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .packages
+                .is_empty());
             assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         }
     }
@@ -457,7 +506,7 @@ mod tests {
                 &mut |_| {},
             )
             .unwrap();
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
@@ -536,7 +585,11 @@ mod tests {
             )
             .unwrap();
         assert!(
-            imports.borrow().packages.is_empty(),
+            imports
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .packages
+                .is_empty(),
             "successful request must release reviewed package bytes"
         );
         let mut failed_install = false;
@@ -567,7 +620,7 @@ mod tests {
             failed_install,
             "the second request must reject the previous request's token"
         );
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
     struct PreviewOnly(RefCell<Vec<String>>);
@@ -602,7 +655,7 @@ mod tests {
             *authorizer.0.borrow(),
             vec!["preview_skill", "install_skill"]
         );
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
@@ -624,8 +677,12 @@ mod tests {
             std::fs::read(root.path().join("personal/review/SKILL.md")).unwrap(),
             package().files["SKILL.md"]
         );
-        assert_eq!(calls.get(), 1);
-        assert!(imports.borrow().packages.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(imports
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .packages
+            .is_empty());
     }
     struct FailingModel(Cell<bool>);
     impl ModelProvider for FailingModel {
@@ -660,8 +717,12 @@ mod tests {
             &mut |_| {},
         );
         assert_eq!(result.unwrap_err(), "interrupted");
-        assert_eq!(calls.get(), 1);
-        assert!(imports.borrow().packages.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(imports
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .packages
+            .is_empty());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }

@@ -104,3 +104,18 @@ npm --prefix desktop run build
   provider credentials.
 - [Documentation index](docs/README.md), including the Vietnamese input fix for WSLg.
 - [Repository guide](AGENTS.md) · [Coding rules](RULE.md) · [Product vision](VISION.md).
+
+
+### Wakeup for long tool calls
+
+Tools can opt into `execution: {"mode":"job","yield_ms":2000}` at the top level of
+an Atlas tool call, or choose `task` to return an execution ID immediately. The
+backend scheduler wakes the owning agent on its deadline (always below30seconds)
+or completion. Wakeup messages contain metadata only. The agent explicitly reads
+1–200 tail lines or a byte page, with a hard4KiB content limit; it can then change
+its next wait. Starting an execution and checking it are separate operations:
+waiting never replays a tool. Existing approvals and command lifetimes still apply.
+
+Run `cargo run --example wakeup` for a deterministic, no-key walkthrough with an
+in-memory tool and fake agent. See [Wakeup architecture](docs/architecture/wakeup.md)
+for ownership, mailboxes, cancellation, output bounds and the model protocol.

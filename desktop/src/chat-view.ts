@@ -186,6 +186,15 @@ function terminalOutput(details: string | null, fallback: string): HTMLPreElemen
   if (details) {
     try {
       const result = JSON.parse(details);
+      const selected = result?.result?.execution ? result.result : result?.execution ? result : null;
+      if (selected && typeof selected.text === "string") {
+        const lines = [selected.text];
+        if (selected.truncated) lines.push("[Selected output was limited; use the cursor to read another page.]");
+        if (selected.retention_loss) lines.push("[Earlier output was dropped from the retained buffer.]");
+        if (typeof selected.error === "string" && selected.error) lines.push(`[error] ${selected.error}`);
+        pre.textContent = lines.filter(Boolean).join("\n") || "No output returned.";
+        return pre;
+      }
       if (result && typeof result === "object" &&
           (typeof result.stdout === "string" || typeof result.stderr === "string")) {
         const lines: string[] = [];

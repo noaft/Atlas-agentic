@@ -2198,3 +2198,17 @@ test("delegated agents appear inside the assistant conversation instead of the c
   pending.resolve({answer: "Started", metadata, created: true}); await sending;
   expect(root.querySelector(".message-assistant [data-agent-run]")).not.toBeNull();
 });
+
+test("saved Wakeup reads show selected log text instead of the protocol envelope", async () => {
+  const api = new ViewApi();
+  api.load = async (): Promise<Conversation> => ({...conversation(), activities: [{turnId:"wakeup-read",assistantMessageIndex:1,records:[{
+    sequence:0,kind:"toolResult",tool:"read_execution",arguments:'{"execution_id":"owned","tail_lines":2}',outcome:"succeeded",summary:"Selected output",createdAt:metadata.updatedAt,
+    details:JSON.stringify({success:true,result:{execution:{execution_id:"owned",status:"running"},text:"line one\n<img src=x>\n",truncated:false,retention_loss:true,start_cursor:100,next_cursor:125,end_cursor:125}}),
+  }]}]});
+  const {root,store}=setup(api);await store.initialize();await store.selectConversation(metadata.id);
+  const output=root.querySelector("[data-activity] .tool-terminal-output");
+  expect(output?.textContent).toContain("line one\n<img src=x>");
+  expect(output?.textContent).toContain("Earlier output");
+  expect(output?.textContent).not.toContain('"text"');
+  expect(output?.querySelector("img")).toBeNull();
+});

@@ -249,7 +249,8 @@ impl DesktopState {
                     )?
                     .with_manager(self.processes.agents.clone(), scope.id().into()),
                 )
-                .with_process_scope(&workspace, scope.clone()),
+                .with_process_scope(&workspace, scope.clone())
+                .with_execution_scope(self.processes.executions.scope(scope.id())),
             None => runtime,
         };
         let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
@@ -268,9 +269,10 @@ impl DesktopState {
                 .bind(scope, &parse_id(&result.metadata.id)?)
                 .is_err()
             {
+                self.processes.executions.close_owner(scope.id());
                 self.processes.agents.close_owner(scope.id());
                 let _ = scope.close(Duration::from_secs(3));
-                result.process_warning=Some("Background work was stopped because ownership transfer failed. Check Agent runs before retrying.".into());
+                result.process_warning=Some("Ownership transfer failed and cleanup was requested. Some actions may have completed; inspect before retrying.".into());
                 diagnostics::event(
                     "WARN",
                     "process.scope.transfer_failed",

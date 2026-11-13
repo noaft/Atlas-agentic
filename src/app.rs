@@ -81,10 +81,12 @@ pub(crate) fn build_runtime_from_definition(
     let mut tools = build_default_tools(workspace_root, settings.process_limits)?;
     let skill_store = crate::skills::SkillStore::for_settings(store, workspace_root.to_path_buf())?;
     if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&skill_store) {
-        tools.register(Box::new(tool));
+        tools.register(crate::executions::worker::tool(tool));
     }
     crate::tools::register_skill_import_tools(&mut tools, skill_store.clone());
-    tools.register(Box::new(crate::tools::CreateSkillTool::new(skill_store)));
+    tools.register(crate::executions::worker::tool(
+        crate::tools::CreateSkillTool::new(skill_store),
+    ));
     crate::mcp::register_tools(
         &mut tools,
         crate::mcp::McpConfig::from_environment()?,
@@ -110,27 +112,27 @@ fn build_default_tools(
     limits.validate()?;
     let computer = system_computer_controller();
     let tools = ToolRegistry::new(vec![
-        Box::new(PwdTool::new(workspace_root)),
-        Box::new(ListDirTool::new(workspace_root)),
-        Box::new(ReadFileTool::new(workspace_root)),
-        Box::new(CreateFileTool::new(workspace_root)),
-        Box::new(ApplyPatchTool::new(workspace_root)),
-        Box::new(CreateDirectoryTool::new(workspace_root)),
-        Box::new(CopyFileTool::new(workspace_root)),
-        Box::new(MoveFileTool::new(workspace_root)),
-        Box::new(DeleteFileTool::new(workspace_root)),
-        Box::new(RipgrepTool::new(workspace_root)),
-        Box::new(SearchFilesTool::new(workspace_root)),
-        Box::new(OpenFileTool::new(workspace_root)),
-        Box::new(OpenApplicationTool::new()),
-        Box::new(CurrentTimeTool::new()),
-        Box::new(MouseMoveTool::new(computer.clone())),
-        Box::new(MouseClickTool::new(computer.clone())),
-        Box::new(MouseScrollTool::new(computer.clone())),
-        Box::new(TypeTextTool::new(computer.clone())),
-        Box::new(KeyPressTool::new(computer.clone())),
-        Box::new(GetUiStateTool::new(computer.clone())),
-        Box::new(CaptureScreenTool::new(computer)),
+        crate::executions::worker::tool(PwdTool::new(workspace_root)),
+        crate::executions::worker::tool(ListDirTool::new(workspace_root)),
+        crate::executions::worker::tool(ReadFileTool::new(workspace_root)),
+        crate::executions::worker::tool(CreateFileTool::new(workspace_root)),
+        crate::executions::worker::tool(ApplyPatchTool::new(workspace_root)),
+        crate::executions::worker::tool(CreateDirectoryTool::new(workspace_root)),
+        crate::executions::worker::tool(CopyFileTool::new(workspace_root)),
+        crate::executions::worker::tool(MoveFileTool::new(workspace_root)),
+        crate::executions::worker::tool(DeleteFileTool::new(workspace_root)),
+        crate::executions::worker::tool(RipgrepTool::new(workspace_root)),
+        crate::executions::worker::tool(SearchFilesTool::new(workspace_root)),
+        crate::executions::worker::tool(OpenFileTool::new(workspace_root)),
+        crate::executions::worker::tool(OpenApplicationTool::new()),
+        crate::executions::worker::tool(CurrentTimeTool::new()),
+        crate::executions::worker::tool(MouseMoveTool::new(computer.clone())),
+        crate::executions::worker::tool(MouseClickTool::new(computer.clone())),
+        crate::executions::worker::tool(MouseScrollTool::new(computer.clone())),
+        crate::executions::worker::tool(TypeTextTool::new(computer.clone())),
+        crate::executions::worker::tool(KeyPressTool::new(computer.clone())),
+        crate::executions::worker::tool(GetUiStateTool::new(computer.clone())),
+        crate::executions::worker::tool(CaptureScreenTool::new(computer)),
     ]);
     #[cfg(any(unix, windows))]
     let tools = {
@@ -140,7 +142,7 @@ fn build_default_tools(
         for tool in exec.session_tools() {
             tools.register(tool);
         }
-        tools.register(Box::new(exec));
+        tools.register(crate::executions::worker::tool(exec));
         tools
     };
 

@@ -6,8 +6,10 @@ use crate::{
 use serde::Deserialize;
 
 pub fn register_agent_catalog_tools(registry: &mut ToolRegistry, catalog: AgentCatalog) {
-    registry.register(Box::new(CreateAgentTool(catalog.clone())));
-    registry.register(Box::new(ListAgentsTool(catalog)));
+    registry.register(crate::executions::worker::tool(CreateAgentTool(
+        catalog.clone(),
+    )));
+    registry.register(crate::executions::worker::tool(ListAgentsTool(catalog)));
 }
 struct CreateAgentTool(AgentCatalog);
 struct ListAgentsTool(AgentCatalog);

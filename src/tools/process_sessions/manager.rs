@@ -468,6 +468,9 @@ impl ProcessSessions {
     ) -> Result<ProcessRead, String> {
         self.scope.read_tail(id, lines, wait_ms)
     }
+    pub(crate) fn stop_independent(&self, id: &str) -> Result<ProcessRead, String> {
+        self.scope.stop(id)
+    }
     pub(crate) fn stop(&self, id: &str) -> Result<ProcessRead, String> {
         self.scope.stop_agent(id)
     }

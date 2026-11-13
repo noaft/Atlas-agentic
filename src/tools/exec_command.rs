@@ -79,6 +79,40 @@ impl ExecCommandTool {
 }
 
 impl Tool for ExecCommandTool {
+    fn poll_execution(
+        &self,
+        result: &ToolResult,
+        wait_ms: u64,
+    ) -> Result<Option<ToolResult>, String> {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.message) else {
+            return Ok(None);
+        };
+        if value.get("running").and_then(|v| v.as_bool()) != Some(true) {
+            return Ok(None);
+        }
+        let Some(id) = value.get("session_id").and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        let cursor = value
+            .get("next_cursor")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| "Invalid process cursor")?;
+        let read = self.sessions.read(id, cursor, wait_ms)?;
+        Ok(Some(ToolResult::text(
+            serde_json::to_string(&read).map_err(|_| "Could not encode process status")?,
+        )))
+    }
+    fn cancel_execution(&self, result: &ToolResult) -> Result<bool, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(&result.message).map_err(|_| "Invalid process result")?;
+        if let Some(id) = value.get("session_id").and_then(|v| v.as_str()) {
+            self.sessions.stop_independent(id)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
     fn name(&self) -> &str {
         "exec_command"
     }

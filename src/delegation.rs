@@ -25,6 +25,22 @@ use std::{
     time::Duration,
 };
 
+struct WakeupChildGuard {
+    manager: AgentRunManager,
+    owner: String,
+    id: String,
+}
+impl Drop for WakeupChildGuard {
+    fn drop(&mut self) {
+        if self
+            .manager
+            .read(&self.owner, &self.id)
+            .is_ok_and(|r| !r.status.is_terminal())
+        {
+            let _ = self.manager.cancel(&self.owner, &self.id);
+        }
+    }
+}
 pub type WorkerFactory = Arc<
     dyn Fn(
             &Path,
@@ -47,6 +63,7 @@ pub struct Delegation {
     depth: usize,
     persistent: bool,
     factory: WorkerFactory,
+    execution_scope: Option<crate::executions::ExecutionScope>,
     #[cfg(any(unix, windows))]
     process_scope: Option<crate::tools::ProcessScope>,
 }
@@ -67,6 +84,7 @@ impl Delegation {
             owner: uuid::Uuid::new_v4().to_string(),
             depth: 0,
             persistent: false,
+            execution_scope: None,
             factory: Arc::new(crate::app::build_runtime_from_definition),
             #[cfg(any(unix, windows))]
             process_scope: None,
@@ -96,6 +114,128 @@ impl Delegation {
     }
     pub(crate) fn close_owner(&self) {
         self.manager.close_owner(&self.owner);
+    }
+    pub(crate) fn set_execution_scope(&mut self, scope: crate::executions::ExecutionScope) {
+        self.execution_scope = Some(scope);
+    }
+    pub(crate) fn service_wakeup_approvals(
+        &self,
+        authorizer: &dyn ToolAuthorizer,
+        events: &mut dyn FnMut(&ToolEvent),
+        is_child: bool,
+    ) -> Result<(), String> {
+        if is_child || authorizer.approvals_in_run_view() {
+            return Ok(());
+        }
+        for run in self.manager.list(&self.owner)? {
+            if let Some(request) = run.pending_approval {
+                events(&ToolEvent::ApprovalRequested {
+                    sequence: u32::MAX,
+                    request: request.clone(),
+                });
+                let decision = authorizer.authorize(&request)?;
+                self.manager.resolve_approval(
+                    &self.owner,
+                    &run.run_id,
+                    &request.id,
+                    decision == AuthorizationDecision::Allow,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn prepare_wakeup(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        context: CallContext<'_>,
+    ) -> Result<crate::executions::worker::Work, String> {
+        if tool == "call_agent" {
+            let result = self.call(args, context)?;
+            let value: serde_json::Value =
+                serde_json::from_str(&result).map_err(|_| "Invalid child run result")?;
+            let id = value
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .ok_or("Child run did not return its ID")?
+                .to_string();
+            let manager = self.manager.clone();
+            let owner = self.owner.clone();
+            let guard = WakeupChildGuard {
+                manager: manager.clone(),
+                owner: owner.clone(),
+                id: id.clone(),
+            };
+            return Ok(Box::new(move |reporter| {
+                let _guard = guard;
+                let mut approval = None;
+                let mut cancelled = false;
+                loop {
+                    if reporter.cancelled() && !cancelled {
+                        manager.cancel(&owner, &id)?;
+                        cancelled = true;
+                    }
+                    let view = manager.wait(&owner, &id, Duration::from_millis(100))?;
+                    reporter.metadata(serde_json::json!({"run_id":id,"status":view.status,"tool_calls":view.tool_calls}));
+                    let next = view.pending_approval.as_ref().map(|a| a.id.clone());
+                    if next.is_some() && next != approval {
+                        reporter.input_required();
+                    }
+                    approval = next;
+                    if view.status.is_terminal() {
+                        if matches!(view.status, crate::agent_runs::AgentRunStatus::Cancelled) {
+                            reporter.ack_cancel();
+                        }
+                        if matches!(
+                            view.status,
+                            crate::agent_runs::AgentRunStatus::Failed
+                                | crate::agent_runs::AgentRunStatus::TimedOut
+                        ) {
+                            return Err(view.error.unwrap_or_else(|| "Child agent failed".into()));
+                        }
+                        return Ok(ToolResult::text(render_run(&view, 0, 16384)?));
+                    }
+                }
+            }));
+        }
+        let manager = self.manager.clone();
+        let owner = self.owner.clone();
+        let tool = tool.to_string();
+        let args = args.clone();
+        Ok(Box::new(move |_reporter| {
+            let result = match tool.as_str() {
+                "list_agent_runs" => {
+                    parse_empty(&args)?;
+                    render_list(&manager.list(&owner)?)
+                }
+                "read_agent_run" => {
+                    let a: ReadArgs = parse(&args)?;
+                    render_run(
+                        &manager.read(&owner, &a.run_id)?,
+                        a.output_offset.unwrap_or(0),
+                        a.output_limit.unwrap_or(16384),
+                    )
+                }
+                "cancel_agent_run" => {
+                    let a: RunArgs = parse(&args)?;
+                    render_run(&manager.cancel(&owner, &a.run_id)?, 0, 16384)
+                }
+                "wait_agent_run" => {
+                    let a: WaitArgs = parse(&args)?;
+                    render_run(
+                        &manager.wait(
+                            &owner,
+                            &a.run_id,
+                            Duration::from_millis(a.wait_ms.unwrap_or(1000)),
+                        )?,
+                        0,
+                        16384,
+                    )
+                }
+                _ => Err("Unknown agent run tool".into()),
+            }?;
+            Ok(ToolResult::text(result))
+        }))
     }
     pub(crate) fn execute(
         &self,
@@ -178,6 +318,11 @@ impl Delegation {
                 let local = local_definition(&definition, &settings);
                 let mut runtime =
                     (child.factory)(&child.workspace, local, &settings, &child.store)?;
+                if let Some(scope) = &child.execution_scope {
+                    let execution_scope = scope.child(control.run_id());
+                    control.attach_execution_scope(execution_scope.clone())?;
+                    runtime = runtime.with_execution_scope(execution_scope);
+                }
                 #[cfg(any(unix, windows))]
                 if let Some(scope) = &child.process_scope {
                     runtime = if child.persistent {
@@ -280,7 +425,7 @@ impl Delegation {
                     } else if context.control.is_none() && notified.insert(request.id.clone()) {
                         (context.on_tool_event)(&ToolEvent::Progress {
                             message: format!(
-                                "{} needs approval for {}. Open Agent runs to review it.",
+                                "{} needs approval for {}. Review the agent card in this conversation.",
                                 pending.agent, request.tool
                             ),
                         });

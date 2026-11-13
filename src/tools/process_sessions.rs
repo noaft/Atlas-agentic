@@ -212,7 +212,7 @@ pub(super) fn session_tools(sessions: Arc<ProcessSessions>) -> Vec<Box<dyn Tool>
     [Operation::List, Operation::Read, Operation::Stop]
         .into_iter()
         .map(|operation| {
-            Box::new(ProcessTool {
+            crate::executions::worker::tool(ProcessTool {
                 sessions: sessions.clone(),
                 operation,
             }) as Box<dyn Tool>
@@ -224,7 +224,7 @@ pub fn register_process_tools(registry: &mut ToolRegistry, workspace: &Path) {
     for tool in exec.session_tools() {
         registry.register(tool);
     }
-    registry.register(Box::new(exec));
+    registry.register(crate::executions::worker::tool(exec));
 }
 pub fn register_process_tools_in_scope(
     registry: &mut ToolRegistry,
@@ -235,7 +235,7 @@ pub fn register_process_tools_in_scope(
     for tool in exec.session_tools() {
         registry.register(tool);
     }
-    registry.register(Box::new(exec));
+    registry.register(crate::executions::worker::tool(exec));
 }
 
 pub(crate) fn register_request_process_tools(
@@ -248,5 +248,5 @@ pub(crate) fn register_request_process_tools(
     for tool in exec.session_tools() {
         registry.register(tool);
     }
-    registry.register(Box::new(exec));
+    registry.register(crate::executions::worker::tool(exec));
 }

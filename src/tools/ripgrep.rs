@@ -86,7 +86,7 @@ impl Tool for RipgrepTool {
     fn authorize(
         &self,
         args: &serde_json::Value,
-    ) -> Result<(ToolRisk, Option<Box<dyn Any>>), String> {
+    ) -> Result<(ToolRisk, Option<Box<dyn Any + Send>>), String> {
         let args = parse(args)?;
         let root = self.resolve_root(args.path.as_deref())?;
         build_matcher(&args)?;

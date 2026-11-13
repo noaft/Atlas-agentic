@@ -771,3 +771,27 @@ feat: send tool results back to agents
 fix: handle streamed tool responses
 docs: simplify agent repository guide
 ```
+
+
+## Wakeup execution protocol
+
+Read docs/architecture/wakeup.md before changing scheduled tool execution.
+`src/executions/` owns bounded backend records, per-agent mailbox batches/ack,
+worker adapters, metadata-only wakeups and one deadline scheduler per manager.
+Runtime is the only model caller. Optional top-level execution policy selects
+job/task and100–29999ms yield; existing tool args/lifetimes remain separate.
+`await_execution` changes the next wait, `read_execution` explicitly reads1–200
+lines or byte pages, `list_executions` discovers owned IDs, and `cancel_execution`
+preserves runtime confirmation. No wakeup includes raw logs. Content reads cap at
+4096 UTF-8 bytes, retained text64KiB/execution; no read-all mode. Only final whole
+structured output can be format=json; short running snapshots are never complete.
+Never replay a started execution or acknowledge newer events with an older batch.
+Keep model repair snapshots stable, serialize consumers, and do not hold manager
+locks across I/O/model calls/worker spawning. Reserve admission before delegation
+can start children. Preserve exact authorized contexts and skill preview generation.
+Desktop injects native scopes; children have separate scopes linked to RunControl
+cancellation/deadlines and close at child exit. Chat close/reload/shutdown cancel
+owned work without claiming that an opaque action was undone. Process background
+lifetime does not mean its Wakeup execution has finished. No model calls after
+final or app restart; retained desktop task handles are available next request.
+Keep inline tool/agent UI, existing permissions and metadata-only diagnostics.

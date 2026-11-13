@@ -13,13 +13,11 @@ mod windows;
 pub use config::{McpConfig, OAuthConfig, ServerConfig};
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -103,7 +101,8 @@ enum Operation {
 
 struct McpTool {
     operation: Operation,
-    connections: Rc<RefCell<Connections>>,
+    connections: Arc<Mutex<Connections>>,
+    config: Arc<McpConfig>,
 }
 
 #[derive(Deserialize)]
@@ -138,14 +137,7 @@ impl Tool for McpTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        let servers: Vec<String> = self
-            .connections
-            .borrow()
-            .config
-            .servers
-            .keys()
-            .cloned()
-            .collect();
+        let servers: Vec<String> = self.config.servers.keys().cloned().collect();
         let (description, properties, required) = match self.operation {
             Operation::Servers => (
                 "List configured MCP server names without launching processes. Use mcp_list_tools to discover a server's tools.",
@@ -176,24 +168,23 @@ impl Tool for McpTool {
             }
             Operation::List => {
                 let args: ListArgs = parse(args)?;
-                self.connections.borrow().validate_server(&args.server)?;
-                Ok(
-                    if self.connections.borrow().config.servers[&args.server]
-                        .url
-                        .is_some()
-                    {
-                        ToolRisk::ExternalTool
-                    } else {
-                        ToolRisk::Launch
-                    },
-                )
+                if !self.config.servers.contains_key(&args.server) {
+                    return Err("unknown configured MCP server".into());
+                }
+                Ok(if self.config.servers[&args.server].url.is_some() {
+                    ToolRisk::ExternalTool
+                } else {
+                    ToolRisk::Launch
+                })
             }
             Operation::Call => {
                 let args: CallArgs = parse(args)?;
                 if args.tool.trim().is_empty() || args.tool.len() > 128 {
                     return Err("MCP tool name must contain 1–128 bytes".into());
                 }
-                self.connections.borrow().validate_server(&args.server)?;
+                if !self.config.servers.contains_key(&args.server) {
+                    return Err("unknown configured MCP server".into());
+                }
                 Ok(ToolRisk::ExternalTool)
             }
         }
@@ -201,7 +192,10 @@ impl Tool for McpTool {
 
     fn execute(&self, args: &Value) -> Result<ToolResult, String> {
         self.risk(args)?;
-        let mut connections = self.connections.borrow_mut();
+        let mut connections = self
+            .connections
+            .lock()
+            .map_err(|_| "MCP connection unavailable")?;
         let result = match self.operation {
             Operation::Servers => {
                 json!({"servers":connections.config.servers.keys().collect::<Vec<_>>()})
@@ -340,16 +334,18 @@ fn register_tools_with_cancel(
     if config.servers.is_empty() {
         return;
     }
-    let connections = Rc::new(RefCell::new(Connections {
-        config,
+    let config = Arc::new(config);
+    let connections = Arc::new(Mutex::new(Connections {
+        config: (*config).clone(),
         workspace: workspace.to_path_buf(),
         clients: BTreeMap::new(),
         cancelled,
     }));
     for operation in [Operation::Servers, Operation::List, Operation::Call] {
-        registry.register(Box::new(McpTool {
+        registry.register(crate::executions::worker::tool(McpTool {
             operation,
-            connections: Rc::clone(&connections),
+            connections: Arc::clone(&connections),
+            config: config.clone(),
         }));
     }
 }

@@ -6,6 +6,7 @@ pub mod app;
 pub mod conversations;
 pub mod delegation;
 pub mod diagnostics;
+pub mod executions;
 pub mod mcp;
 pub mod media;
 pub mod models;

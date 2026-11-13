@@ -173,6 +173,7 @@ struct Record {
     deadline: Instant,
     cancelled: bool,
     approval_decision: Option<AuthorizationDecision>,
+    execution_scope: Option<crate::executions::ExecutionScope>,
 }
 impl Record {
     fn snapshot(&self) -> AgentRunView {
@@ -305,6 +306,7 @@ impl AgentRunManager {
             deadline,
             cancelled: false,
             approval_decision: None,
+            execution_scope: None,
         });
         let control = RunControl {
             manager: self.clone(),
@@ -364,6 +366,9 @@ impl AgentRunManager {
         else {
             return;
         };
+        if let Some(scope) = record.execution_scope.take() {
+            scope.close();
+        }
         let view = &mut record.view;
         view.duration_ms = elapsed_ms(record.started);
         view.current_tool = None;
@@ -573,6 +578,9 @@ fn cancel_descendants(store: &mut Store, parent_id: &str) {
 fn request_cancel(record: &mut Record) {
     if !record.view.status.is_terminal() {
         record.cancelled = true;
+        if let Some(scope) = &record.execution_scope {
+            scope.close();
+        }
         record.view.pending_approval = None;
         record.approval_decision = None;
         record.view.status = AgentRunStatus::Cancelling;
@@ -696,6 +704,24 @@ impl RunControl {
     }
     pub fn cancelled(&self) -> bool {
         self.check().is_err()
+    }
+    pub(crate) fn attach_execution_scope(
+        &self,
+        scope: crate::executions::ExecutionScope,
+    ) -> Result<(), String> {
+        let mut store = self.manager.lock()?;
+        let record = store
+            .records
+            .iter_mut()
+            .find(|r| r.view.run_id == self.run_id)
+            .ok_or("agent run not found")?;
+        scope.set_deadline(record.deadline);
+        if record.cancelled || record.view.status.is_terminal() || Instant::now() >= record.deadline
+        {
+            scope.close();
+        }
+        record.execution_scope = Some(scope);
+        Ok(())
     }
     pub fn check(&self) -> Result<(), String> {
         let store = self.manager.lock()?;
@@ -1280,5 +1306,55 @@ mod tests {
             AgentRunStatus::Cancelling
         );
         drop(release_child);
+    }
+
+    #[test]
+    fn wakeup_children_close_tasks_on_cancel_timeout_and_normal_exit() {
+        for ending in ["cancel", "timeout", "normal"] {
+            let manager = AgentRunManager::default();
+            let executions = crate::executions::ToolExecutionManager::new();
+            let scope = executions.scope("root/child");
+            let child_scope = scope.clone();
+            let (ready, started) = mpsc::channel();
+            let (release, gate) = mpsc::channel::<()>();
+            let timeout = if ending == "timeout" {
+                Duration::from_millis(150)
+            } else {
+                Duration::from_secs(5)
+            };
+            let run = manager
+                .start("root", request(), timeout, move |control| {
+                    control.attach_execution_scope(child_scope.clone())?;
+                    child_scope.start("fake", |reporter| {
+                        while !reporter.cancelled() {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        reporter.ack_cancel();
+                        Ok(crate::tools::ToolResult::text("stopped"))
+                    })?;
+                    ready.send(()).unwrap();
+                    let _ = gate.recv_timeout(Duration::from_secs(2));
+                    control.check()?;
+                    Ok(result())
+                })
+                .unwrap();
+            started.recv_timeout(Duration::from_secs(1)).unwrap();
+            if ending == "cancel" {
+                manager.cancel("root", &run.run_id).unwrap();
+            }
+            if ending == "normal" {
+                release.send(()).unwrap();
+            }
+            let until = Instant::now() + Duration::from_secs(1);
+            while scope.acquire_consumer().is_ok() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(
+                scope.acquire_consumer().is_err(),
+                "{ending} did not close child executions"
+            );
+            drop(release);
+            let _ = manager.wait("root", &run.run_id, Duration::from_secs(2));
+        }
     }
 }

@@ -298,7 +298,7 @@ impl Tool for ApplyPatchTool {
     fn authorize(
         &self,
         args: &serde_json::Value,
-    ) -> Result<(ToolRisk, Option<Box<dyn Any>>), String> {
+    ) -> Result<(ToolRisk, Option<Box<dyn Any + Send>>), String> {
         Ok((ToolRisk::Destructive, Some(Box::new(self.prepare(args)?))))
     }
     fn execute(&self, args: &serde_json::Value) -> Result<ToolResult, String> {

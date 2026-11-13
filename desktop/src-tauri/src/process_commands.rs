@@ -15,6 +15,7 @@ use tauri::{State, WebviewWindow};
 #[derive(Clone, Default)]
 pub(crate) struct DesktopProcesses {
     manager: ProcessManager,
+    pub(crate) executions: atlas_agentic::executions::ToolExecutionManager,
     pub(crate) agents: atlas_agentic::agent_runs::AgentRunManager,
     registry: Arc<Mutex<Registry>>,
 }
@@ -78,6 +79,7 @@ impl DesktopProcesses {
                 .collect::<Vec<_>>()
         };
         for scope in old {
+            self.executions.close_owner(scope.id());
             self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
         }
@@ -204,6 +206,9 @@ impl DesktopProcesses {
             .get(id)
             .cloned()
             .unwrap_or_else(|| scope.clone());
+        if target.id() != scope.id() && registry.active.contains(target.id()) {
+            return Err("Cannot merge into an active native chat scope".into());
+        }
         if target.id() != scope.id()
             && self
                 .agents
@@ -214,6 +219,9 @@ impl DesktopProcesses {
         {
             return Err("Cannot merge native scopes while child agents are active".into());
         }
+        if target.id() != scope.id() {
+            self.executions.check_adoption(scope.id(), target.id())?;
+        }
         if target.id() != scope.id() && target.adopt_from(scope).is_err() {
             registry.drafts.remove(scope.id());
             drop(registry);
@@ -222,6 +230,7 @@ impl DesktopProcesses {
         }
         if target.id() != scope.id() {
             self.agents.adopt_owner(scope.id(), target.id())?;
+            self.executions.adopt_owner(scope.id(), target.id())?;
         }
         registry.saved.insert(id.clone(), target);
         registry.drafts.remove(scope.id());
@@ -269,6 +278,7 @@ impl DesktopProcesses {
             registry.drafts.remove(id);
             scope
         };
+        self.executions.close_owner(scope.id());
         self.agents.close_owner(scope.id());
         scope.close(Duration::from_secs(3))
     }
@@ -281,6 +291,7 @@ impl DesktopProcesses {
             .get(id)
             .cloned();
         if let Some(scope) = scope {
+            self.executions.close_owner(scope.id());
             self.agents.close_owner(scope.id());
             scope.close(Duration::from_secs(3))?;
             let mut registry = self
@@ -298,7 +309,9 @@ impl DesktopProcesses {
             .unwrap_or_else(|e| e.into_inner())
             .closing = true;
         self.agents.shutdown();
-        self.manager.shutdown(Duration::from_secs(3))
+        let executions = self.executions.shutdown(Duration::from_secs(3));
+        let processes = self.manager.shutdown(Duration::from_secs(3));
+        executions.and(processes)
     }
 }
 fn uuid() -> String {
@@ -675,5 +688,90 @@ mod agent_scope_tests {
         assert!(hub.agents.read(source.id(), &run.run_id).is_ok());
         assert!(hub.agents.read(saved.id(), &run.run_id).is_err());
         hub.shutdown().unwrap();
+    }
+
+    #[test]
+    fn wakeup_consumer_rejects_handoff_before_any_native_scope_moves() {
+        let hub = DesktopProcesses::default();
+        let client = hub.initialize("main").unwrap();
+        let source = hub
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let id = ConversationId::new();
+        let target = hub
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: Some(id.clone()),
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let execution_scope = hub.executions.scope(target.id());
+        let consumer = execution_scope.acquire_consumer().unwrap();
+        assert!(hub.bind(&source, &id).is_err());
+        assert!(source.list().is_ok());
+        drop(consumer);
+        let native_lease = hub.lease(&target).unwrap();
+        assert!(hub.bind(&source, &id).is_err());
+        assert!(source.list().is_ok());
+        drop(native_lease);
+        hub.bind(&source, &id).unwrap();
+    }
+    #[test]
+    fn wakeup_results_survive_saved_chat_reload_but_draft_scopes_close() {
+        let hub = DesktopProcesses::default();
+        let client = hub.initialize("main").unwrap();
+        let saved = hub
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let draft = hub
+            .resolve(
+                "main",
+                &client,
+                &ProcessContext {
+                    conversation_id: None,
+                    scope_id: None,
+                },
+            )
+            .unwrap();
+        let scope = hub.executions.scope(saved.id());
+        let info = scope
+            .start("fake", |_| {
+                Ok(atlas_agentic::tools::ToolResult::text("retained"))
+            })
+            .unwrap();
+        let batch = scope
+            .wait(std::slice::from_ref(&info.execution_id), 100)
+            .unwrap();
+        scope.ack(&batch.batch_id).unwrap();
+        hub.bind(&saved, &ConversationId::new()).unwrap();
+        hub.initialize("main").unwrap();
+        assert_eq!(
+            scope.read(&info.execution_id, Some(1), None).unwrap().text,
+            "retained"
+        );
+        assert!(hub
+            .executions
+            .scope(draft.id())
+            .start("fake", |_| Ok(atlas_agentic::tools::ToolResult::text(
+                "forbidden"
+            )))
+            .is_err());
     }
 }
