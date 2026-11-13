@@ -54,15 +54,19 @@ export function createAgentRuns(source: Source, options: {inline?: boolean} = {}
       let row = rows.get(run.run_id);
       if (!row) {
         const detail = document.createElement("details"); detail.dataset.agentRun = run.run_id;
-        const heading = text("summary", ""), body = document.createElement("div"), approval = document.createElement("section");
-        const stop = document.createElement("button"); stop.type = "button"; stop.dataset.stopAgent = run.run_id; stop.className = "secondary-button";
-        stop.addEventListener("click", () => {void act(run.run_id, () => source.cancel(owner!, run.run_id));});
-        detail.append(heading, stop, approval, body); content.append(detail);
-        row = {element: detail, summary: heading, body, stop, approval, approvalId: null}; rows.set(run.run_id, row);
+        const heading = text("summary", ""), title = text("span", ""), body = document.createElement("div"), approval = document.createElement("section");
+        const stop = document.createElement("button"); stop.type = "button"; stop.dataset.stopAgent = run.run_id; stop.className = "agent-stop";
+        stop.addEventListener("click", event => {event.preventDefault(); event.stopPropagation(); void act(run.run_id, () => source.cancel(owner!, run.run_id));});
+        title.className = "agent-run-title"; heading.append(title, stop);
+        detail.append(heading, approval, body); content.append(detail);
+        row = {element: detail, summary: title, body, stop, approval, approvalId: null}; rows.set(run.run_id, row);
       }
       row.summary.textContent = `${run.agent} · ${labels[run.status]} · ${Math.max(0, Math.round(run.duration_ms / 1000))}s`;
       row.stop.hidden = !pending(run); row.stop.disabled = run.status === "cancelling" || busy.has(run.run_id);
       row.stop.textContent = run.status === "cancelling" ? "Cancelling…" : "Stop"; row.stop.setAttribute("aria-label", `Stop ${run.agent}`);
+      row.stop.title = run.status === "cancelling" ? "Waiting for the agent to stop" : `Stop ${run.agent}`;
+      row.stop.dataset.state = run.status === "cancelling" ? "cancelling" : busy.has(run.run_id) ? "busy" : "ready";
+      row.stop.setAttribute("aria-busy", String(row.stop.disabled));
       const nodes = [text("p", run.task), text("p", `${run.context_mode === "fork" ? "Forked context" : "Task only"} · ${run.execution_mode === "parallel" ? "Parallel" : "Wait"}${run.model ? ` · ${run.model}` : ""} · ${run.tool_calls} tool calls`)];
       if (run.progress) nodes.push(text("p", run.progress));
       if (run.current_tool) nodes.push(text("p", `Current tool: ${run.current_tool}`));
@@ -128,6 +132,8 @@ export function createAgentRuns(source: Source, options: {inline?: boolean} = {}
         if (row) {
           for (const button of row.approval.querySelectorAll("button")) button.disabled = !!row.approvalId && answeredApprovals.has(row.approvalId);
           row.stop.disabled = runs.find(run => run.run_id === id)?.status === "cancelling";
+          row.stop.dataset.state = row.stop.disabled ? "cancelling" : "ready";
+          row.stop.setAttribute("aria-busy", String(row.stop.disabled));
         }
       }
     }

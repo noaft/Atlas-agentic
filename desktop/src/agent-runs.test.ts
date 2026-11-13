@@ -299,3 +299,20 @@ it("inline monitoring discovers a child registered after the parent's call start
   expect(view.element.hidden).toBe(false);
   view.destroy();
 });
+
+it("keeps the compact Stop control in the agent header without toggling its details", async () => {
+  const cancel = vi.fn().mockResolvedValue(run("cancelling"));
+  const view = createAgentRuns({list: vi.fn().mockResolvedValue([run()]), cancel}, {inline: true});
+  view.update("chat-a", "called", true); await flush();
+  const details = view.element.querySelector<HTMLDetailsElement>("[data-agent-run]")!;
+  const stop = details.querySelector<HTMLButtonElement>("summary .agent-stop")!;
+  expect(stop).not.toBeNull();
+  expect(stop.getAttribute("aria-label")).toBe("Stop Researcher");
+  stop.click(); await flush();
+  expect(cancel).toHaveBeenCalledWith("chat-a", "run-1");
+  expect(details.open).toBe(false);
+  expect(stop.disabled).toBe(true);
+  expect(stop.getAttribute("aria-busy")).toBe("true");
+  expect(stop.dataset.state).toBe("cancelling");
+  view.destroy();
+});
