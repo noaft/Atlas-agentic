@@ -1,70 +1,73 @@
-# Process sessions trong Atlas
+# Process sessions in Atlas
 
-Trạng thái: triển khai desktop manager theo chat, ngày 2026-11-09. Quyết định và
-ownership được mô tả trong [Tool/resource lifecycle](tool-resource-lifecycle.md).
-Hướng dẫn thử: [Xem process manager hoạt động](../guides/process-manager-demo.md).
+Status: desktop manager with per-chat ownership implemented on 2026-11-09.
+See [Tool/resource lifecycle](tool-resource-lifecycle.md) for decisions and ownership,
+and the [process manager walkthrough](../guides/process-manager-demo.md) to try it.
 
-Thiết kế đích đã chốt ngày 2026-11-13: [Tool execution control và hard/lazy](tool-execution-control.md).
-Mọi tool sẽ có execution record chung; ProcessManager tiếp tục quản lý OS process
-bên dưới. Thiết kế mới chưa triển khai; `lifetime: job/background` bên dưới là
-vòng đời command hiện tại, không phải lựa chọn nhịp wake_up hard/lazy.
+The architecture approved on 2026-11-13 is [Tool execution control and hard/lazy](tool-execution-control.md).
+Every tool receives a common execution record; ProcessManager continues to manage
+OS processes underneath. The replacement is implemented and verified. Command
+`lifetime: job/background` below is separate from hard/lazy wake_up cadence.
 
-## Ba khái niệm khác nhau
+## Three different concepts
 
-- **Chat session** là cuộc hội thoại/frontend draft.
-- **Process session** là một lần chạy lệnh, có thể gồm shell và nhiều process OS con.
-- **Runtime request** là một lượt agent, gồm nhiều model/tool calls.
+- A **chat session** is a conversation/frontend draft.
+- A **process session** is one command invocation, potentially a shell and multiple OS descendants.
+- A **runtime request** is one agent turn containing multiple model/tool calls.
 
-OS quản lý process thật. Atlas giữ handle, scope chủ sở hữu, trạng thái, timeout
-và output có giới hạn; model chỉ dùng UUID `session_id`, không điều khiển bằng PID.
+The OS manages actual processes. Atlas holds handles, owner scope, state, timeout,
+and bounded output; the model uses a UUID `session_id`, never a PID for authority.
 
-Desktop giữ `ProcessManager` cùng backend app, mỗi chat có scope riêng. Runtime
-mới nhận scope handle của chat hiện hành. CLI vẫn chỉ giữ resource trong một lượt;
-chưa có daemon hoặc terminal tồn tại qua nhiều lần chạy CLI.
+Desktop keeps ProcessManager with the backend app and a scope per chat. New
+runtimes receive the current chat's scope handle. CLI resources remain request-local;
+there is no daemon or terminal persisting across CLI invocations.
 
-## Job và background
+## Job and background command lifetimes
 
-| Thuộc tính | Ý nghĩa |
+| Property | Meaning |
 | --- | --- |
-| `kind: process` | Loại tài nguyên, hiện có process. |
-| `lifetime: job` | Mặc định; dọn khi lượt hoàn tất, lỗi hoặc bị hủy. |
-| `lifetime: background` | Chỉ dùng khi user yêu cầu rõ ràng; desktop giữ qua nhiều lượt trong cùng chat. |
+| `kind: process` | Resource type; currently process |
+| `lifetime: job` | Default; cleanup when the owning turn completes, fails, or is cancelled |
+| `lifetime: background` | Only on explicit user request; desktop retains it across turns in the same chat |
 
-Background vẫn có timeout; không phải dịch vụ vô hạn. Chạy chương trình foreground,
-không dùng `&` để tách nó khỏi vòng quản lý. Khi shell thoát, các tiến trình con còn
-trong process group/Windows Job sẽ được dọn, kể cả khi đã redirect output.
+Background still has a timeout and is not an unlimited service. Run programs in
+the foreground; never use `&` to detach them from management. When the shell exits,
+remaining descendants in its process group/Windows Job are cleaned up even if their
+output was redirected.
 
-Chat nháp được cấp scope trong bộ nhớ, không tạo history chỉ để giữ scope. Lần
-trả lời đầu lưu thành công sẽ gắn scope với conversation mà giữ nguyên session ID.
-Failed draft có background vẫn xem/Stop được; New chat không lấy resource của nó.
-Menu Close draft có thể dọn scope và bỏ draft; không tạo/xóa saved history.
-Empty draft bị bỏ khi New chat/chuyển chat được release. Reload webview dọn draft scope của
-client cũ; saved chat có thể gắn lại background trong backend còn sống.
+Draft scopes are allocated in memory without creating history. The first successful
+saved answer binds the scope to the conversation while preserving session IDs.
+A failed draft with background work remains inspectable/stoppable; New chat does
+not adopt its resources. Close draft cleans its scope and discards the draft
+without creating/deleting saved history. Empty abandoned drafts are released on
+New chat/navigation. Webview reload closes old-client draft scopes; saved chats can
+reattach to background work while the backend remains alive.
 
-## API tool
+## Tool API
 
-| Tool | Tham số chính | Quyền |
+| Tool | Main arguments | Risk |
 | --- | --- | --- |
-| `exec_command` | `command`, tùy chọn `yield_time_ms`, `timeout_ms`, `lifetime` | Command |
-| `list_processes` | Object rỗng | ReadOnly |
-| `read_process` | `session_id`, tùy chọn `wait_ms`, `cursor` hoặc `tail_lines` | ReadOnly |
+| `exec_command` | `command`; optional `yield_time_ms`, `timeout_ms`, `lifetime` | Command |
+| `list_processes` | Empty object | ReadOnly |
+| `read_process` | `session_id`; optional `wait_ms`, `cursor` or `tail_lines` | ReadOnly |
 | `stop_process` | `session_id` | Command |
 
-Ask/Workspace xác nhận start và tool Stop; Full access giữ semantics bỏ qua xác
-nhận Atlas, không nâng quyền OS. Native API Stop vẫn kiểm tra ownership scope;
-UI hiện dùng tool `stop_process` qua agent, không có nút Stop riêng.
+Ask/Workspace require confirmation for starts and tool Stop. Full access skips
+Atlas confirmation without elevating OS permissions. The native Stop API also
+checks scope ownership; the current UI uses agent `stop_process` calls, with no
+separate Stop button.
 
-Schema/catalog có metadata trạng thái ngắn của scope để agent nhận ra resource
-đã có. Không preload command hoặc raw stdout/stderr. Agent nên dùng danh sách để
-kiểm tra cwd/trạng thái trước khi tái sử dụng hoặc tạo thêm server; không tự replay
-hay restart command thất bại.
+The schema/catalog exposes short scope-status metadata so the agent recognizes
+existing resources. Do not preload commands or raw stdout/stderr. Before reusing
+or duplicating a server, inspect cwd/state through the listing. Never automatically
+replay or restart failed commands.
 
-Desktop quản lý cả command đồng bộ: không có `yield_time_ms` thì chờ kết quả như
-trước, nhưng process vẫn xuất hiện trong manager và tính vào giới hạn. Có yield
-thì trả session khi chưa hoàn tất. Background không truyền yield sẽ mặc định yield
-1000 ms. CLI đồng bộ giữ hành vi cũ; CLI từ chối background.
+Desktop also manages synchronous commands: without `yield_time_ms`, it waits for
+the result as before, but the process is tracked and counts against limits. With
+yield, it returns a session if unfinished. Background without explicit yield
+defaults to 1000 ms. Synchronous CLI behavior remains unchanged; CLI rejects background.
 
-Ví dụ arguments (không phải toàn bộ envelope giao thức):
+Argument examples, separate from the tool-call envelope/wake_up policy:
 
 ```json
 {"command":"cargo test","yield_time_ms":1000,"lifetime":"job"}
@@ -75,131 +78,136 @@ Ví dụ arguments (không phải toàn bộ envelope giao thức):
 ```
 
 ```json
-{"session_id":"<mã tool trả về>","wait_ms":1000}
+{"session_id":"<returned session ID>","wait_ms":1000}
 ```
 
 ```json
-{"session_id":"<mã tool trả về>"}
+{"session_id":"<returned session ID>"}
 ```
 
-Hai ví dụ cuối tương ứng `read_process` và `stop_process`. Dùng đúng mã đã trả về;
-không đoán PID/session của chat khác. Lỗi scope/ID không tự khởi động lại lệnh.
+The last two are `read_process` and `stop_process` respectively. Use the actual
+returned ID; never guess another chat's PID/session. Scope/ID errors never restart commands.
 
-## Output và cursor
+## Output and cursors
 
-Buffer stdout/stderr là ring có offset tăng tuyệt đối. Reader mặc định của agent
-chỉ lấy phần mới, giữ cursor qua các lượt của chat. Native API hỗ trợ cursor riêng cho reader độc lập. UI hiện tại chỉ
-hiển thị kết quả tool inline, không có viewer polling riêng. Cursor tùy chọn có dạng:
+Stdout/stderr use ring buffers with absolute increasing byte offsets. The agent's
+default reader consumes only new output and retains its cursor across chat turns.
+Native APIs support explicit cursors for independent readers. The current UI only
+shows inline tool results and has no separate polling viewer. Optional cursor:
 
 ```json
 {"stdout":0,"stderr":0}
 ```
 
-Để xem những dòng cuối, gọi:
+To inspect the last retained lines:
 
 ```json
-{"session_id":"<id đã nhận>","tail_lines":50,"wait_ms":0}
+{"session_id":"<returned ID>","tail_lines":50,"wait_ms":0}
 ```
 
-`tail_lines` nhận 1–1000, lấy tối đa N dòng cuối **riêng cho stdout và stderr**,
-không ghép thứ tự hai luồng. Không kết hợp với `cursor`; không làm dịch cursor
-mặc định hay cursor UI. Giữ `wait_ms` 0–10000: có log đọc được thì trả ngay;
-chưa có thì chờ output hoặc kết thúc trong deadline. Một dòng kết thúc bằng LF;
-LF cuối không tạo thêm dòng rỗng, dòng chưa có LF vẫn được tính, CRLF giữ nguyên.
-Tail chỉ lấy phần còn trong ring 64 KiB mỗi luồng, có thể bắt đầu giữa dòng.
+`tail_lines` accepts 1–1000 and selects up to N lines **separately for stdout and
+stderr**, without merging stream order. It is exclusive with `cursor` and never
+advances default/UI cursors. `wait_ms` remains 0–10000: return immediately when
+readable output exists; otherwise wait for output or completion until deadline.
+LF ends a line; a trailing LF does not invent an empty line, an unfinished line
+counts, and CRLF is preserved. Tail sees only the retained 64 KiB per stream and
+may begin mid-line.
 
-Mỗi kết quả có `stdout_view` / `stderr_view`: `start_byte`, `end_byte` (exclusive),
-`total_bytes`, `start_line` / `end_line` (null khi không có text), `total_lines`,
-`returned_lines`, `lines_after`, `starts_mid_line`, `older_output_dropped`, `has_more`.
-Số dòng tuyệt đối là 1-based, vẫn tính các LF đã bị bỏ khỏi buffer. `has_more` báo
-byte chưa trả tại snapshot (ví dụ UTF-8 chưa đủ byte), không dự đoán output tương lai.
-`older_output_dropped` phân biệt mất log do ring overflow với chủ động chọn tail;
-`stdout_truncated` / `stderr_truncated` vẫn chỉ báo gap của cursor được yêu cầu.
-Metadata phản ánh lúc đọc, không phải phần trăm hoàn thành của công việc.
+Each result includes `stdout_view` / `stderr_view`: `start_byte`, `end_byte`
+(exclusive), `total_bytes`, `start_line` / `end_line` (null for no text),
+`total_lines`, `returned_lines`, `lines_after`, `starts_mid_line`,
+`older_output_dropped`, and `has_more`. Absolute line numbers are 1-based and count
+LFs already evicted. `has_more` describes unread bytes at snapshot time, including
+incomplete UTF-8, rather than predicting future output. `older_output_dropped`
+distinguishes ring overflow from intentional tail selection; `stdout_truncated` /
+`stderr_truncated` continue to mean requested-cursor gaps. Positions describe the
+read snapshot, not a percentage of work complete.
 
-Terminal và Activity hiển thị khoảng dòng/byte, tail và các cảnh báo trên. Khi
-phần output quá dài cho ngân sách Activity, giữ JSON hợp lệ và metadata, rút
-ngắn phần text về cuối rồi ghi `display_truncated`; khoảng dòng mô tả toàn bộ
-output đã chụp, không chỉ preview. Khi hết ngân sách cả turn, details vẫn có thể
-bị bỏ/cắt như trước. Không có polling hoặc panel process riêng.
+Terminal cards and Activity display these byte/line ranges, tail selection, and
+warnings. If output exceeds Activity budgets, preserve valid JSON and metadata,
+shorten text toward its end, and mark `display_truncated`. Ranges still describe
+the entire captured output rather than just the preview. Turn-wide budgets may
+still omit/shorten details as before. There is no separate process panel or polling.
 
-Đọc explicit cursor không thay cursor mặc định. Kết quả trả `next_cursor` để lần
-sau tiếp tục và `oldest_cursor` để nhận biết phần còn giữ. Nếu cursor cũ bị buffer
-vượt qua, `stdout_truncated`/`stderr_truncated` báo mất dữ liệu. Đọc log không chạy
-lại lệnh. Một lần đọc có thể không có output mà process vẫn đang chạy.
+Explicit-cursor reads do not advance the default cursor. Results provide
+`next_cursor` for continuation and `oldest_cursor` for retained bounds. If the
+buffer has overtaken a cursor, `stdout_truncated`/`stderr_truncated` report loss.
+Reading logs never reruns a command; an empty read may still describe a running process.
 
-| Trường kết quả | Ý nghĩa |
+| Result field | Meaning |
 | --- | --- |
-| `session_id`, `running` | Resource được đọc và worker còn đang chạy/cleanup hay không. |
-| `stdout`, `stderr` | Phần output từ cursor của reader, giới hạn theo buffer byte. |
-| `next_cursor`, `oldest_cursor` | Offset tiếp theo và offset cũ nhất còn giữ. |
-| `tail_lines` | Số dòng tail được yêu cầu; null với read thông thường. |
-| `stdout_view`, `stderr_view` | Vị trí output và tình trạng retention tại thời điểm đọc. |
-| `stdout_truncated`, `stderr_truncated` | Có gap; không được báo log là đầy đủ. |
-| `exit_code` | Mã thoát nếu có; `null` không chứng minh thành công. |
-| `timed_out`, `stopped` | Worker đã xác nhận timeout hoặc dừng. |
-| `stop_requested` | Mới gửi yêu cầu stop; khác với đã dừng. |
-| `error` | Lỗi worker/khởi chạy nếu có. |
+| `session_id`, `running` | Selected resource and whether its worker is running/cleaning up |
+| `stdout`, `stderr` | Bounded output selected by the reader cursor |
+| `next_cursor`, `oldest_cursor` | Next offsets and oldest retained offsets |
+| `tail_lines` | Requested tail count; null for ordinary reads |
+| `stdout_view`, `stderr_view` | Output positions and retention state at read time |
+| `stdout_truncated`, `stderr_truncated` | Cursor gap; do not claim the log is complete |
+| `exit_code` | Exit code if available; null does not prove success |
+| `timed_out`, `stopped` | Worker-confirmed timeout or stop |
+| `stop_requested` | Stop requested, distinct from confirmed stopped |
+| `error` | Worker/spawn error if present |
 
-Stop có thể trả `running: true` khi cleanup chưa xác nhận; lúc đó
-agent cần đọc lại trạng thái. Dừng/timeout không hoàn tác tác động command đã thực hiện.
-UTF-8 bị chia giữa các lần đọc được giữ tới khi đủ byte; byte không hợp lệ được
-biểu diễn thay thế. Terminal inline hiển thị dữ liệu tool event trả về trong vùng
-cuộn; Activity lưu bản bounded theo chính sách hiện có. Không có output streaming
-riêng từ process manager, không có log archive replay vô hạn.
+Stop may return `running: true` before cleanup confirmation; inspect state again.
+Stopping/timeouts do not undo command side effects. Incomplete UTF-8 tails wait
+for remaining bytes; invalid bytes use replacement characters. Inline terminal
+cards show tool-event data in a scrollable region. Activity retains bounded output
+under existing policy. There is no separate manager-output stream or unlimited
+log archive replay.
 
-## Giới hạn
+## Limits
 
-| Hạng mục | Giá trị |
+| Item | Value |
 | --- | --- |
-| Active / chat scope | Mặc định 8; cấu hình 1–32 |
-| Active / backend manager | Mặc định 32; cấu hình 1–128 |
-| Record / chat scope | 32 |
-| Record / backend manager | 128 |
-| Buffer / stdout hoặc stderr | 64 KiB byte; overflow bỏ phần cũ |
+| Active / chat scope | Default 8; configurable 1–32 |
+| Active / backend manager | Default 32; configurable 1–128 |
+| Records / chat scope | 32 |
+| Records / backend manager | 128 |
+| Buffer / stdout or stderr | 64 KiB bytes; overflow drops oldest bytes |
 | Yield | 0–10000 ms |
-| Read wait | 0–10000 ms; mặc định 1000 ms |
-| Command đồng bộ mặc định | 30 giây |
-| Job session | Mặc định/tối đa 10 phút |
-| Background | Mặc định 1 giờ, tối đa 24 giờ |
+| Read wait | 0–10000 ms; default 1000 ms |
+| Default synchronous command | 30 seconds |
+| Job session | Default/maximum 10 minutes |
+| Background | Default 1 hour; maximum 24 hours |
 
-Đặt hai giới hạn trong **Settings → Permissions → Concurrent commands**, rồi
-**Save changes**. File settings version 2 lưu `processes:{perChat,total}`; file cũ
-thiếu trường này vẫn dùng 8/32. Cả hai giới hạn đều áp dụng, nên app có thể có cap
-nhỏ hơn cap mỗi chat. Backend chặn lệnh mới trước khi khởi chạy, không tự xếp hàng.
-Giảm cap để lệnh đang chạy tiếp tục, kể cả khi chuyển chat nháp sang chat đã lưu;
-đọc log và stop vẫn dùng được. Tăng cap cho phép thêm lệnh ngay sau Save.
-CLI cũng áp dụng policy đã lưu: lệnh đồng bộ giữ một slot trong lúc thực thi,
-cùng bộ đếm với các session có yield; output và timeout đồng bộ giữ nguyên.
-Đây là giới hạn command, không biến các tool call thông thường thành chạy song song.
+Set both limits in **Settings → Permissions → Concurrent commands**, then **Save
+changes**. Version 2 settings store `processes:{perChat,total}`; older files lacking
+this field use 8/32. Both caps apply, so the app cap may be smaller than a chat cap.
+Admission rejects new commands before launch rather than queuing them. Lower caps
+let existing commands drain, including during draft promotion; reads and Stop
+remain available. Raising caps permits starts immediately after Save.
+CLI also applies the saved policy: synchronous commands reserve a slot in the
+same counters as yielded sessions, preserving synchronous output/timeouts.
+These are command limits, not permission to parallelize ordinary tool calls.
 
-Loại record hoàn tất cũ khi cần chỗ; ID có thể hết hạn dù process đã hoàn tất.
-Giới hạn session không giới hạn tổng process OS con hay CPU/RAM của command.
+Old completed records are evicted when space is needed; IDs may expire after
+completion. Session limits do not bound total OS descendants or CPU/RAM consumption.
 
-## Cleanup và scope
+## Cleanup and scope
 
-Job chỉ bị dọn theo request sở hữu nó. Background giữ tới Stop, timeout, xóa chat,
-đóng draft hoặc shutdown app bình thường; chuyển chat/Settings không dừng nó.
-Process giữ cwd lúc spawn. Thay workspace/quyền không đổi cwd hoặc cấp approval
-mới cho resource cũ; các thao tác sau vẫn dùng policy hiện hành.
+Jobs are cleaned only by their owning request. Background ends on Stop, timeout,
+chat deletion, draft closure, or normal app shutdown; chat/Settings navigation does
+not stop it. Processes retain spawn cwd. Workspace/permission changes do not change
+cwd or grant new approvals to existing resources; later operations use current policy.
 
-Shutdown dọn trên worker với deadline, không join trên Tauri event thread. Unix
-kill group trước khi reap leader, dùng WNOWAIT tránh PID reuse; Windows tạo process
-suspended và chứa trong Job Object kill-on-close trước khi resume. Không bảo đảm
-cleanup trước mọi kiểu crash/SIGKILL/mất điện, hoặc command chủ động thoát khỏi
-containment. Không thêm frontend shell/filesystem/process permissions.
+Shutdown cleanup runs on workers with deadlines, never joining on the Tauri event
+thread. Unix signals groups before reaping leaders and uses WNOWAIT against PID
+reuse. Windows creates suspended processes inside kill-on-close Job Objects before
+resuming them. Cleanup cannot be guaranteed for every crash/SIGKILL/power loss or
+commands deliberately escaping containment. No frontend shell/filesystem/process
+permissions are added.
 
-Không lưu process handle xuống đĩa, không khôi phục session hay tự chạy lại lệnh
-sau restart. Không có stdin/PTY hoặc terminal nhận nhiều command nối tiếp.
-Activity lưu thành công có thể chứa chi tiết đã sanitize/bounded, không phải một
-process còn sống hoặc kho lưu toàn bộ log.
+Process handles are never persisted, sessions are never restored, and commands
+are never automatically replayed after restart. Durable execution-result artifacts
+under hard/lazy execution control do not restore process handles. There is no stdin/PTY or
+interactive terminal accepting successive commands. Successful Activity may retain
+sanitized bounded details; it is neither a live process nor a complete log archive.
 
-## Mã nguồn
+## Source map
 
 - [Manager/scope](../../src/tools/process_sessions/manager.rs),
   [output/cursor](../../src/tools/process_sessions/output.rs),
   [tool handlers](../../src/tools/process_sessions.rs).
 - [Native ownership/IPC](../../desktop/src-tauri/src/process_commands.rs),
   [UI](../../desktop/src/chat-view.ts), [API adapter](../../desktop/src/atlas-api.ts).
-- [Demo local](../../examples/process_sessions.rs) và
-  [test scope/process](../../tests/chat_process_behavior.rs).
+- [Local demo](../../examples/process_sessions.rs) and
+  [scope/process tests](../../tests/chat_process_behavior.rs).

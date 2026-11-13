@@ -1,222 +1,228 @@
-# Quản lý tool, process session và tài nguyên theo chat
+# Managing tools, process sessions, and chat-owned resources
 
-> Thiết kế đích 2026-11-13: [Tool execution control và hard/lazy](tool-execution-control.md)
-> đưa mọi tool qua một đầu mối và lưu kết quả có giới hạn. Chưa triển khai;
-> nhánh tool trả ngay và phân loại vòng đời bên dưới mô tả thiết kế/hành vi cũ.
+> Architecture update, 2026-11-13: [Tool execution control and hard/lazy](tool-execution-control.md)
+> routes every tool through one manager and stores bounded results. Implementation
+> is implemented and verified; immediate-tool branches and lifecycle classifications below
+> describe the earlier design/baseline. Command job/background lifetime remains
+> distinct from removed execution job/task modes.
 
-> UI update (2026-11-10): theo yêu cầu user, bỏ Processes disclosure riêng. Tool
-> execution hiện inline dạng terminal (command/status/output), chi tiết thô thu
-> gọn, lịch sử trong Activity. Process manager và native ownership không đổi.
-> Các mô tả panel bên dưới ghi lại thiết kế đã duyệt trước lần chỉnh UI này.
+> UI update, 2026-11-10: at the user's request, the separate Processes disclosure
+> was removed. Tool execution now appears inline as a terminal card with command,
+> state, and output; raw details are collapsed and history is retained in Activity.
+> Process management/native ownership are unchanged. Panel descriptions below
+> record the approved design before this UI revision.
 
-- Ngày soạn: 2026-11-09.
-- Trạng thái: **APPROVED — user yêu cầu triển khai ngày 2026-11-09; process scope desktop đã triển khai**.
-- Vị trí sau khi được duyệt: `docs/architecture/tool-resource-lifecycle.md`.
-- Nguồn: đối chiếu code Atlas và suy luận kiến trúc trong cuộc trao đổi với user.
-  Chưa dùng một repo/bài viết bên ngoài để kiểm chứng toàn bộ thiết kế này.
-- Phê duyệt: user nói “okay vậy tiến hành thực thi đi và bày cho mình cách để thấy nó hoạt động”.
-- Phạm vi: background theo chat, UI Processes và demo; giữ vòng đời MCP hiện tại.
+- Written: 2026-11-09.
+- Status: **APPROVED — user requested implementation on 2026-11-09; desktop process scopes implemented**.
+- Approved location: `docs/architecture/tool-resource-lifecycle.md`.
+- Source: comparison with Atlas code and architectural reasoning in discussion
+  with the user; no external repository/article was used to validate the whole design.
+- Approval: the user said, “okay, proceed with implementation and show me how to see it working” (translated).
+- Scope: per-chat background work, Processes UI, and demo; preserve existing MCP lifetime.
 
-## 1. Bài toán và nền tảng đã có
+## 1. Problem and existing foundation
 
-Trước thay đổi này, desktop tạo runtime mới cho mỗi lượt. `ProcessSessions` thuộc runtime;
-`exec_command` có thể trả `session_id`, agent gọi `read_process` lấy output mới
-hoặc `stop_process` yêu cầu dừng. Request scope dọn mọi process khi lượt kết thúc.
-Hành vi này đã được mô tả ở [Process sessions](process-sessions.md).
+Before this change, desktop created a new runtime per turn. ProcessSessions belonged
+to that runtime; `exec_command` could return `session_id`, `read_process` retrieved
+new output, and `stop_process` requested termination. Request scope cleaned up all
+processes at turn end, as described in [Process sessions](process-sessions.md).
 
-Muốn agent khởi động dev server rồi tiếp tục dùng ở tin nhắn sau thì chủ sở hữu
-của server phải sống lâu hơn runtime một lượt. Đồng thời, chat khác không được
-đọc nhầm log, dừng nhầm process hoặc dùng workspace/quyền của chat trước.
+To start a dev server and reuse it in a later message, its owner must outlive a
+single-turn runtime. Other chats must never read its logs, stop its processes, or
+inherit another chat's workspace/permissions.
 
-Thiết kế này giữ executor kiểm tra quyền hiện tại, thêm lớp quản lý tài nguyên
-có vòng đời rõ ràng. Phạm vi triển khai đầu tiên đề xuất là process sessions.
+This design preserves executor authorization and adds explicitly scoped resource
+management. Process sessions are the proposed first implementation scope.
 
-## 2. Ba thành phần
+## 2. Three components
 
-| Thành phần | Trách nhiệm |
+| Component | Responsibility |
 | --- | --- |
-| Tool catalog | Metadata và schema của tool khả dụng; không khởi động process hay kết nối chỉ để nạp catalog. |
-| Tool executor của lượt | Nhận ToolContext, kiểm tra tham số/quyền, thực thi handler và đưa kết quả về agent. |
-| Resource manager trong backend app | Giữ resource còn sống: owner, trạng thái, output có giới hạn và cleanup. |
+| Tool catalog | Available tool metadata/schema; loading it never launches processes or connections |
+| Per-turn tool executor | Receives ToolContext, validates arguments/permissions, dispatches handlers, and returns results |
+| Backend app resource manager | Owns live resources, ownership, state, bounded output, and cleanup |
 
-Không chuyển nguyên ToolRegistry đang mang workspace/settings của một lượt thành
-singleton toàn app. Các runtime mới nhận một scope handle có giới hạn truy cập;
-handler dùng handle đó để tìm resource. Provider/model không tự quản lý tiến trình.
+Do not make a whole ToolRegistry carrying one turn's workspace/settings into an
+app singleton. New runtimes receive scoped access handles; handlers resolve
+resources through those handles. Providers/models never manage processes themselves.
 
 ```mermaid
 flowchart TD
     User["User"] --> Chat["Chat"]
-    Chat --> Context["ToolContext của lượt<br/>Owner scope · Workspace · Quyền"]
+    Chat --> Context["Per-turn ToolContext<br/>Owner scope · Workspace · Permissions"]
     Catalog["Tool catalog<br/>Metadata · Schema"] -.-> Executor
     Context --> Executor["Tool executor<br/>Validate · Authorize · Dispatch"]
-    Executor --> Direct["Tool trả ngay<br/>read_file · ripgrep · apply_patch"]
-    Direct --> Result["Kết quả cho agent"]
-    Executor --> Handler["Handler có tài nguyên<br/>Process job / background"]
-    Handler --> Manager["Resource manager<br/>Sống cùng backend app"]
-    Manager --> Owned["Resource thuộc scope đã xác thực<br/>Không resolve theo ID model tùy ý"]
-    Owned --> Handle["session_id · Trạng thái · Cursor log"]
+    Executor --> Direct["Immediate tool: historical branch<br/>read_file · ripgrep · apply_patch"]
+    Direct --> Result["Result for agent"]
+    Executor --> Handler["Resource handler<br/>Process job / background"]
+    Handler --> Manager["Resource manager<br/>Backend app lifetime"]
+    Manager --> Owned["Resource in authenticated scope<br/>Never resolve arbitrary model-selected owners"]
+    Owned --> Handle["session_id · State · Log cursor"]
     Handle --> Result
-    Result --> Agent["Agent tiếp tục"]
-    Agent -->|"Đọc / Stop cũng qua tool"| Executor
-    UI["UI Processes của chat"] -->|"IPC backend có ownership check"| Manager
-    End["Kết thúc scope / Stop / Xóa chat / Đóng app"] --> Manager
+    Result --> Agent["Agent continues"]
+    Agent -->|"Reads / Stop also use tools"| Executor
+    UI["Historical chat Processes UI"] -->|"Ownership-checked backend IPC"| Manager
+    End["Scope end / Stop / Delete chat / App exit"] --> Manager
 ```
 
-## 3. Scope và quyền sở hữu
+## 3. Scope and ownership
 
-ToolContext dự kiến gồm owner scope, request ID, workspace đã được backend xác
-thực và permission mode hiện hành. Scope ID/resource ID đều opaque; không dùng
-PID làm quyền truy cập và không nhận owner chat từ arguments do model tự đặt.
+ToolContext carries owner scope, request ID, backend-validated workspace, and
+current permission mode. Scope/resource IDs are opaque; PIDs never grant access,
+and model arguments never select a chat owner.
 
-- Backend chọn scope của conversation từ metadata và native session ownership.
-  Saved conversation bỏ qua workspace/mode xung đột do frontend gửi lên.
-- Chat nháp có scope tạm do backend cấp trong bộ nhớ; tạo chat không ghi history.
-- Sau lần trả lời đầu tiên được lưu thành công, gắn scope nháp với conversation
-  ID mà không đổi session ID của process đang chạy.
-- Nếu lượt đầu thất bại, job được dọn; background được user yêu cầu rõ ràng vẫn
-  thuộc chat nháp đang hiển thị, có thể Stop. Không tạo conversation chỉ để giữ nó.
-- UI/model chỉ xem hoặc điều khiển resource của scope đã được backend resolve.
-  Biết UUID chat/resource khác không thay được scope handle của request.
-- Workspace của từng process được giữ tại lúc khởi động. Đổi workspace không
-  chuyển cwd của process cũ; UI phải hiện cwd cũ để user không nhầm.
-- Cấu hình/quyền khởi động không cấp quyền cho hành động mới. Các thao tác start,
-  stop và remote call sau đó vẫn áp dụng policy hiện hành, không tái dùng approval cũ.
+- Backend derives conversation scope from metadata and native session ownership.
+  Saved conversations ignore conflicting frontend workspace/mode values.
+- Draft chats receive temporary in-memory backend scopes without creating history.
+- After the first successfully saved answer, bind the draft scope to its
+  conversation ID without changing running process session IDs.
+- If the first turn fails, clean jobs; explicitly requested background work remains
+  owned by the visible draft and stoppable. Do not create a conversation just to keep it.
+- UI/model can inspect/control only resources in the backend-resolved scope.
+  Knowing another chat/resource UUID cannot replace the request's scope handle.
+- Preserve each process's launch workspace. Workspace changes do not move old cwd;
+  show original cwd so the user can distinguish it.
+- Launch configuration/approval never authorizes new actions. Later starts, stops,
+  and remote calls use current policy rather than reusing previous approvals.
 
-## 4. Phân loại vòng đời
+## 4. Lifetime classes
 
-| Loại | Ví dụ | Chủ sở hữu / thời điểm dọn |
+| Class | Examples | Owner / cleanup point |
 | --- | --- | --- |
-| Kết quả tức thời | Đọc file, tìm kiếm, patch | Request; không giữ process chỉ để quản lý kết quả. |
-| Job | Build, test, script | Request; dọn khi hoàn tất, lỗi hoặc lượt bị kết thúc. |
-| Background | Dev server, theo dõi liên tục | Chat scope; sống qua final answer khi user đã yêu cầu rõ ràng. |
-| Metadata dùng chung | Catalog tool, config | App/workspace theo nguồn; mỗi lượt dùng snapshot phù hợp. |
-| Kết nối MCP | Discovery/call | Giữ policy request/runtime hiện có; chưa đổi thành kết nối background. |
-| Skills | Metadata và instruction | Giữ scope Personal/Project và snapshot của lượt như hiện tại. |
+| Immediate result | Reads, searches, patches | Request; no process kept merely to manage results |
+| Job | Build, test, script | Request; cleanup on completion, failure, or turn termination |
+| Background | Dev server, continuous monitoring | Chat scope; survives final only on explicit user request |
+| Shared metadata | Tool catalog, configuration | App/workspace according to source; appropriate snapshot per turn |
+| MCP connection | Discovery/calls | Preserve current request/runtime policy; no background-connection migration |
+| Skills | Metadata/instructions | Preserve Personal/Project scopes and request snapshots |
 
-Background là lựa chọn tường minh, mặc định vẫn là job. Agent không tự biến lệnh
-bất kỳ thành dịch vụ chạy lâu. Approval Command ở Ask/Workspace cần hiện vòng đời
-và cwd; Full access giữ semantics bỏ qua xác nhận Atlas hiện tại. Lệnh phải chạy
-foreground trong process group/Job được quản lý; không dùng `&` để giả lập background.
+Background is explicit; job remains default. The agent cannot turn arbitrary
+commands into long-running services. Ask/Workspace Command approvals show lifetime
+and cwd; Full access retains existing Atlas-confirmation bypass semantics.
+Commands run in foreground within managed process groups/Jobs; do not fake
+background lifetime with `&`.
 
-Không tự retry, replay hay restart process đã lỗi/timeout. Stop không rollback
-những tác động đã xảy ra. Có session ID không đồng nghĩa với lệnh còn chạy hay
-đã thành công; phải đọc trạng thái và exit/error.
+Never automatically retry, replay, or restart failed/timed-out processes. Stop
+does not undo previous effects. A session ID does not prove running state or
+success; inspect state and exit/error information.
 
-## 5. Trạng thái và cleanup
+## 5. State and cleanup
 
 ```mermaid
 stateDiagram-v2
     [*] --> Starting
-    Starting --> Running: Spawn thành công
-    Starting --> Failed: Spawn thất bại
-    Running --> Stopping: Stop / timeout / kết thúc scope
-    Running --> Exited: Lệnh hoàn tất và đã dọn descendants
-    Stopping --> Stopped: Worker xác nhận đã dừng
-    Stopping --> TimedOut: Worker xác nhận timeout
-    Stopping --> Failed: Cleanup lỗi
-    Exited --> [*]: Loại bản ghi theo retention
-    Stopped --> [*]: Loại bản ghi theo retention
-    TimedOut --> [*]: Loại bản ghi theo retention
-    Failed --> [*]: Loại bản ghi theo retention
+    Starting --> Running: Spawn succeeds
+    Starting --> Failed: Spawn fails
+    Running --> Stopping: Stop / timeout / scope end
+    Running --> Exited: Command exits and descendants cleaned
+    Stopping --> Stopped: Worker confirms stopped
+    Stopping --> TimedOut: Worker confirms timeout
+    Stopping --> Failed: Cleanup fails
+    Exited --> [*]: Retention eviction
+    Stopped --> [*]: Retention eviction
+    TimedOut --> [*]: Retention eviction
+    Failed --> [*]: Retention eviction
 ```
 
-Phân biệt `stop_requested` với cleanup đã hoàn tất. UI giữ Stopping khi worker
-chưa xác nhận; không báo stopped chỉ vì gửi được yêu cầu. Worker tự cập nhật
-trạng thái, không cần một lần gọi model để biết process đã kết thúc.
+Distinguish `stop_requested` from confirmed cleanup. Keep Stopping until worker
+confirmation; sending a request does not prove stopped state. Workers update state
+without requiring a model call to discover process completion.
 
-| Sự kiện | Job | Background đã được yêu cầu |
+| Event | Job | Explicitly requested background |
 | --- | --- | --- |
-| Final answer / lỗi model | Dọn | Tiếp tục, hiển thị trong chat |
-| Chuyển chat / mở Settings | Giữ ownership, không chuyển sang chat khác | Tiếp tục |
-| User Stop process | Dừng resource được chọn | Dừng resource được chọn |
-| Hủy lượt trả lời | Dọn job của lượt | Không tự dừng resource có từ lượt trước |
-| Xóa/đóng chat nháp hoặc xóa conversation | Dọn theo scope | Dọn theo scope |
-| Reload webview | Dọn scope nháp bị mất owner | Saved chat có thể gắn lại scope trong backend còn sống |
-| Đóng app bình thường | Dọn manager trên worker shutdown | Dọn manager trên worker shutdown |
-| Restart app | Không khôi phục process hay ID cũ | Không tự chạy lại lệnh |
+| Final answer / model error | Cleanup | Continue, visible in chat |
+| Chat navigation / Settings | Preserve ownership; never transfer to another chat | Continue |
+| User Stop process | Stop selected resource | Stop selected resource |
+| Cancel answer | Cleanup turn's jobs | Do not automatically stop resources from earlier turns |
+| Delete/close draft or delete conversation | Scope cleanup | Scope cleanup |
+| Webview reload | Cleanup drafts losing their owner | Saved chats can reattach within the live backend |
+| Normal app exit | Manager cleanup on shutdown worker | Manager cleanup on shutdown worker |
+| App restart | No process/ID restoration | No automatic command replay |
 
-Shutdown không được join tiến trình trên Tauri event thread. Dọn có deadline,
-trạng thái lỗi và thông tin còn chưa xác minh; không hứa cleanup trước mọi kiểu
-OS crash/SIGKILL hoặc process chủ động thoát khỏi containment. Không cần mở rộng
-frontend shell/filesystem/process permissions để làm cơ chế này.
+Shutdown never joins processes on Tauri's event thread. Cleanup has deadlines,
+error state, and explicitly unverified outcomes; do not guarantee cleanup for all
+OS crashes/SIGKILLs or deliberate containment escape. No broader frontend
+shell/filesystem/process permissions are needed.
 
-## 6. Agent biết session nào, đọc log thế nào?
+## 6. Discovering sessions and reading logs
 
-Catalog cung cấp snapshot metadata ngắn, ưu tiên các process còn chạy: session ID,
-lifetime và trạng thái. Agent dùng danh sách đầy đủ để kiểm tra cwd khi cần. Không nạp raw log hay toàn bộ
-command có thể chứa credentials. Snapshot được giới hạn và tính vào context budget;
-không tăng vô hạn theo lịch sử chat.
+The catalog supplies a short bounded metadata snapshot prioritizing active
+processes: session ID, lifetime, and state. The agent uses full listings to inspect
+cwd when needed. Never preload raw logs or full commands that may contain secrets.
+Snapshots count toward context budgets and never grow with unlimited chat history.
 
-Luồng mong muốn:
+Expected flow:
 
-1. User yêu cầu chạy dev server qua nhiều lượt.
-2. Agent gọi tool khởi động với vòng đời background; executor áp dụng policy.
-3. Manager trả mã, trạng thái và output ban đầu; agent trả lời user.
-4. Ở lượt sau, agent thấy metadata server vẫn chạy.
-5. Agent gọi `read_process(session_id)` khi cần kiểm tra output, hoặc `stop_process`.
+1. User explicitly requests a dev server across turns.
+2. Agent starts it with background lifetime; executor applies policy.
+3. Manager returns ID, state, and initial output; agent answers the user.
+4. On a later turn, the agent sees metadata indicating the server remains active.
+5. Agent calls `read_process(session_id)` as needed or `stop_process` to stop it.
 
-Tái dùng mã không chạy lại lệnh. Mã hết hạn/không thuộc scope phải trả lỗi rõ ràng,
-không âm thầm tìm resource khác hay thực hiện lại command.
+Reusing an ID never reruns a command. Expired/foreign IDs produce explicit errors,
+never substitution with another resource or command replay.
 
-## 7. Log cho agent và UI: không tranh nhau tiêu thụ
+## 7. Independent log readers for agent and UI
 
-API hiện tại tiêu thụ output sau mỗi lần đọc. Nếu UI và agent dùng chung cursor
-này, UI có thể lấy mất output trước khi agent đọc. Vì vậy phase multi-turn cần:
+The original API consumed output on each read. Sharing that cursor between UI and
+agent could hide output from the agent, so multi-turn support requires:
 
-- Một ring buffer có giới hạn cho mỗi stdout/stderr, với offset tăng tuyệt đối.
-- Reader agent và reader UI có cursor riêng; đọc không xóa bytes khỏi buffer chung.
-- `read_process` giữ hành vi mặc định lấy phần mới cho reader agent của scope;
-  có thể thêm cursor tùy chọn để đọc lại phần vẫn còn trong buffer.
-- UI đọc qua `atlas-api.ts`, dùng cursor của viewer, không gọi invoke rải rác.
-- Kết quả trả next cursor, vị trí cũ nhất còn giữ và cờ mất dữ liệu. Cursor đã bị
-  eviction phải báo gap/truncation; không giả vờ log đầy đủ.
-- Khi hết byte UTF-8 ở giữa ký tự, đợi phần còn lại hoặc flush lossy khi kết thúc.
-- Metadata/trạng thái có thể push bằng event; log chỉ fetch khi cần và giới hạn
-  kích thước. Diagnostic backend không ghi command arguments hoặc raw output.
+- A bounded ring per stdout/stderr with absolute increasing offsets.
+- Separate agent/UI cursors; reads do not delete bytes from the shared buffer.
+- `read_process` defaults to new output for the scope's agent reader and supports
+  optional explicit cursors to reread retained bytes.
+- UI reads through atlas-api.ts with its viewer cursor, without scattered invoke calls.
+- Return next cursor, oldest retained position, and loss flags. Evicted cursors
+  report gaps/truncation rather than pretending logs are complete.
+- Preserve incomplete UTF-8 tails until complete or flush lossily on completion.
+- Metadata/state may use events; logs are fetched only when needed and bounded.
+  Backend diagnostics never record command arguments or raw output.
 
-Đề xuất khởi điểm giữ giới hạn 8 process đang chạy mỗi chat, thêm 32 active toàn
-app; giữ tối đa 32 record mỗi chat và 128 record toàn app, kể cả đang chạy. Buffer
-64 KiB mỗi stream, giới hạn trả một lần 64 KiB/stream. Đây là giới hạn đề xuất,
-chưa phải cấu hình/hành vi đã triển khai.
+Initial proposed limits were 8 active processes/chat, 32/app, 32 retained
+records/chat, 128/app, and 64 KiB per stream/read. These were design proposals at
+drafting time; current configurable limits are documented in [Process sessions](process-sessions.md).
 
-## 8. UI tối thiểu
+## 8. Historical minimal UI proposal
 
-Một disclosure **Processes** trong chat, không tạo hàng loạt nút trên composer.
-Mỗi dòng: mã ngắn, job/background, trạng thái, cwd và Stop khi còn chạy. Mở dòng
-để xem output/truncation/exit code. Không hiển thị process của chat khác; nút Stop
-không vô tình hủy lượt hoặc approval của chat khác. Chưa thêm terminal tương tác.
+The original approved design proposed a **Processes** disclosure in chat rather
+than many composer buttons. Rows showed short ID, job/background, state, cwd, and
+Stop while running; expanding showed output/truncation/exit code. It excluded
+foreign-chat resources and avoided cancelling another chat's turn/approval. No
+interactive terminal was proposed. The UI update above supersedes this disclosure.
 
-Scope nháp phải tiếp tục nhìn thấy được nếu background còn sống sau lỗi; tránh
-resource vô chủ trong backend. Backend chọn ownership, frontend chỉ trình bày và
-đề nghị thao tác thông qua API typed.
+Draft scopes remain reachable when background work survives an error so resources
+never become ownerless. Backend chooses ownership; frontend presents state and
+requests operations through typed APIs.
 
-## 9. Phạm vi triển khai và kiểm chứng
+## 9. Implementation scope and verification
 
-1. **Ownership:** public interface scope, manager trong DesktopState, runtime nhận
-   scope handle. Giữ CLI request-local; CLI mới là process OS mới, chưa có daemon.
-2. **Lifecycle:** tách job/background, transfer draft → saved ID, stop/xóa/shutdown
-   và xử lý scope nháp mất owner. Không thay MCP/OAuth hay vòng đời skills.
-3. **Log:** ring buffer có offset, reader riêng, xử lý gap và UTF-8, API metadata.
-4. **UI/context:** Processes disclosure và snapshot metadata bounded đầu lượt.
+1. **Ownership:** public scope interface, manager in DesktopState, runtime scope
+   handles. Keep CLI request-local; a new CLI invocation is a new OS process, not a daemon.
+2. **Lifecycle:** separate job/background, draft-to-saved binding, stop/delete/shutdown,
+   and draft-owner loss. Do not change MCP/OAuth or skill lifetime.
+3. **Logs:** offset rings, independent readers, gaps/UTF-8, metadata API.
+4. **UI/context:** original Processes disclosure proposal and bounded startup metadata;
+   current UI uses inline tool cards instead.
 
-Test bắt buộc: khác chat không đọc/dừng được nhau; đổi workspace/quyền không đổi
-resource cũ hay vượt policy; final/error dọn job và giữ background đúng lựa chọn;
-UI đọc log không làm agent mất log; cleanup descendants/stop races; orphan draft,
-reload, delete và normal shutdown; overflow/cursor stale; không ghi history cho
-chat nháp; không tự replay lệnh. Kiểm tra native Windows/macOS riêng, không suy
-ra từ test browser hoặc compile.
+Required tests: cross-chat read/stop isolation; workspace/permission changes never
+alter old resources or bypass policy; final/error cleans jobs and preserves only
+explicit background work; UI reads cannot consume agent output; descendant cleanup
+and stop races; orphan drafts, reload, deletion, normal shutdown; overflow/stale
+cursors; no history merely for draft scopes; no automatic replay. Verify native
+Windows/macOS separately rather than inferring acceptance from browser tests or compilation.
 
-## 10. Quy trình lưu tài liệu
+## 10. Documentation workflow
 
-Bản đã duyệt được đưa vào `docs/architecture/tool-resource-lifecycle.md`.
-Draft gốc, plan, ledger, log và preview tiếp tục ở `.superpowers/` được Git bỏ qua.
-Duyệt tài liệu/triển khai không tự cho phép push, merge hoặc deploy.
+The approved version lives in `docs/architecture/tool-resource-lifecycle.md`.
+Original drafts, plans, ledgers, logs, and previews stay in Git-ignored
+`.superpowers/`. Document/implementation approval does not authorize push, merge,
+or deployment.
 
-Xem [API hiện tại](process-sessions.md) và [demo từng bước](../guides/process-manager-demo.md).
+See the [current API](process-sessions.md) and [walkthrough](../guides/process-manager-demo.md).
 
-## Quyết định triển khai
+## Implementation decisions
 
-- Background mặc định 1 giờ, timeout tối đa 24 giờ; job giữ giới hạn 10 phút.
-- UI Stop là thao tác user tường minh trên resource thuộc chat; tool Stop vẫn đi qua Command approval.
-- Draft scope native cấp token theo window/client epoch; reload dọn draft scope cũ.
-- Tiến trình không lưu xuống đĩa và không tự restart. Shutdown normal dọn trên worker có deadline.
+- Background defaults to one hour, maximum 24 hours; jobs retain a ten-minute cap.
+- UI Stop requires explicit user intent on an owned resource; tool Stop uses Command approval.
+- Native draft tokens belong to window/client epochs; reload cleans old draft scopes.
+- Processes are not persisted or automatically restarted. Normal shutdown cleans up on bounded workers.

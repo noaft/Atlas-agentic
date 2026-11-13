@@ -45,9 +45,22 @@ Known child model limits are checked before each model request, including repair
 
 ## Execution and lifecycle
 
+The implemented [hard/lazy architecture](tool-execution-control.md) unifies
+tool-execution tracking and final-answer guards; implementation is verified. The `call_agent` argument `execution_mode: wait/parallel`
+below controls child invocation behavior; it is distinct from the removed
+execution-envelope `job/task` modes and from wake_up cadence. Child ownership is preserved through execution adapters. A parent cannot finalize
+while its own call_agent execution is active, even when the child invocation uses
+parallel mode.
+
+
 `AgentRunManager` owns independent workers with native opaque `run_id`s. Its atomic limits are4 active runs/chat and16/app, including descendants. It retains at most32 records/chat and128/app, pruning finished records on admission. These are agent limits, separate from command-session limits.
 
-`wait` waits for completion or the configured cooperative deadline. `parallel` returns immediately; desktop workers survive the parent's answer and later chat navigation while the app remains open. Runs do not resume after app restart. The CLI has no persistent app lifetime: parallel workers are cancelled and their command scope closed when its runtime exits.
+`wait` waits for completion or the configured cooperative deadline. At the child-run adapter boundary, `parallel` returns a run ID immediately;
+the managed call_agent execution follows the child to terminal state so the parent
+can do independent work meanwhile.
+The parent must still resolve its owned call_agent execution before final under
+the hard/lazy final guard. Desktop workers retain native ownership during chat
+navigation while the app remains open. Runs do not resume after app restart. The CLI has no persistent app lifetime: parallel workers are cancelled and their command scope closed when its runtime exits.
 
 Tools:
 
@@ -59,7 +72,7 @@ Tools:
 | `wait_agent_run` | Wait0–10000ms; default1000ms |
 | `cancel_agent_run` | Request cancellation; Command risk through the agent tool path |
 
-Statuses are running, waiting_approval, cancelling, completed, failed, cancelled and timed_out; queued is reserved by the view contract. Cancellation/deadlines are cooperative at model/tool boundaries and approval waits. An already executing provider call or tool may finish within its existing timeout before the worker exits. Never treat cancelling as confirmation of stopped work. Failed calls are not automatically replayed. Cancelling a run also cancels its descendants; failed/timed-out runs cancel unfinished descendants. Successful parents may leave parallel children running.
+Statuses are running, waiting_approval, cancelling, completed, failed, cancelled and timed_out; queued is reserved by the view contract. Cancellation/deadlines are cooperative at model/tool boundaries and approval waits. An already executing provider call or tool may finish within its existing timeout before the worker exits. Never treat cancelling as confirmation of stopped work. Failed calls are not automatically replayed. Cancelling a run also cancels its descendants; failed/timed-out runs cancel unfinished descendants. A successful parent cannot use parallel mode to bypass its execution final guard.
 
 All child commands share their root chat's ProcessScope and app ProcessManager; child creation cannot bypass per-chat/app command limits. Each runtime owns its own command request ID, so its cleanup cannot kill another request's jobs. Child `read_process` requires an explicit cursor or `tail_lines` to preserve the parent's default output cursor. CLI workers retain request-local command semantics and reject background command lifetime.
 
@@ -91,4 +104,7 @@ The runtime injects `config/agent-result-prompt.md`. A child's ordinary final-an
 
 Runtime supplies run identity, status, errors, elapsed time, tool count and latest-call model usage separately. Child usage never replaces the root chat's context reading. A completed worker can correctly return partial/blocked. Failures, cancellation and timeout do not invent a successful report.
 
-Model-facing listings exclude full tasks, results and approval arguments. Inspection returns `result` directly when it fits, plus `result_output`, UTF-8 byte offsets, total output bytes and `next_cursor`. Continue with `read_agent_run({run_id,output_offset:next_cursor,output_limit:16384})`; output_limit is1–16384 bytes and every response stays within64KiB. Retained native UI records contain the full bounded report. Runs are in-memory; a successful parent turn may retain inspected reports in ordinary bounded Activity, but no independent child conversation is persisted.
+Model-facing listings exclude full tasks, results and approval arguments. Inspection returns `result` directly when it fits, plus `result_output`, UTF-8 byte offsets, total output bytes and `next_cursor`. Continue with `read_agent_run({run_id,output_offset:next_cursor,output_limit:16384})`; output_limit is1–16384 bytes and every response stays within64KiB. Retained native UI records contain the full bounded report. Live run handles remain in memory. The managed execution result is durably
+archived under the shared execution policy, including completed child results;
+this does not restore run handles or independent child conversations after restart.
+A successful parent turn may also retain inspected reports in bounded Activity.

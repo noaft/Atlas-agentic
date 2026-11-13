@@ -20,8 +20,9 @@ therefore did not reproduce it.
 
 ## Applied compatibility fix and acceptance
 
-In UniKey, opened Ctrl+Shift+F5 → Mở rộng and enabled **Luôn sử dụng clipboard cho
-Unicode** (`UseUnicodeClipboard=1`). No other encoding, input method or Vietnamese
+In UniKey, opened Ctrl+Shift+F5 → **Advanced** (`Mở rộng`) and enabled **Always
+use clipboard for Unicode** (`Luôn sử dụng clipboard cho Unicode`,
+`UseUnicodeClipboard=1`). No other encoding, input method or Vietnamese
 mode preference changed. The option is global and can replace clipboard data
 while typing; it is not a new Atlas setting or automatic clipboard access.
 

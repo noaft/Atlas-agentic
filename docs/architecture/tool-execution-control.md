@@ -1,71 +1,76 @@
-# Tool execution control và Wakeup hard/lazy
+# Tool execution control and hard/lazy wakeups
 
-Trạng thái: **thiết kế được user chốt ngày 2026-11-13; chưa triển khai**.
-User xác nhận quy tắc hard/lazy và yêu cầu ghi vào docs kiến trúc. Tài liệu này
-thay thế hướng thiết kế `execution.mode: job/task` của [Wakeup](wakeup.md).
-Nó không khẳng định code hiện tại đã đổi giao thức hoặc đã lưu bền execution.
+Status: **design approved by the user on 2026-11-13; tool-only implementation verified**.
+This document records the approved tool-execution architecture. It replaces the
+former `execution.mode: job/task` protocol. [Wakeup](wakeup.md) describes the
+current protocol. The hard/lazy protocol, unified execution tracking, and bounded durable records
+are implemented and verified.
+User-message queuing during an active turn is explicitly deferred and is outside
+this implementation.
 
-## 1. Quyết định chính
+## 1. Main decisions
 
-Mọi lần gọi tool đều là một execution có chủ sở hữu và được quản lý qua một đầu
-mối trong backend. Không có nhánh tool đồng bộ chạy ngoài việc ghi nhận execution.
-Tool nhanh có thể trả kết quả ngay, nhưng vẫn phải có record và kết quả.
+Every tool invocation is an owned execution managed through one backend entry
+point. There is no synchronous tool branch outside execution tracking. Fast tools
+may return immediately, but still require a record and result.
 
-Bỏ lựa chọn `job/task` ở cấp execution. Agent chỉ chọn **nhịp wake_up**:
+Execution-level `job/task` selection has been removed. The agent chooses only a **wake_up
+cadence**:
 
-| Chế độ | Khi còn chạy | Khi kết thúc, lỗi hoặc cần tương tác |
+| Mode | While running | On completion, error, or required interaction |
 | --- | --- | --- |
-| `hard` | Agent chọn khoảng kiểm tra, từ 0.1 giây đến dưới 30 giây | Xếp thông báo ngay |
-| `lazy` | Nhắc lại mỗi 10 phút, tính từ lần lập lịch gần nhất | Xếp thông báo ngay, không đợi 10 phút |
+| `hard` | Agent-selected interval, at least 0.1 seconds and strictly below 30 seconds | Queue a notification immediately |
+| `lazy` | Remind every 10 minutes from the latest scheduling point | Queue immediately, without waiting 10 minutes |
 
-Hard/lazy không thay đổi quyền tool, timeout, thứ tự phụ thuộc hoặc vòng đời của
-công việc. Lazy không phải quyền bỏ qua kết quả hoặc chạy nền sau câu trả lời cuối.
-Agent chọn nhịp theo tính quan trọng, mức cần can thiệp và thời gian dự kiến; có
-thể đổi nhịp trong lúc chạy mà không gọi lại tool. Rủi ro vẫn do backend xác định
-và áp dụng approval hiện hành; agent không tự hạ quyền bằng cách chọn lazy.
+Hard/lazy does not change tool permissions, timeouts, dependency order, or work
+lifetime. Lazy does not permit ignoring results or continuing after a final
+answer. The agent chooses cadence according to importance, intervention needs,
+and expected duration, and can change it without invoking the tool again. The
+backend still determines risk and applies the existing approval policy; selecting
+lazy cannot reduce permissions.
 
-Các giá trị mặc định phải được khai báo trong cấu hình runtime và hướng dẫn dùng
-được render từ cùng nguồn. Nhịp mặc định đề xuất cho tool không khai báo wake_up
-là hard 2 giây; con số mặc định này là quyết định triển khai, không phải hành vi
-đã có. Chu kỳ lazy của thiết kế đã chốt là 600 giây.
+Defaults live in `config/execution-defaults.toml`, with usage instructions rendered
+from the same source. Omitted wake_up defaults to hard every two seconds; lazy
+uses 600 seconds.
 
-## 2. Một đầu mối quản lý, nhiều loại executor
+## 2. One manager, multiple executors
 
-ExecutionManager là đầu mối quản lý logic, phát triển từ ToolExecutionManager hiện
-có. Process Control dùng cùng danh sách/trạng thái/điều khiển cho mọi execution.
-ProcessManager hiện có trở thành bộ phận chuyên quản lý OS process bên dưới;
-không tạo một OS process cho mỗi lần đọc file hoặc gọi MCP.
+ToolExecutionManager is the logical ExecutionManager entry point. Production
+default tools use managed workers; synchronous custom-tool fallbacks are tracked
+too. Process Control uses the same listing, state, and controls
+for every execution. ProcessManager remains the specialized OS-process
+manager underneath it; reading a file or calling MCP does not create an OS process.
 
 ```mermaid
 flowchart TD
-    Agent -->|tool call + wake_up| Runtime[Runtime: validate và authorize]
-    Runtime --> Manager[ExecutionManager: admission và ownership]
+    Agent -->|tool call + wake_up| Runtime[Runtime: validate and authorize]
+    Runtime --> Manager[ExecutionManager: admission and ownership]
     Manager --> Local[Local tool worker]
-    Manager --> Process[ProcessManager: OS process và descendants]
-    Manager --> MCP[MCP adapter: request và connection]
-    Manager --> Child[AgentRunManager: agent con]
-    Local --> Results[Execution state và bounded result store]
+    Manager --> Process[ProcessManager: OS process and descendants]
+    Manager --> MCP[MCP adapter: request and connection]
+    Manager --> Child[AgentRunManager: child agent]
+    Local --> Results[Execution state and bounded result store]
     Process --> Results
     MCP --> Results
     Child --> Results
-    Results --> Scheduler[Scheduler và mailbox]
-    Scheduler -->|metadata, không có log| Gate[Quyền chạy agent theo owner]
+    Results --> Scheduler[Scheduler and mailbox]
+    Scheduler -->|metadata without logs| Gate[Owner agent execution gate]
     Gate --> Agent
-    Results --> History[Conversation Activity: tham chiếu và tóm tắt]
+    Results --> History[Conversation Activity: references and summaries]
 ```
 
-Manager giữ execution ID, native owner, request ID, tên tool, trạng thái, thời
-điểm, revision, wake_up policy, tham chiếu kết quả, trạng thái bàn giao thông báo
-và yêu cầu hủy. Resource handle thuộc adapter; scheduler không trực tiếp chạy
-shell, gọi provider hoặc kiểm tra quyền thay runtime.
+The manager holds execution ID, native owner, request ID, tool name, state,
+timestamps, revision, wake_up policy, result reference, notification delivery
+state, and cancellation request. Resource handles belong to adapters. The
+scheduler does not execute shells, call providers, or replace runtime authorization.
 
-Giữ `execution_id` là ID điều khiển chung. Các `session_id` của OS process và
-`run_id` của agent con được ánh xạ nội bộ, không được dùng thay lẫn nhau. Native
-scope là authority; model không được chọn chat owner bằng arguments.
+Keep `execution_id` as the shared control ID. OS-process `session_id` and child
+`run_id` are mapped internally and must not be interchanged. Native scope is the
+authority; model arguments cannot choose a chat owner.
 
-## 3. Giao thức đích
+## 3. Protocol
 
-`wake_up` là trường top-level của tool_call, tách khỏi args:
+`wake_up` is a top-level tool_call field, separate from args:
 
 ```json
 {
@@ -85,12 +90,13 @@ scope là authority; model không được chọn chat owner bằng arguments.
 }
 ```
 
-Ví dụ MCP chỉ minh họa envelope; server/tool thực phải lấy từ catalog được phép.
-Hard bắt buộc có interval hữu hạn, hợp lệ; lazy không nhận interval tùy ý.
-Schema từ chối giá trị không hợp lệ, không âm thầm đổi chúng sang lazy.
+The MCP example illustrates the envelope only; actual server/tool names must come
+from the authorized catalog. Hard requires a finite interval in the valid range;
+lazy accepts no custom interval. Reject invalid values rather than silently
+converting them to lazy.
 
-Các control hiện có `list_executions`, `read_execution`, `cancel_execution` được
-đưa qua cùng authority và giữ giới hạn đọc/quyền hủy. Giao thức đích bổ sung:
+Existing `list_executions`, `read_execution`, and `cancel_execution` controls use
+the same authority and preserve bounded reads and cancellation permissions. Add:
 
 ```json
 {
@@ -100,135 +106,167 @@ Các control hiện có `list_executions`, `read_execution`, `cancel_execution` 
 }
 ```
 
-Đây là schema thiết kế, chưa phải API đang chạy. Cập nhật tăng schedule generation,
-vô hiệu timer cũ, không dispatch lại tool và không xóa terminal notification.
-`await_execution` nhường quyền chạy agent để đợi mailbox; việc đợi không thay đổi
-policy của execution nếu không có cập nhật rõ ràng.
+Updating a policy increments schedule generation, invalidates
+old timers, never redispatches the tool, and does not delete terminal notifications.
+`await_execution` yields agent execution to wait for the mailbox; waiting does not
+change an execution's policy without an explicit update.
 
-## 4. Scheduler, hàng đợi và quyền chạy agent
+## 4. Scheduler, mailbox, and agent execution authority
 
-Một scheduler trong backend quản lý deadline của nhiều execution. Deadline heap
-có generation để bỏ qua timer cũ. Khi đến hạn hard/lazy, scheduler xếp metadata
-rồi lập deadline tiếp theo nếu execution vẫn chạy. Khi terminal, hủy timer định
-kỳ và xếp thông báo cuối cùng. Không polling bằng model mỗi 30 giây để chờ lazy.
-Nếu một hàm chờ nội bộ có giới hạn dưới 30 giây, có thể tiếp tục chờ trong backend
-mà không gọi provider khi chưa có sự kiện cần giao.
+One backend scheduler manages deadlines for many executions. A generation-tagged
+deadline heap ignores stale timers. At a hard/lazy deadline, queue metadata and
+schedule the next deadline if still running. A terminal state cancels periodic
+timers and queues the final notification. Do not poll the model every 30 seconds
+while waiting for lazy. If an internal wait is limited to less than 30 seconds,
+continue waiting inside the backend without calling the provider until a
+deliverable event arrives.
 
-Mỗi agent owner chỉ có một consumer/model call hoạt động. Lock ngắn bảo vệ trạng
-thái, mailbox và quyền nhận lượt; không giữ lock trong I/O, approval hoặc model
-call. Khi agent đang bận, thông báo mới ở hàng đợi đến ranh giới an toàn tiếp theo,
-không chèn vào giữa response đang stream và không khởi chạy agent thứ hai.
+Each agent owner has only one active consumer/model call. Short locks protect
+state, mailbox, and turn acquisition; never hold them during I/O, approvals, or
+model calls. When the agent is busy, notifications wait until the next safe
+boundary; do not insert into a streaming response or start a second agent call.
 
-Thông báo là metadata: execution ID, status, reason, elapsed time, revision,
-unread lines và retention/truncation flags. Không kèm toàn bộ log hoặc lỗi thô.
-Giữ batch tối đa 16 sự kiện và quy tắc coalesce/ack của Wakeup hiện tại:
+Notifications contain metadata: execution ID, status, reason, elapsed time,
+revision, unread lines, and retention/truncation flags. They contain no full logs
+or raw errors. Keep batches at most 16 events and preserve Wakeup coalescing/ack:
 
-- Gộp thông báo định kỳ theo execution ID và revision; terminal thay periodic.
-- Lỗi, hoàn thành, yêu cầu tương tác ưu tiên trước periodic; FIFO trong cùng mức.
-- Sự kiện đến khi batch đang xử lý vẫn pending. Ack chỉ xác nhận batch đó.
-- Lỗi provider hoặc response không hợp lệ không làm mất thông báo và không replay tool.
-- Terminal được giao một lần về mặt logic; bản giao chưa ack có thể được giao lại
-  cùng identity để consumer xử lý idempotent, không tạo thông báo terminal mới.
+- Coalesce periodic notices by execution ID and revision; terminal replaces periodic.
+- Error, completion, and interaction-needed notices precede periodic ones; FIFO within priority.
+- Events arriving during batch processing remain pending; acknowledge only that batch.
+- Provider failures or invalid responses neither lose notifications nor replay tools.
+- Terminal delivery is logically once; an unacknowledged delivery may repeat with
+  the same identity for idempotent consumption, without creating a new terminal event.
 
-Tin nhắn user đang chờ có thể đánh thức agent ở ranh giới an toàn, kèm batch
-metadata công việc hiện tại. Hàng đợi user được ưu tiên trước periodic wakeup;
-yêu cầu Stop rõ ràng cần đường native hủy trực tiếp, không chờ agent đọc log.
-Cơ chế nhận thêm tin nhắn trong một lượt đang chạy là tích hợp tiếp theo, chưa
-được coi là đã triển khai bởi tài liệu này.
+Receiving additional user messages during an active turn and prioritizing those
+messages against wakeups is deferred. This tool-only implementation must not claim
+that user-message queuing exists. Explicit Stop uses native cancellation authority
+rather than depending on an agent reading logs.
 
-## 5. Trách nhiệm kiểm tra và kết thúc lượt
+## 5. Verification responsibility and final answers
 
-Backend chặn final nếu còn execution thuộc công việc phải hoàn thành đang chạy,
-đang hủy, hoặc terminal notification chưa được xử lý. Áp dụng như nhau cho hard
-và lazy. Giao terminal rồi ack không tự chứng minh thành công: agent phải kiểm tra
-kết quả và đọc đủ bằng chứng cần thiết trước khi kết luận; không bắt đọc hết log.
+The backend blocks final answers while required work has running or cancelling
+executions, or unprocessed terminal notifications. Apply this equally to hard and
+lazy. Delivery and acknowledgement alone do not prove success: the agent must
+inspect results and enough evidence before making a conclusion, without having
+to read every log line.
 
-Ví dụ chạy test: agent có thể làm việc độc lập trong lúc đợi, nhưng không được báo
-sửa lỗi xong chỉ vì đã khởi chạy test. Thất bại/hủy vẫn có thể dẫn đến câu trả lời
-cuối trung thực về phần chưa hoàn thành, không ép agent retry cho đến thành công.
-Nếu provider lỗi, hết budget, user hủy hoặc scope đóng, lưu trạng thái thực tế và
-dọn công việc theo lifecycle; không gọi model vô hạn để vượt giới hạn đó.
+For example, an agent can do independent work while tests run, but cannot claim a
+fix is complete merely because tests started. Failure/cancellation may still lead
+to an honest final answer describing unfinished work; never force retries until
+success. On provider failure, budget exhaustion, user cancellation, or scope
+closure, preserve actual state and apply lifecycle cleanup rather than calling
+the model indefinitely beyond those limits.
 
-Chỉ dịch vụ được user yêu cầu rõ ràng chạy nền mới được sống qua final. Đây là
-vòng đời riêng, không suy ra từ hard/lazy. Agent phải xử lý kết quả khởi động và
-báo rõ dịch vụ còn chạy. Sau final không tự gọi model; sự kiện nền được giữ để
-đọc ở lượt hợp lệ tiếp theo. Cơ chế tự gọi agent xuyên lượt cần thiết kế/ủy quyền
-riêng, không được bật ngầm bằng lazy.
+Only a service explicitly requested by the user as background work may survive
+final. That is a separate lifetime policy, never inferred from hard/lazy. The
+agent must process startup results and clearly report that the service remains
+running. Do not call the model automatically after final; retain background events
+for the next authorized turn. Cross-turn autonomous agent activation needs separate
+design/authorization and must not be enabled implicitly by lazy.
 
-## 6. Kết quả, conversation history và restart
+## 6. Results, conversation history, and restart
 
-Lưu kết quả execution riêng với phần chat thông thường. Conversation giữ cặp
-user/final-assistant của lượt thành công; Activity giữ tham chiếu execution và bản
-tóm tắt có giới hạn. Không nhét mọi lần wakeup hoặc toàn bộ stdout vào history.
-Execution store giữ trạng thái/kết quả thực tế, kể cả lượt bị lỗi và không được
-lưu thành cặp chat thành công. Draft dùng native owner tạm; khi promotion phải
-giữ execution identity và chuyển liên kết sang conversation mà không tạo history
-chỉ để cấp scope.
+Store execution results separately from ordinary chat. Conversation history keeps
+the successful turn's user/final-assistant pair; Activity keeps execution references
+and bounded summaries. Do not insert every wakeup or all stdout into history.
+Execution storage retains actual state/results even for failed turns absent from
+successful chat history. Drafts use temporary native owners; promotion preserves
+execution identity and links to the conversation without creating history just to
+allocate a scope.
 
-Thiết kế đích yêu cầu lưu bền metadata và kết quả UTF-8 có giới hạn, dùng quyền
-file riêng tư, schema version và atomic publication. Persist record trước dispatch;
-chỉ công bố kết quả đã lưu thành công. Nếu ghi terminal thất bại, giữ record chưa
-commit và báo lỗi lưu trữ có thể phục hồi; không biến thất bại ghi đĩa thành thành
-công hoặc tự chạy lại tool. Không lưu credential, approval token hoặc ảnh vào
-execution artifacts; giữ các quy tắc redaction hiện hành.
+The implementation stores durable metadata and bounded UTF-8 results with private file
+permissions, a schema version, and atomic publication. Persist a record before
+dispatch; publish only successfully stored results. If terminal persistence fails,
+retain an uncommitted record and report a recoverable storage error; never turn a
+disk-write failure into success or automatically rerun the tool. Never store
+credentials, approval tokens, or images in execution artifacts; preserve redaction.
 
-Giữ giới hạn hiện có làm nền: 64 KiB output/execution, đọc tối đa 4 KiB và 1–200
-dòng/lần; đọc đuôi không dịch cursor. Kết quả quá lớn phải có truncation/retention
-flags. Không tự đọc mọi trang khi nhận wakeup. Dữ liệu lưu bền cũng phải có quota
-và retention cấu hình được trước rollout; không được tăng vô hạn hoặc âm thầm
-xóa execution đang chạy/kết quả chưa xử lý. Giới hạn bản ghi memory hiện tại
-32/owner, 128/backend không thay thế chính sách quota đĩa.
+Use existing bounds as the baseline: 64 KiB output/execution, reads at most 4 KiB
+and 1–200 lines each; tail reads do not advance cursors. Oversized results require
+truncation/retention flags. Do not automatically read every page upon wakeup.
+Durable journal and trash collections are independently bounded by configured
+record/byte quotas. Active executions and unprocessed results are not silently
+evicted. Memory limits of 32 records/owner and 128/backend are separate.
 
-Sau restart, kết quả đã commit vẫn đọc được. Execution chưa terminal được đánh
-dấu interrupted với kết quả hành động có thể chưa xác định; không khôi phục handle,
-không hiện Running mãi và không tự chạy lại. Interrupted là trạng thái khôi phục
-mới cần triển khai, không phải trạng thái được manager hiện tại hỗ trợ.
-History là bản ghi quá khứ; trạng thái live luôn lấy từ manager. Đọc artifact sau
-restart không cấp quyền điều khiển execution/process ID cũ. Xóa chat áp dụng cùng
-chính sách trash/cleanup cho artifact thuộc chat, và dừng resource trước khi đóng
-scope; worker đến muộn không được ghi lại vào owner đã xóa.
+After restart, committed results remain readable. Mark nonterminal executions
+interrupted, with potentially unknown action outcomes; never restore handles,
+leave them Running forever, or automatically replay them. Interrupted is the implemented recovery
+state. History records the past; live state comes from the manager. Reading a retained artifact
+after restart grants no control over an old execution/process ID. Chat deletion
+uses the same trash/cleanup policy for owned artifacts and stops resources before
+scope closure; late workers must not republish into deleted owners.
 
-## 7. Hủy, giới hạn và bảo toàn quyền
+## 7. Cancellation, limits, and permissions
 
-Hủy là yêu cầu hợp tác. OS process dùng process group/Windows Job hiện có; MCP
-hoặc I/O không hỗ trợ hủy có thể còn Cancelling đến deadline. Không báo đã hủy
-khi worker chưa kết thúc; hủy không hoàn tác side effect và timeout có thể có
-kết quả chưa xác định. Không đổi kết quả thật thành Cancelled chỉ vì đã gửi Stop.
+Cancellation is cooperative. OS processes use existing process groups/Windows
+Jobs; MCP or noncancellable I/O may remain Cancelling until deadline. Do not report
+cancellation before worker completion. Cancellation does not undo side effects,
+and timeouts may have unknown outcomes. Sending Stop alone must not replace the
+actual result with Cancelled.
 
-Giữ nguyên approval snapshot, tool grant, workspace authority, quota agent/process
-và không mở thêm quyền native frontend. Mọi execution phải qua admission trước
-launch; giới hạn execution và OS process là hai lớp quota khác nhau. Có ID chung
-không có nghĩa một execution được tính thành nhiều OS process slot.
+Preserve approval snapshots, tool grants, workspace authority, agent/process
+quotas, and frontend native permissions. Every execution passes admission before
+launch. Execution and OS-process limits are separate quota layers; a common ID
+does not mean one execution consumes multiple OS-process slots.
 
-UI tiếp tục hiển thị inline trong hội thoại, không thêm panel Processes cố định
-hoặc polling frontend. Mọi native operation vẫn đi qua atlas-api.ts. Các nhãn
-Running/Cancelling/Interrupted phải phản ánh trạng thái thực tế.
+The UI remains inline in conversation, with no permanent Processes panel or
+frontend polling. Native operations stay in atlas-api.ts. Running, Cancelling,
+and Interrupted labels must reflect actual state.
 
-## 8. Chuyển đổi từ code hiện tại và tiêu chí nghiệm thu
+## 8. Migration and acceptance criteria
 
-Code hiện tại còn `ExecutionMode::{Job, Task}`, nhánh tool đồng bộ không tạo record
-chung, execution store trong RAM và prompt cũ tại config/wakeup-prompt.md.
-[Wakeup hiện tại](wakeup.md) và [Process sessions](process-sessions.md) mô tả các
-hành vi đang chạy, bao gồm `lifetime: job/background` của command.
+The former baseline used `ExecutionMode::{Job, Task}`, an untracked synchronous
+tool branch, and in-memory-only results. The parser now rejects legacy execution
+job/task envelopes with a migration error. Use top-level wake_up; task is never
+silently mapped to lazy. All tools are tracked even when wake_up is omitted.
+Command `lifetime: job/background`, child `execution_mode: wait/parallel`, built-in
+conversation tasks, and MCP Tasks remain separate concepts. A parent's active
+call_agent execution still prevents an early final answer.
 
-Khi triển khai phải thay schema/parser, runtime final guard, scheduler, agent prompt,
-worker adapters, persistence, Activity và test cùng nhau. Loại bỏ `execution.mode`
-job/task khỏi catalog/prompt mới. Payload cũ cần được nhận diện và báo lỗi chuyển
-đổi rõ ràng, không âm thầm map task sang lazy. Tool call thiếu wake_up nhận default
-hard và vẫn được manager ghi nhận. Từ `lifetime: job` trong command cũ là chính
-sách dọn theo request, không phải wake_up mode; nếu đổi tên cần migration riêng.
-Các built-in conversation task và MCP Tasks là khái niệm khác, không xóa chỉ vì
-trùng tên. Ví dụ/demo hiện tại vẫn kiểm thử giao thức cũ cho đến khi được cập nhật.
+Durable records use per-manager UUID journals under the Atlas data root's
+`tool-executions/`, with a lifetime lease per manager. A bounded 500 ms
+`import.lock` coordinates cross-process import/publication, skipping live managers
+and recovering inactive nonterminal records as interrupted. Native saved-chat
+aliases include descendant prefixes; promotion preserves draft identities and
+checked deletion moves records to `tool-executions/trash`. No process/agent handle
+is restored. Defaults set 128 records and 12582912 bytes (12 MiB), each bound
+applied independently to shared journals and trash. Valid storage options are
+1–128 records and 4096–67108864 bytes. This does not create user-message queuing.
 
-Kiểm chứng bắt buộc khi triển khai:
+Sources include `src/executions/persistence.rs`,
+`config/execution-defaults.toml`, `tests/execution_protocol.rs`, and
+`tests/execution_manager_control.rs`. See [Wakeup](wakeup.md) for operational details.
+Verification passed on Linux: 612 Rust tests, 74 native desktop tests, and 336 frontend tests. Root/native Clippy, formatting, frontend/native builds, and the no-key demo passed. The checklist below describes the coverage requirements.
 
-- Mọi tool, cả đồng bộ và thất bại, có record đúng owner và kết quả lưu được.
-- Hard đúng interval; lazy đúng 600 giây; completion/error thức sớm trong cả hai.
-- Dùng clock giả kiểm tra lazy, không sleep thật 10 phút trong test.
-- Đổi nhịp bỏ timer cũ; không mất terminal; không chạy trùng tool/model.
-- Lazy không vượt final guard; đọc metadata không thay xác minh bằng chứng.
-- Batch/ack, provider lỗi, giới hạn context và output giữ đúng hợp đồng.
-- Persistence lỗi/restart, unknown outcomes, truncation, quota, draft promotion,
-  xóa chat và late publication không mất ownership hoặc tạo replay.
-- Background phải có yêu cầu user; không tự gọi model sau final hoặc restart.
-- Approval, command containment, cancellation và child scope cleanup không suy yếu.
+Required implementation verification:
+
+- Every tool, including synchronous and failed calls, has correctly owned records and stored results.
+- Hard respects its interval; lazy uses 600 seconds; completion/error wakes early in both.
+- Verify lazy with a fake clock, without ten-minute test sleeps.
+- Cadence changes invalidate stale timers, preserve terminal events, and avoid duplicate tool/model calls.
+- Lazy cannot bypass the final guard; metadata reads do not replace evidence verification.
+- Preserve batch/ack, provider-failure, context, and output-budget contracts.
+- Persistence failures/restart, unknown outcomes, truncation, quotas, draft promotion,
+  deletion, and late publication preserve ownership and never replay actions.
+- Background requires user intent; no automatic model calls after final or restart.
+- Preserve approvals, command containment, cancellation, and child-scope cleanup.
+
+## Await compatibility
+
+`await_execution` waits for the selected executions' existing hard/lazy schedules
+or terminal/interaction events. Its legacy `yield_ms` field is accepted and
+validated in the 100–29999 ms range but never schedules an early model wakeup.
+Use `set_execution_wakeup` to change cadence. In particular, `lazy` plus
+`await_execution` with `yield_ms:100` still waits for the 10-minute reminder or an
+earlier completion/error; it does not poll the model every 100 ms.
+
+## Retired child scopes and recovered evidence
+
+Retiring a child scope abandons its private pending notifications for retention,
+without changing the recorded action outcome. The parent's managed `call_agent`
+execution still reports the child's lifecycle and prevents an early final answer.
+Frozen child results remain durable until bounded retention or chat deletion.
+After restart, recovered descendant results appear as read-only archived evidence
+to the owning root chat; unfinished results generate interrupted notifications
+there. They cannot be cancelled, rescheduled, or used to restore live child handles.
+Live children keep their separate mailboxes and native ownership.

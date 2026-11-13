@@ -42,8 +42,9 @@ erases letters, check the Windows UniKey → WSLg input path before changing the
 chat editor. This was reproduced in both Atlas and a plain GTK input with no
 Atlas JavaScript: backspaces arrived, but the replacement Unicode text did not.
 
-For this case, open UniKey with **Ctrl+Shift+F5**, choose **Mở rộng**, enable
-**Luôn sử dụng clipboard cho Unicode**, then choose **Đóng**. Keep Unicode and
+For this case, open UniKey with **Ctrl+Shift+F5**, choose **Advanced** (the Vietnamese UI label is `Mở rộng`), enable
+**Always use clipboard for Unicode** (`Luôn sử dụng clipboard cho Unicode`),
+then choose **Close** (`Đóng`). Keep Unicode and
 Telex selected. Direct typing was verified in the Tauri window after enabling
 this option. It is a global UniKey preference and can replace clipboard contents
 while typing; turn it off when that compatibility mode is no longer needed.
@@ -227,6 +228,24 @@ See [the demo and Tauri walkthrough](../../docs/guides/process-manager-demo.md),
 [session API](../../docs/architecture/process-sessions.md), and the
 [approved resource lifecycle design](../../docs/architecture/tool-resource-lifecycle.md).
 Project documentation and draft-review rules are listed in [docs](../../docs/README.md).
+
+## Tool execution and wakeups
+
+The implemented [hard/lazy execution architecture](../architecture/tool-execution-control.md)
+tracks every tool through a common manager, with top-level `wake_up` separate from
+tool arguments. Hard intervals are at least 0.1 seconds and strictly below 30; lazy
+uses 600 seconds, with completion/error notifications delivered immediately.
+Omitted wake_up defaults to hard every two seconds; these defaults come from
+`config/execution-defaults.toml`. Results are durably stored under the Atlas data
+root’s `tool-executions/`, with independently bounded journal/trash collections
+(default 128 records and 12 MiB each). Restart recovery marks unfinished records
+interrupted without restoring handles or replaying tools.
+Implementation is verified. See the [Wakeup protocol](../architecture/wakeup.md)
+for controls, bounded reads, and persistence details. Legacy execution job/task
+envelopes are rejected with a migration error. Required tool work must be resolved before
+a final answer; lazy is not permission to leave it unfinished. Command
+`lifetime: job/background` remains a separate cleanup policy. Receiving additional
+user messages during an active turn is deferred.
 
 ## Skills
 

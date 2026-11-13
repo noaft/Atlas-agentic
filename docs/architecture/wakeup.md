@@ -1,165 +1,251 @@
-# Wakeup: scheduled tool execution
+# Wakeup: managed tool execution
 
-Status: approved on2026-11-13 and implemented; verification/demo commands below.
+Status: hard/lazy tool execution implemented and verified on 2026-11-13. See [Tool execution control](tool-execution-control.md) for the approved
+architecture and acceptance criteria. User-message queuing during an active turn
+is explicitly deferred.
 
-Design update (2026-11-13): the user approved replacing execution job/task modes
-with hard/lazy wakeups, unified control for every tool, and durable bounded results.
-See [Tool execution control](tool-execution-control.md) for the target architecture.
-That replacement is not implemented yet; this page describes the current protocol.
+## Purpose and ownership
 
-## Purpose
+Every tool executes once under an owned execution ID, including tools that finish
+immediately. Production default tools use managed workers; synchronous custom-tool
+fallbacks are also tracked. Atlas wakes the requesting agent at the chosen cadence
+or on completion. Wakeups contain metadata only; the agent explicitly selects
+bounded result/log reads. Notifications never replay tool execution.
 
-Tools execute once. Atlas owns their execution IDs and wakes the requesting agent
-at its chosen deadline or on completion. The agent chooses which output to read,
-how many lines to read, and how long to sleep next. Wakeups contain metadata only;
-logs and results are never automatically replayed into model context.
+ToolExecutionManager lives with the backend and owns records, one mailbox per
+agent, and one scheduler. CLI/runtime defaults use private managers; desktop
+injects its shared manager using native chat scopes. Child agents have their own
+mailboxes under root chat ownership. IDs resolve against native owners; model
+arguments never choose conversation owners.
 
-## Ownership and structure
-
-ToolExecutionManager lives with the backend and owns execution records, one mailbox
-per agent, and one scheduler. CLI/runtime defaults create a private manager; desktop
-injects its shared manager using a native chat scope. A child agent has its own
-mailbox beneath the root chat scope. IDs are opaque capabilities resolved against
-the native owner, never model-selected conversation IDs.
-
-ProcessManager and AgentRunManager remain the authority for their resources.
-Adapters connect them to execution records; the scheduler does not launch duplicate
-processes, interpret shell syntax, approve tools, or make model calls.
+ProcessManager and AgentRunManager retain authority over their respective
+resources. Adapters normalize process and child-run results into execution state.
+The scheduler neither launches duplicate processes nor interprets shell syntax,
+approves tools, or invokes providers.
 
 ```mermaid
 flowchart LR
-  Agent -->|tool call + execution policy| Runtime
+  Agent -->|tool call + wake_up| Runtime
   Runtime -->|validated and approved once| Manager[ToolExecutionManager]
-  Manager --> Worker[Tool worker / adapter]
-  Worker -->|status / output reference| Store[Execution store]
-  Store --> Mailbox[Agent mailbox]
-  Scheduler -->|deadline event| Mailbox
-  Mailbox -->|bounded metadata batch| Runtime
+  Manager --> Worker[Tool worker / resource adapter]
+  Worker -->|state / bounded result| Store[Durable execution store]
+  Store --> Mailbox[Owner mailbox]
+  Scheduler -->|deadline metadata| Mailbox
+  Mailbox -->|bounded batch| Runtime
   Runtime -->|budgeted continuation| Agent
-  Agent -->|explicit bounded read / next sleep| Runtime
+  Agent -->|explicit bounded read / schedule update| Runtime
 ```
 
-Execution states: running, cancelling, succeeded, failed, cancelled. A requested
-cancellation is not confirmation of cancellation. Nonzero command exit, timeout
-and worker errors are distinguished from successful tool dispatch. Opaque external
-actions can have unknown outcomes; never automatically retry them.
+States include running, cancelling, succeeded, failed, cancelled, and restart
+recovery's interrupted. `publishing` and `storage_error` describe an execution
+whose action result is awaiting durable publication; they are not successful
+terminal states. A recovered write retries publication, never the tool action.
+Cancellation requests are not confirmation. Command
+nonzero exit, timeout, and worker errors remain distinct from successful dispatch.
+External actions may have unknown outcomes; never automatically retry them.
 
 ## Model protocol
 
-Existing tool_call objects remain valid. An optional top-level policy is separate
-from tool args and from process lifetime:
+`wake_up` is optional and top-level, separate from args and command lifetime:
 
 ```json
-{"type":"tool_call","tool":"exec_command","execution":{"mode":"job","yield_ms":2000},"args":{"command":"cargo test"}}
+{"type":"tool_call","tool":"exec_command","wake_up":{"mode":"hard","interval_seconds":2},"args":{"command":"cargo test"}}
 ```
 
-- job: wait for the first wakeup/completion before continuing the agent.
-- task: return an execution ID immediately so the agent can do other work.
-- Fast tools can finish immediately in either mode.
-- Sleep intervals are 100–29999 milliseconds, strictly below30seconds. This is not
-  a total execution timeout. Existing process, network and agent deadlines remain.
+```json
+{"type":"tool_call","tool":"mcp_call_tool","wake_up":{"mode":"lazy"},"args":{"server":"configured-server","tool":"configured-tool","arguments":{}}}
+```
 
-Concrete controls: `await_execution` takes execution_id or execution_ids and
-yield_ms; `read_execution` takes execution_id with tail_lines or cursor;
-`list_executions` discovers owned records; `cancel_execution` requests cancellation
-under the existing runtime confirmation policy. These are top-level protocol types.
+The MCP example illustrates only the envelope; actual names come from the
+permitted catalog. Hard requires finite `interval_seconds` at least 0.1 and
+strictly below 30. Lazy forbids custom intervals and uses 600 seconds. Both queue
+completion/error/interaction-needed notifications immediately. Omitted wake_up
+defaults to hard every two seconds. Scheduler defaults and rendered instructions
+share [config/execution-defaults.toml](../../config/execution-defaults.toml).
+Wakeup cadence does not change permissions, tool timeouts, dependency order, or
+work lifetime.
 
-These execution_id values are distinct from process session_id, child run_id, and
-built-in conversation task IDs such as conversation.compact. Do not interchange them.
+Controls are top-level protocol types:
 
-The agent may subsequently wait for one or more owned executions, read a bounded
-result, or request cancellation. Each new wait can change the interval. The
-protocol is runtime-controlled and provider-independent; it grants no extra tools
-or permissions. Worker preparation moves the exact approved context, including
-patch preimages, to a worker copy. No stale approval is reconstructed or bypassed.
+```json
+{"type":"set_execution_wakeup","execution_id":"opaque-id","wake_up":{"mode":"hard","interval_seconds":5}}
+```
 
-## Mailbox and scheduler
+```json
+{"type":"await_execution","execution_id":"opaque-id"}
+```
 
-A short mutex protects records, pending notifications, in-flight delivery and the
-sleep predicate. Never hold it during I/O, worker joins, authorization or a model
-call. Each owner has one active consumer; independent agents can run concurrently.
+```json
+{"type":"read_execution","execution_id":"opaque-id","tail_lines":20}
+```
 
-Pending notifications coalesce by execution ID and monotonic revision. Terminal
-states replace periodic running notices and are queued once. New events arriving
-while a batch is in flight remain pending; acknowledgement affects only that
-batch. Invalid model replies and provider errors do not acknowledge it. Tool
-execution is never replayed to recover a delivery.
+`set_execution_wakeup` replaces the schedule without repeating the tool or losing
+terminal notifications. `await_execution` accepts one execution_id or 1–32
+execution_ids; it yields the consumer until a scheduled or terminal event and
+never changes policy. The legacy yield_ms field is validated but does not create
+an early notification deadline. Internal waiting continues without provider polling when no notification
+is deliverable, including during lazy waits, and observes cancellation.
+`read_execution` accepts tail_lines 1–200 or an absolute byte cursor, exclusively.
+`list_executions` returns owned metadata; `cancel_execution` requests cancellation
+under existing runtime confirmation rules.
 
-A bounded batch contains at most16 metadata events and no output text:
+Execution IDs differ from process session_id, child run_id, and built-in
+conversation task IDs. Command `lifetime: job/background` and `call_agent`'s
+`execution_mode: wait/parallel` retain their own meanings. Parent final answers
+cannot bypass the guard while their own call_agent execution remains active.
+
+Migration: old `execution: {"mode":"job"|"task", ...}` envelopes are rejected
+with an explicit migration error. Use top-level wake_up; there is no automatic
+mapping of task to lazy. Conversation tasks and MCP Tasks are separate concepts.
+
+## Scheduler and mailbox
+
+Short mutex sections protect state, pending/in-flight notifications, and the sleep
+predicate; no state lock spans I/O, worker joins, approval, or model calls. Each
+owner has one active consumer; independent owners may run concurrently.
+
+Notifications coalesce by execution ID and monotonic revision. Terminal replaces
+periodic running notices and is logically queued once. Events arriving during an
+in-flight batch remain pending; acknowledgement applies only to that batch.
+Provider errors/invalid responses do not acknowledge it, and recovery never
+replays tools. Unacknowledged terminal delivery may repeat with the same identity.
+
+A batch contains at most 16 metadata events without log text:
 
 ```json
 {"type":"execution_wakeup","batch_id":"opaque","events":[{"execution_id":"opaque","reason":"completed","status":"succeeded","unread_lines":12}],"pending_count":0}
 ```
 
-Completion/error/input-needed notices precede periodic notices; ordering within a
-priority is FIFO. No blanket invalidation of a model decision because an unrelated
-execution changed. Before sleeping or finalizing, inspect pending notifications
-under the same lock. Waiting atomically releases the lock through Condvar and
-rechecks the predicate in a loop, preventing lost wakeups and handling spurious
-notifications. Never run two model calls simultaneously for one owner.
+Completion/error/interaction notices precede periodic notices, FIFO within
+priority. One versioned deadline heap handles execution schedules and ignores
+stale timers after updates. Completion cancels periodic scheduling. New events
+reach a busy agent at the next safe model boundary, never inside a streaming
+response or through a concurrent call for that owner. Condvar waits atomically
+release the short lock and recheck predicates, avoiding lost/spurious wakeups.
 
-One scheduler sleeps until the nearest deadline, with a versioned deadline heap.
-Changing a schedule invalidates old entries. Compact stale heap entries under a
-bounded threshold. Completion cancels its timer. When an agent is active, new
-metadata is delivered at the next model boundary; a timer never calls a provider
-or interrupts a partially streamed answer. A final response releases the consumer:
-there is no hidden model invocation after final or app restart. Retained tasks can
-be inspected in the next authorized request in the same native scope.
+Final is blocked while required executions are running/cancelling or terminal
+notifications remain unhandled, equally for hard and lazy. Notification delivery
+alone does not establish correctness: read enough evidence to support conclusions.
+Failure/cancellation can end in an honest report of incomplete work without
+forcing retries. Explicit background services use their separate lifetime policy;
+process startup must be inspected before reporting them running. Final ends the
+consumer: no hidden provider calls after final or restart. Retain background
+events for a later authorized turn rather than waking an agent across turns.
 
-## Output
+## Output and persistence
 
-Wakeups contain status, elapsed time and output availability, not log text. Reading
-is explicit: tail_lines1–200 or an absolute byte cursor; no read-all option.
-Default explicit reads return at most20 lines, and every read has a hard4096-byte
-UTF-8 content cap, even for one enormous line. Tail reads do not consume a delta
-cursor. Returned source offsets, next cursor, retention loss, partial line and
-truncation flags explain omissions. A structured result is identified as complete
-JSON only when the selected bytes contain the entire result. Otherwise it is a
-labelled partial text view, never silently parsed as a complete result.
+Wakeups contain status, elapsed time, unread-line availability, revisions, and
+retention/truncation flags. Reads default to at most 20 lines and always cap UTF-8
+content at 4096 bytes, even for a huge single line. Tail does not advance cursors.
+Source offsets, next cursor, loss/partial-line flags, and truncation describe
+omissions. Identify structured JSON as complete only when the entire result is
+selected; otherwise return a labeled partial text view.
 
-Retain at most64KiB output per execution,32 records/owner128/backend and8 active/
-owner32/backend. These are execution limits, not total OS process/CPU/RAM quotas.
-Admission precedes launch. Do not evict active records or undelivered terminal
-notifications; reject new work if safe retention cannot admit it. Reject foreign
-IDs and late publications into closed scopes. Worker error details use the same bounded output store and line selection, not an
-unbounded error field. Image results are available only to the original active
-consumer generation; finishing a request clears images, and closing an owner
-discards existing/late output and image payloads.
+Retain at most 64 KiB output/execution, 32 records/owner, 128/backend, and 8 active/
+owner, 32/backend. Execution limits are distinct from OS-process quotas. Admission
+precedes launch and does not evict active records or undelivered terminal events;
+reject work if safe retention cannot admit it. Foreign IDs and late publication
+into closed owners are rejected. Worker errors use bounded output rather than
+unbounded error fields. Images remain ephemeral for the original active consumer
+generation and are cleared on request completion/owner closure, including late images.
 
-No credentials/raw output in
-backend logs, ordinary chat history or wakeup events. Images remain ephemeral and
-are not converted to persistent text blobs.
+Durable metadata/results live under `ATLAS_DATA_DIR/tool-executions` (or the normal
+Atlas data root). Each manager has a UUID journal and holds its lifetime lease.
+Cross-process import/publication uses a bounded 500 ms `import.lock`; live managers
+are skipped. Inactive nonterminal records recover as interrupted, without restoring
+handles or replaying actions. Saved chats use stable native owner aliases, including
+descendant prefixes; draft promotion preserves identities. Checked chat deletion
+moves owned records into `tool-executions/trash` and rejects late publication.
+
+The defaults file sets `persistence_max_records = 128` and
+`persistence_max_bytes = 12582912` (12 MiB). Journal and trash collections each
+have these bounds independently; they are shared storage limits rather than an
+unlimited quota per manager. Valid storage options are 1–128 records and
+4096–67108864 bytes. Private, versioned, atomic snapshots contain bounded text and
+metadata, never handles, credentials, approval tokens, or image payloads. Persist
+before dispatch and preserve recoverable storage failures instead of claiming
+success or replaying work. Committed results remain readable after restart;
+reading an artifact does not authorize control of old handles.
+
+Ordinary successful chat history keeps user/final-assistant pairs. Activity stores
+bounded references/summaries, not every wakeup or all logs. Execution results also
+cover failed turns absent from successful history. Backend diagnostics contain
+neither credentials nor raw output.
 
 ## Shutdown and compatibility
 
-Closing a chat cancels owned executions and descendants; existing process groups
-and Windows Jobs still perform native cleanup. Shutdown stops scheduling and
-waits for owned work on a bounded deadline. Uninterruptible tools may remain
-cancelling until their existing I/O deadline; do not claim success or rerun them.
-Failed/abandoned jobs request cooperative cancellation before request cleanup;
-tasks retain their declared lifetime. Child execution scopes link to RunControl
-cancel/deadline and close when the child exits, so abandoned child workers do not
-outlive their owner. No execution restoration after app restart. MCP gateways can use Atlas Wakeup for
-their existing calls; this does not advertise unsupported remote MCP Tasks versions
-or extend server timeouts. CLI and desktop share the protocol and prompts. UI uses
-the existing inline tool/agent cards and Activity, with no new permanent toolbar.
+Closing a chat cancels owned executions/descendants, preserving process-group and
+Windows Job cleanup. Shutdown stops scheduling and waits on bounded deadlines.
+Uninterruptible tools may remain cancelling until their I/O deadline; never claim
+confirmed cancellation early. Request cleanup preserves explicit command lifetime
+semantics. Child execution scopes follow run cancellation/deadlines and close on
+child exit. No process or agent handle is restored after restart. Atlas Wakeup
+for MCP calls does not advertise remote MCP Tasks or extend server timeouts.
+CLI/desktop share protocol and prompts. UI remains inline with Activity, without
+a permanent Processes toolbar or automatic frontend output polling.
 
-## Verification
+## Verification and source map
 
-Tests must cover adjustable waits, completion before deadline, metadata-only events,
-line/byte caps and UTF-8, concurrent owners, coalescing and ack, terminal delivery,
-stale timers, full-mailbox admission, failed model calls, no replay, destructive
-approval snapshots, cancellation, and successful-turn activity/context budgeting.
+Verification covers interval bounds,
+completion before deadline, lazy fake-clock scheduling, metadata-only batching,
+line/byte/UTF-8 limits, concurrent ownership, coalescing/ack, stale timers, admission,
+provider errors/no replay, exact approval snapshots, final guards, lazy-wait
+cancellation, durable failures/restart/quotas, draft promotion/deletion, and child
+scope cleanup. See the verification commands below.
 
+Run `cargo run --example wakeup` for a deterministic fake-model/in-memory ticker
+demo without provider credentials. It reads three-line samples, changes cadence,
+and demonstrates early completion; it does not execute external commands or write
+project files.
 
-## Demo and source map
+- Core: `src/executions/{mod,output,protocol,worker,persistence}.rs`.
+- Runtime: `src/runtime/wakeup.rs` and `src/runtime.rs`.
+- Defaults/instructions: `config/execution-defaults.toml`, `config/wakeup-prompt.md`.
+- Native ownership: `desktop/src-tauri/src/process_commands.rs`.
+- Tests: `tests/execution_protocol.rs`, `tests/execution_manager_control.rs`,
+  `tests/wakeup_behavior.rs`, and delegated-agent lifetime tests.
 
-Run `cargo run --example wakeup` without a provider/API key. It uses an in-memory
-ticker and deterministic fake model, showing metadata-only notifications, reads of
-three lines, a change from500ms to1000ms sleep, and completion before that deadline.
-It does not write project files or execute external commands.
+## Await compatibility
 
-Core: src/executions/{mod,output,protocol,worker}.rs. Runtime adapter:
-src/runtime/wakeup.rs and src/runtime.rs. Shared instructions:
-config/wakeup-prompt.md. Native ownership: desktop/src-tauri/src/process_commands.rs.
-Regression coverage: tests/wakeup_behavior.rs and agent_runs lifetime tests.
+`await_execution` waits for the selected executions' existing hard/lazy schedules
+or terminal/interaction events. Its legacy `yield_ms` field is accepted and
+validated in the 100–29999 ms range but never schedules an early model wakeup.
+Use `set_execution_wakeup` to change cadence. In particular, `lazy` plus
+`await_execution` with `yield_ms:100` still waits for the 10-minute reminder or an
+earlier completion/error; it does not poll the model every 100 ms.
+
+## Retired child scopes and recovered evidence
+
+Retiring a child scope abandons its private pending notifications for retention,
+without changing the recorded action outcome. The parent's managed `call_agent`
+execution still reports the child's lifecycle and prevents an early final answer.
+Frozen child results remain durable until bounded retention or chat deletion.
+After restart, recovered descendant results appear as read-only archived evidence
+to the owning root chat; unfinished results generate interrupted notifications
+there. They cannot be cancelled, rescheduled, or used to restore live child handles.
+Live children keep their separate mailboxes and native ownership.
+
+A periodic reminder from an unrelated, explicitly authorized background execution
+does not invalidate an otherwise completed answer. Leave that unhandled batch
+available for the next authorized turn. Required executions and terminal or
+interaction-needed events still participate in the final guard. Initial hard
+waits, explicit awaits, and final waits all use the same scheduler deadlines;
+there is no second timeout producing duplicate periodic model continuations.
+
+## Verified commands
+
+Verified on Linux on 2026-11-13: 612 Rust tests, 74 native tests, and 336 frontend
+tests, plus formatting, root/native Clippy, frontend/native builds and the no-key
+demo. Windows/macOS execution was not validated in this change.
+
+```bash
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo build --manifest-path desktop/src-tauri/Cargo.toml
+cargo run --example wakeup
+```
+
+Run `npm test` and `npm run build` from `desktop/` for frontend verification.

@@ -108,13 +108,18 @@ npm --prefix desktop run build
 
 ### Wakeup for long tool calls
 
-Tools can opt into `execution: {"mode":"job","yield_ms":2000}` at the top level of
-an Atlas tool call, or choose `task` to return an execution ID immediately. The
-backend scheduler wakes the owning agent on its deadline (always below30seconds)
-or completion. Wakeup messages contain metadata only. The agent explicitly reads
-1–200 tail lines or a byte page, with a hard4KiB content limit; it can then change
-its next wait. Starting an execution and checking it are separate operations:
-waiting never replays a tool. Existing approvals and command lifetimes still apply.
+Every tool call is tracked by the backend. An optional top-level
+`wake_up: {"mode":"hard","interval_seconds":2}` selects frequent checks;
+`wake_up: {"mode":"lazy"}` schedules reminders every ten minutes. Completion and
+errors notify immediately in either mode. Calls without a policy default to hard.
+Wakeup messages contain metadata only; agents explicitly select bounded output
+reads (1–200 lines, at most4KiB). Changing the policy or waiting never repeats a
+tool. Both modes require unfinished work to be resolved before a final answer;
+explicitly requested background services retain their separate lifecycle.
+
+Bounded results persist separately from chat history. Restart recovers unfinished
+executions as interrupted, without replaying actions or restoring process handles.
+The former execution job/task modes are rejected with a migration error.
 
 Run `cargo run --example wakeup` for a deterministic, no-key walkthrough with an
 in-memory tool and fake agent. See [Wakeup architecture](docs/architecture/wakeup.md)

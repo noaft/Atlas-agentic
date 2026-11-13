@@ -1,30 +1,31 @@
-# Tài liệu Atlas
+# Atlas documentation
 
-Thư mục này chứa tài liệu tham chiếu về tính năng đã triển khai và các thiết kế
-được user duyệt rõ ràng. Mỗi thiết kế phải ghi tình trạng triển khai; được duyệt
-không đồng nghĩa với đã có trong sản phẩm.
+This directory contains references for implemented features and designs explicitly
+approved by the user. Each design states its implementation status; approval does
+not imply that it is already available in the product.
 
-| Tài liệu | Trạng thái |
+| Document | Status |
 | --- | --- |
-| [Atlas reference](guides/reference.md) | Hướng dẫn chi tiết về cấu hình và các tính năng hiện tại |
-| [Tool/resource lifecycle](architecture/tool-resource-lifecycle.md) | User duyệt triển khai 2026-11-09; process scope desktop đã triển khai |
-| [Demo và cách thử trên Tauri](guides/process-manager-demo.md) | Demo local không cần API key và hướng dẫn UI |
-| [Wakeup](architecture/wakeup.md) | User duyệt 2026-11-13; scheduler, mailbox và đọc output có giới hạn |
-| [Tool execution control: hard/lazy](architecture/tool-execution-control.md) | User chốt 2026-11-13; thiết kế thay job/task, quản lý mọi tool và lưu kết quả; chưa triển khai |
-| [Delegated agents](architecture/delegated-agents.md) | User duyệt triển khai 2026-11-13; runtime và UI theo dõi agent con đã triển khai |
-| [Process sessions](architecture/process-sessions.md) | Tham chiếu hành vi hiện tại, 2026-11-09 |
-| [UniKey trên WSLg](platforms/wslg-unikey.md) | Ghi nhận tái hiện và cách khắc phục đã kiểm chứng |
+| [Atlas reference](guides/reference.md) | Detailed configuration and current-feature guide |
+| [Tool/resource lifecycle](architecture/tool-resource-lifecycle.md) | Approved for implementation 2026-11-09; desktop process scopes implemented |
+| [Demo and Tauri walkthrough](guides/process-manager-demo.md) | Local demo without an API key and UI instructions |
+| [Wakeup](architecture/wakeup.md) | Implemented hard/lazy protocol, scheduler, mailbox, and durable bounded results; verified |
+| [Tool execution control: hard/lazy](architecture/tool-execution-control.md) | Approved 2026-11-13; tool-only implementation verified; replaces job/task, tracks every tool, and stores durable results; user-message queuing deferred |
+| [Delegated agents](architecture/delegated-agents.md) | Approved for implementation 2026-11-13; runtime and desktop child monitoring implemented |
+| [Process sessions](architecture/process-sessions.md) | Current command lifetime and ownership reference, 2026-11-09 |
+| [UniKey on WSLg](platforms/wslg-unikey.md) | Reproduction notes and verified workaround |
 
-## Draft và quy trình duyệt
+## Drafts and approval workflow
 
-- Draft thiết kế: `.superpowers/specs/`.
-- Plan, ledger, log và preview: các thư mục tương ứng trong `.superpowers/`.
-- Những nội dung này chỉ lưu local, được Git bỏ qua, không có trong bản clone mới.
-- User yêu cầu viết tài liệu là cho phép soạn draft; không tự coi đó là duyệt thiết kế.
-- Khi user duyệt, chuyển bản đã chốt vào phần phù hợp trong `docs/`, ghi trạng thái,
-  sửa link và cập nhật bảng tài liệu phía trên. Chỉ commit bản đã chốt, giữ plan/log local.
-- Không dùng `git add -f` để đưa draft hoặc artifact Superpowers vào repository.
+- Design drafts: `.superpowers/specs/`.
+- Plans, ledgers, logs, and previews: their corresponding `.superpowers/` directories.
+- These files stay local and Git-ignored, and are absent from fresh clones.
+- A request to write documentation authorizes drafting, not design approval.
+- After approval, move the agreed version into the appropriate `docs/` section,
+  state its status, repair links, and update the table above. Commit only approved
+  documents; keep plans/logs local.
+- Never use `git add -f` to add Superpowers drafts or artifacts to the repository.
 
-Các workflow document trước đây được lưu nguyên nội dung ở archive local
-`.superpowers/archive/2026-11-09-docs/`, kèm manifest SHA-256. Phiên bản cũ cũng còn
-trong Git history. Archive là bản lưu lịch sử, không phải danh sách thiết kế đã duyệt.
+Earlier workflow documents were archived unchanged locally in
+`.superpowers/archive/2026-11-09-docs/` with a SHA-256 manifest. Older versions also
+remain in Git history. The archive is historical storage, not a list of approved designs.

@@ -1,16 +1,21 @@
-# Xem process manager hoạt động
+# See the process manager in action
 
-## 1. Demo không cần model hay API key
+These examples demonstrate command lifetime and native ownership. Command
+`lifetime: job/background` is separate from execution wake_up cadence; see the
+[hard/lazy architecture](../architecture/tool-execution-control.md). User-message queuing
+while a turn is active is outside this implementation.
 
-Từ root repository:
+## 1. Demo without a model or API key
+
+From the repository root:
 
 ```bash
 cargo run --example process_sessions
 ```
 
-Demo chạy một worker do chính binary ví dụ cung cấp, chỉ in tick, không sửa file
-hay gọi model. Nó dùng scope backend giống desktop; đây không phải thêm background
-vào CLI `ask` thông thường. Các bước mong đợi:
+The example binary supplies its own worker, which only prints ticks; it does not
+modify files or call a model. It uses the same backend scope as desktop, without
+adding background support to ordinary CLI `ask`. Expected steps:
 
 ```text
 1. First runtime ended; background <id> is still running: true
@@ -21,66 +26,75 @@ vào CLI `ask` thông thường. Các bước mong đợi:
 PASS: process reused across runtimes, isolated by chat, and cleaned up.
 ```
 
-Điểm cần nhìn: hai runtime dùng cùng session, số resource vẫn là 1; reader UI không
-làm agent mất log; scope khác bị từ chối; Stop dọn worker. Demo tự cleanup ở cuối.
+Observe that two runtimes use the same session and resource count remains one;
+the UI reader does not consume the agent's logs; foreign scopes are rejected;
+Stop cleans up the worker. The demo cleans up automatically at the end.
 
-## 2. Thử trong Tauri với model đang cấu hình
+## 2. Try Tauri with your configured model
 
-Khởi động lại phiên Tauri dev cũ để backend nạp các command mới, rồi chạy từ root:
+Restart an old Tauri development session so the backend loads new commands, then
+run from the repository root:
 
 ```bash
 npm --prefix desktop run tauri dev
 ```
 
-Mở một chat, chọn folder rồi gửi yêu cầu tường minh, ví dụ trên Linux/WSL có Python:
+Open a chat, choose a folder, and make an explicit request, for example on
+Linux/WSL with Python available:
 
-> Chạy lệnh này như background trong chat này, không thêm `&`, giữ qua các tin nhắn:
+> Run this command as background work in this chat, without adding `&`, and keep
+> it across messages:
 > `python3 -u -c "import time; [(print('tick', i, flush=True), time.sleep(1)) for i in range(600)]"`.
-> Sau khi khởi động, trả lời mã process session. Không khởi động thêm bản khác.
+> After startup, report its process session ID. Do not start another copy.
 
-Chọn Allow nếu đang dùng Ask/Workspace. Ngay dưới câu trả lời đang xử lý sẽ có
-khung tool dạng terminal khi tool đang chờ/chạy: tên tool, trạng thái và command.
-Tool kết thúc (thành công, lỗi hoặc bị từ chối) thì khung tự ẩn ngay, kể cả khi
-agent còn viết câu trả lời. Sau final answer, mở **Activity** để xem output.
-**Call details** mở thông tin thô trong lúc tool còn hoạt động.
-Không có panel Processes riêng và UI không tự polling log.
+Choose Allow in Ask/Workspace. A terminal-style tool card appears under the
+in-progress answer while awaiting approval/running, showing tool name, state, and
+command. It hides immediately on completion, failure, or denial, even while the
+agent is still composing. After final, open **Activity** for output. **Call details**
+shows raw information while the tool is active. There is no separate Processes
+panel or automatic log polling.
 
-Gửi tin nhắn tiếp theo:
+Send the next message after the answer finishes:
 
-> Liệt kê process của chat và đọc output mới của session vừa tạo. Không chạy lại lệnh.
+> List this chat's processes and read new output from the session just created.
+> Do not run the command again.
 
-Session ID và số process không đổi. Kết quả `read_process` hiển thị tick mới trong
-Activity của lần gọi tool đó sau khi lượt trả lời hoàn tất. Đổi sang chat khác rồi yêu cầu liệt kê: không thấy
-process của chat đầu. Quay lại chat đầu, gửi “Dừng process vừa tạo bằng
-stop_process”; duyệt nếu cần và kiểm tra kết quả đã stopped. Stop không rollback
-tác động trước đó.
+Session ID and process count stay unchanged. The `read_process` result shows new
+ticks in that call's Activity after the answer completes. Switch to another chat
+and request its process list: the first chat's process is absent. Return to the
+first chat and request “Stop that process with stop_process”; approve if needed
+and check confirmed stopped state. Stop does not undo earlier effects.
 
-Model có thể chọn tool chưa đúng; kiểm tra Activity của câu trả lời để xác nhận nó
-đã dùng `lifetime: background`, thay vì chỉ dựa vào lời nói. Nếu nó chạy job mặc
-định thì resource sẽ bị dọn cuối lượt. `list_processes`/`read_process` là thao tác
-đọc; model không cần chạy lại command để kiểm tra.
+Models may choose the wrong tool arguments. Inspect Activity to confirm
+`lifetime: background` rather than trusting the answer alone. A default job is
+cleaned up at turn end. `list_processes`/`read_process` are reads and do not require
+rerunning the command.
 
-Với Windows native, dùng lệnh foreground tương đương trên máy của bạn. Python là
-phụ thuộc của ví dụ prompt này, không phải phụ thuộc runtime Atlas; demo Rust ở
-mục 1 không cần Python. Test native Windows có thể bị Application Control chặn;
-không tắt policy để thử và không suy ra runtime acceptance từ compile.
+For native Windows, use an equivalent foreground command available on your
+machine. Python is a dependency of this prompt example, not Atlas; the Rust demo
+in section 1 needs no Python. Application Control may block native Windows tests;
+do not disable policy or infer runtime acceptance from compilation.
 
-## 3. Phân biệt job
+## 3. Distinguish job lifetime
 
-Trong chat khác, yêu cầu chạy một lệnh dài với `lifetime: job`, đọc một phần output
-rồi kết thúc lượt. Job bị dọn khi lượt kết thúc, khác với background ở mục 2.
-Không hứa dev server của một job sẽ sống sau final answer.
+In another chat, request a long command with `lifetime: job`, read some output,
+and finish the turn. The job is cleaned up at turn end, unlike section 2's explicit
+background service. Under the hard/lazy final guard, required work must first reach
+an appropriate completed/cancelled state; lazy does not permit leaving a required
+job unfinished. Never promise that a job's dev server survives final.
 
-## 4. Nếu không thấy process
+## 4. If a process is missing
 
-- Yêu cầu Atlas dùng `list_processes` rồi `read_process` với ID đã có; xem
-  output trong khung tool hoặc Activity sau final answer.
-- Command có thể đã kết thúc hoặc lỗi: xem status, exit code và output.
-- Record cũ có thể đã bị eviction theo giới hạn; mất ID không tự rerun command.
-- New chat/chuyển chat release scope trống cũ. Failed draft có message/background
-  vẫn có owner để quay lại Stop; menu **Conversation actions → Close draft** dọn
-  process và đóng draft mà không xóa saved history. Reload dọn draft client cũ.
-- Xóa saved conversation dọn resource của nó; shutdown app dọn manager. Không tự
-  phục hồi process sau restart, không ghi conversation chỉ vì tạo native scope.
+- Ask Atlas for `list_processes`, then `read_process` with the existing ID; inspect
+  tool-card output or Activity after final.
+- The command may have completed or failed: check status, exit code, and output.
+- Old records may have been evicted; losing an ID never automatically reruns a command.
+- New chat/navigation releases old empty scopes. Failed drafts with messages or
+  background work keep an owner so you can return and Stop. **Conversation actions
+  → Close draft** cleans up processes and closes the draft without deleting saved
+  history. Reload closes old-client draft scopes.
+- Deleting a saved conversation cleans its resources; app shutdown cleans the
+  manager. Processes are not restored after restart, and allocating a native scope
+  does not create conversation history.
 
-Chi tiết: [Process sessions](../architecture/process-sessions.md).
+Details: [Process sessions](../architecture/process-sessions.md).

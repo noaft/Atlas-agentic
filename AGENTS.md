@@ -773,25 +773,44 @@ docs: simplify agent repository guide
 ```
 
 
-## Wakeup execution protocol
+## Tool execution and hard/lazy wakeups
 
-Read docs/architecture/wakeup.md before changing scheduled tool execution.
-`src/executions/` owns bounded backend records, per-agent mailbox batches/ack,
-worker adapters, metadata-only wakeups and one deadline scheduler per manager.
-Runtime is the only model caller. Optional top-level execution policy selects
-job/task and100–29999ms yield; existing tool args/lifetimes remain separate.
-`await_execution` changes the next wait, `read_execution` explicitly reads1–200
-lines or byte pages, `list_executions` discovers owned IDs, and `cancel_execution`
-preserves runtime confirmation. No wakeup includes raw logs. Content reads cap at
-4096 UTF-8 bytes, retained text64KiB/execution; no read-all mode. Only final whole
-structured output can be format=json; short running snapshots are never complete.
-Never replay a started execution or acknowledge newer events with an older batch.
-Keep model repair snapshots stable, serialize consumers, and do not hold manager
-locks across I/O/model calls/worker spawning. Reserve admission before delegation
-can start children. Preserve exact authorized contexts and skill preview generation.
-Desktop injects native scopes; children have separate scopes linked to RunControl
-cancellation/deadlines and close at child exit. Chat close/reload/shutdown cancel
-owned work without claiming that an opaque action was undone. Process background
-lifetime does not mean its Wakeup execution has finished. No model calls after
-final or app restart; retained desktop task handles are available next request.
-Keep inline tool/agent UI, existing permissions and metadata-only diagnostics.
+Read docs/architecture/tool-execution-control.md and docs/architecture/wakeup.md
+before changing tool execution. All production tool calls register owned execution
+records, including calls without wake_up. Synchronous custom tools retain tracked
+inline fallback. ProcessManager and AgentRunManager remain specialized resource
+adapters beneath ToolExecutionManager; never create an OS process per tool.
+
+Top-level wake_up selects hard with interval_seconds from0.1 to below30seconds, or lazy with a
+fixed600second interval. Hard requires an explicit interval; lazy forbids one.
+config/execution-defaults.toml supplies default hard2seconds, lazy600seconds and
+bounded storage quotas. Reject old execution.mode job/task with a migration error;
+command lifetime job/background and child execution_mode wait/parallel are separate.
+All request-owned executions block final equally until terminal notifications are
+handled. Only explicitly user-requested background services may survive final.
+No model calls after final/restart. User-message queuing remains deferred.
+
+set_execution_wakeup changes policy without replay. await_execution waits for
+scheduled events without changing policy; its legacy yield_ms field is validated
+in100–29999ms but never creates a notification deadline. Await and final guards wait on scheduled events without periodic model
+polling. Completion/error/input-needed enqueue immediately, including lazy.
+Keep one consumer per agent, bounded coalesced batches, exact ack and stale timer
+invalidation. No raw logs in wakeups. Read1–200 lines or cursor pages, at most4096
+UTF-8 bytes; retain64KiB/execution, flags and cursor semantics. No read-all mode.
+
+Persist bounded private versioned results under the conversation data root's
+tool-executions directory, independently of successful chat turns. Native owner
+bindings and child prefixes preserve artifact ownership across draft promotion.
+Per-manager journals use lifetime leases; short bounded import/publication leases
+allow CLI and desktop coexistence. Skip live journals; recover inactive unfinished
+records as interrupted without replaying actions or restoring handles. Closed
+child artifacts remain archived; chat deletion moves owned artifacts to bounded
+trash. Never publish late output into deleted scopes. Preserve registered-secret
+redaction, ephemeral images, atomic publication and disk/memory quotas.
+
+Never hold execution state locks during storage I/O, model calls or worker launch.
+Publish terminal state only after its exact revision is saved; failed writes must
+not authorize replay. Keep authorization snapshots, tool grants, native scopes,
+OS process groups/Windows Jobs, child cancellation/deadlines and existing approvals.
+Use inline tool/agent UI, no separate permanent process panel, and keep diagnostics
+metadata-only. Cancellation is cooperative; Cancelling lasts until worker exit.
