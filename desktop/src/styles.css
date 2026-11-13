@@ -129,7 +129,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   grid-template-columns: 34px minmax(0, 1fr) 28px;
   gap: 8px;
   align-items: center;
-  margin-top: 12px;
+  margin: 0 0 12px;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 13px;

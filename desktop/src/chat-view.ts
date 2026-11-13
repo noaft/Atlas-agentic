@@ -438,12 +438,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     }
     sidebar.innerHTML = `
       <div class="brand"><img class="brand-mark" src="/atlas-compass.svg" alt="" /><span><strong>Atlas</strong><small>Computer assistant</small></span></div>
-      <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
       <section class="workspace-card" aria-label="Active workspace" data-workspace-card>
         <div class="workspace-card-icon" aria-hidden="true">⌘</div>
         <div class="workspace-card-copy"><span>Workspace</span><strong data-workspace-name></strong><small data-workspace-path></small></div>
         <button type="button" class="workspace-card-action" data-workspace-action aria-label="Choose workspace folder">⌄</button>
       </section>
+      <button type="button" class="new-chat" data-new-chat><span>＋</span> New chat</button>
       <div class="section-label">Conversations</div>
       <nav class="conversation-list" aria-label="Saved conversations" data-conversation-list></nav>
       <div class="sidebar-footer">
