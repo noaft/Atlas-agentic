@@ -184,7 +184,13 @@ explicit user request and survives final/model errors in its chat. Job timeout i
 metadata is bounded and contains no command/raw output; inspect actual cwd/status
 before reusing a service. No automatic retries/restarts, stdin/PTY or daemon.
 
-Limit active sessions to8/scope32/app and retained records32/scope128/app. These
+Concurrent-command limits live in version2 settings as `processes:{perChat,total}`,
+default8/32 with validated ranges1–32/chat and1–128/app. Enforce both caps under the
+manager store lock, before launching; lower limits drain existing work without
+stopping it. Empty-destination draft ownership handoff preserves existing commands
+above a lowered cap, while merges of two active scopes respect the current cap.
+CLI applies the same saved policy to its request-local manager and still rejects
+background commands. Retained records remain32/scope128/app. These
 are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
 rings with absolute offsets, per-chat default agent cursor and independent UI
 cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms. `read_process` also accepts `tail_lines`1–1000,

@@ -17,8 +17,7 @@ use crate::{
     Runtime,
 };
 
-#[cfg(any(unix, windows))]
-use crate::tools::register_process_tools;
+use crate::process_limits::ProcessLimits;
 
 /// Settings inspection stays available when an agent file is missing; runtime construction
 /// still reports invalid definitions before provider setup. Valid definitions supply defaults.
@@ -54,7 +53,7 @@ pub fn build_runtime_with_settings(
     let definition = LocalAgentDefinition::from_file(agent_file)?;
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
-    let mut tools = build_default_tools(workspace_root);
+    let mut tools = build_default_tools(workspace_root, settings.process_limits)?;
     let skill_store = crate::skills::SkillStore::for_settings(
         &SettingsStore::from_user_config()?,
         workspace_root.to_path_buf(),
@@ -78,7 +77,11 @@ pub fn build_runtime_with_settings(
     )
 }
 
-fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
+fn build_default_tools(
+    workspace_root: &Path,
+    limits: ProcessLimits,
+) -> Result<ToolRegistry, String> {
+    limits.validate()?;
     let computer = system_computer_controller();
     let tools = ToolRegistry::new(vec![
         Box::new(PwdTool::new(workspace_root)),
@@ -106,11 +109,16 @@ fn build_default_tools(workspace_root: &Path) -> ToolRegistry {
     #[cfg(any(unix, windows))]
     let tools = {
         let mut tools = tools;
-        register_process_tools(&mut tools, workspace_root);
+        let exec =
+            crate::tools::ExecCommandTool::new(workspace_root).with_process_limits(limits)?;
+        for tool in exec.session_tools() {
+            tools.register(tool);
+        }
+        tools.register(Box::new(exec));
         tools
     };
 
-    tools
+    Ok(tools)
 }
 
 pub fn list_available_models_with_settings(
@@ -135,11 +143,15 @@ mod tests {
     fn default_tools_include_the_workspace_file_family_and_machine_clock() {
         let workspace = tempfile::tempdir().unwrap();
 
-        let mut names = build_default_tools(workspace.path())
-            .definitions()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
+        let mut names = build_default_tools(
+            workspace.path(),
+            crate::process_limits::ProcessLimits::default(),
+        )
+        .unwrap()
+        .definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
         names.sort();
 
         let mut expected = vec![

@@ -348,3 +348,49 @@ fn effective_settings_debug_output_redacts_the_api_key() {
         "{effective_debug}"
     );
 }
+
+#[test]
+fn legacy_settings_get_default_command_concurrency_limits() {
+    let mut value = serde_json::to_value(AtlasSettings::default()).unwrap();
+    value.as_object_mut().unwrap().remove("processes");
+    let settings: AtlasSettings = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        serde_json::to_value(settings).unwrap()["processes"],
+        serde_json::json!({"perChat":8,"total":32})
+    );
+}
+
+#[test]
+fn command_concurrency_limits_round_trip_through_private_settings() {
+    let data = tempdir().unwrap();
+    let store = SettingsStore::at(data.path().join("settings.json"));
+    let mut value = serde_json::to_value(AtlasSettings::default()).unwrap();
+    value["processes"] = serde_json::json!({"perChat":2,"total":3});
+    let settings: AtlasSettings = serde_json::from_value(value).unwrap();
+    store.save(&settings).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load().unwrap()).unwrap()["processes"],
+        serde_json::json!({"perChat":2,"total":3})
+    );
+}
+
+#[test]
+fn invalid_command_concurrency_limits_cannot_be_saved() {
+    let data = tempdir().unwrap();
+    let store = SettingsStore::at(data.path().join("settings.json"));
+    for limits in [
+        serde_json::json!({"perChat":0,"total":32}),
+        serde_json::json!({"perChat":33,"total":32}),
+        serde_json::json!({"perChat":8,"total":0}),
+        serde_json::json!({"perChat":8,"total":129}),
+        serde_json::json!({"perChat":1.5,"total":32}),
+        serde_json::json!({"perChat":8,"total":-1}),
+    ] {
+        let mut value = serde_json::to_value(AtlasSettings::default()).unwrap();
+        value["processes"] = limits.clone();
+        if let Ok(settings) = serde_json::from_value::<AtlasSettings>(value) {
+            assert!(store.save(&settings).is_err(), "accepted {limits}");
+        }
+    }
+    assert!(!data.path().join("settings.json").exists());
+}

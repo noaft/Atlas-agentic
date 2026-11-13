@@ -14,7 +14,7 @@ use directories::BaseDirs;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::permissions::PermissionMode;
+use crate::{permissions::PermissionMode, process_limits::ProcessLimits};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -45,6 +45,8 @@ pub struct AtlasSettings {
     pub workspace: WorkspaceSettings,
     #[serde(default)]
     pub permissions: PermissionSettings,
+    #[serde(default)]
+    pub processes: ProcessLimits,
 }
 
 impl fmt::Debug for AtlasSettings {
@@ -56,6 +58,7 @@ impl fmt::Debug for AtlasSettings {
             .field("conversation", &self.conversation)
             .field("workspace", &self.workspace)
             .field("permissions", &self.permissions)
+            .field("processes", &self.processes)
             .finish()
     }
 }
@@ -70,6 +73,7 @@ impl Default for AtlasSettings {
             conversation: ConversationSettings::default(),
             workspace: WorkspaceSettings::default(),
             permissions: PermissionSettings::default(),
+            processes: ProcessLimits::default(),
         }
     }
 }
@@ -79,6 +83,7 @@ impl AtlasSettings {
         if self.version != SETTINGS_VERSION {
             return Err(format!("unsupported settings version: {}", self.version));
         }
+        self.processes.validate()?;
         for (id, profile) in &self.providers {
             profile.validate(ProviderId::parse(id)?)?;
         }
@@ -172,6 +177,7 @@ impl AtlasSettings {
             model_limits: Default::default(),
             default_workspace: self.workspace.default_path.clone(),
             default_permission_mode: self.permissions.default_mode,
+            process_limits: self.processes,
             environment_overrides: BTreeSet::new(),
         };
         if env_provider.is_some() {
@@ -258,6 +264,7 @@ pub struct EffectiveSettings {
     pub model_limits: std::collections::BTreeMap<String, crate::models::ModelLimits>,
     pub default_workspace: Option<PathBuf>,
     pub default_permission_mode: PermissionMode,
+    pub process_limits: ProcessLimits,
     pub environment_overrides: BTreeSet<SettingField>,
 }
 
@@ -279,6 +286,7 @@ impl fmt::Debug for EffectiveSettings {
             .field("history_limit", &self.history_limit)
             .field("default_workspace", &self.default_workspace)
             .field("default_permission_mode", &self.default_permission_mode)
+            .field("process_limits", &self.process_limits)
             .field("environment_overrides", &self.environment_overrides)
             .finish()
     }

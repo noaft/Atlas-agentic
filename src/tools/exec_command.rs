@@ -50,6 +50,13 @@ impl ExecCommandTool {
         self.sessions = Arc::new(ProcessSessions::for_scope(&self.workspace, scope));
         self
     }
+    pub fn with_process_limits(
+        self,
+        limits: crate::process_limits::ProcessLimits,
+    ) -> Result<Self, String> {
+        self.sessions.set_limits(limits)?;
+        Ok(self)
+    }
     pub fn session_tools(&self) -> Vec<Box<dyn Tool>> {
         process_sessions::session_tools(self.sessions.clone())
     }

@@ -245,3 +245,140 @@ fn completed_records_are_bounded_per_chat_and_across_the_backend() {
         128
     );
 }
+
+#[test]
+fn configurable_limits_enforce_each_chat_and_the_app_before_launch() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    let root = tempfile::tempdir().unwrap();
+    let manager = ProcessManager::new();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 1,
+            total: 2,
+        })
+        .unwrap();
+    let a = manager.create_scope().unwrap();
+    let b = manager.create_scope().unwrap();
+    let c = manager.create_scope().unwrap();
+    let ta = tools(root.path(), a.clone());
+    let tb = tools(root.path(), b);
+    let tc = tools(root.path(), c);
+    let start = json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0});
+    call(&ta, "exec_command", start.clone()).unwrap();
+    let denied =
+        json!({"command":"touch should-not-start","lifetime":"background","yield_time_ms":0});
+    assert!(call(&ta, "exec_command", denied.clone()).is_err());
+    call(&tb, "exec_command", start.clone()).unwrap();
+    assert!(call(&tc, "exec_command", denied).is_err());
+    assert!(!root.path().join("should-not-start").exists());
+    a.close(Duration::from_secs(2)).unwrap();
+    call(&tc, "exec_command", start).unwrap();
+    manager.shutdown(Duration::from_secs(2)).unwrap();
+}
+
+#[test]
+fn lowering_limits_keeps_existing_commands_and_blocks_until_they_drain() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    let root = tempfile::tempdir().unwrap();
+    let manager = ProcessManager::new();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 2,
+            total: 2,
+        })
+        .unwrap();
+    let chat = manager.create_scope().unwrap();
+    let registry = tools(root.path(), chat.clone());
+    let start = json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0});
+    let first = call(&registry, "exec_command", start.clone()).unwrap();
+    let second = call(&registry, "exec_command", start.clone()).unwrap();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 1,
+            total: 1,
+        })
+        .unwrap();
+    assert!(chat.list().unwrap().iter().all(|entry| entry.running));
+    assert!(call(&registry, "exec_command", start.clone()).is_err());
+    chat.stop(first["session_id"].as_str().unwrap()).unwrap();
+    assert!(call(&registry, "exec_command", start.clone()).is_err());
+    chat.stop(second["session_id"].as_str().unwrap()).unwrap();
+    call(&registry, "exec_command", start.clone()).unwrap();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 2,
+            total: 2,
+        })
+        .unwrap();
+    call(&registry, "exec_command", start).unwrap();
+    manager.shutdown(Duration::from_secs(2)).unwrap();
+}
+
+#[test]
+fn concurrent_admission_cannot_bypass_a_single_command_limit() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    use std::sync::{Arc, Barrier};
+    let root = tempfile::tempdir().unwrap();
+    let manager = ProcessManager::new();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 1,
+            total: 1,
+        })
+        .unwrap();
+    let scope = manager.create_scope().unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let path = root.path().to_path_buf();
+        let chat = scope.clone();
+        let gate = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            let registry = tools(&path, chat);
+            gate.wait();
+            call(
+                &registry,
+                "exec_command",
+                json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0}),
+            )
+            .is_ok()
+        }));
+    }
+    barrier.wait();
+    let admitted = workers
+        .into_iter()
+        .map(|worker| usize::from(worker.join().unwrap()))
+        .sum::<usize>();
+    assert_eq!(admitted, 1);
+    manager.shutdown(Duration::from_secs(2)).unwrap();
+}
+
+#[test]
+fn draft_handoff_remains_valid_after_lowering_below_existing_activity() {
+    use atlas_agentic::process_limits::ProcessLimits;
+    let root = tempfile::tempdir().unwrap();
+    let manager = ProcessManager::new();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 2,
+            total: 2,
+        })
+        .unwrap();
+    let draft = manager.create_scope().unwrap();
+    let saved = manager.create_scope().unwrap();
+    let registry = tools(root.path(), draft.clone());
+    let start = json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0});
+    call(&registry, "exec_command", start.clone()).unwrap();
+    call(&registry, "exec_command", start.clone()).unwrap();
+    manager
+        .set_limits(ProcessLimits {
+            per_chat: 1,
+            total: 1,
+        })
+        .unwrap();
+    saved.adopt_from(&draft).unwrap();
+    assert_eq!(saved.list().unwrap().len(), 2);
+    assert!(saved.list().unwrap().iter().all(|entry| entry.running));
+    assert!(call(&tools(root.path(), saved), "exec_command", start).is_err());
+    manager.shutdown(Duration::from_secs(2)).unwrap();
+}

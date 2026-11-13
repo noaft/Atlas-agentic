@@ -3,7 +3,10 @@ use super::{
     output::{Completion, ProcessControl},
     ExecArgs, ProcessCursor, ProcessLifetime, ProcessRead, OUTPUT_LIMIT,
 };
-use crate::tools::{ExecCommandTool, Tool, ToolResult};
+use crate::{
+    process_limits::ProcessLimits,
+    tools::{ExecCommandTool, Tool, ToolResult},
+};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -15,10 +18,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-const PER_SCOPE_ACTIVE: usize = 8;
-const GLOBAL_ACTIVE: usize = 32;
-const PER_SCOPE_RECORDS: usize = 32;
-const GLOBAL_RECORDS: usize = 128;
+const PER_SCOPE_RECORDS: usize = ProcessLimits::MAX_PER_CHAT;
+const GLOBAL_RECORDS: usize = ProcessLimits::MAX_TOTAL;
 struct Session {
     owner: String,
     request: String,
@@ -34,6 +35,7 @@ struct Session {
 struct Store {
     sessions: HashMap<String, Session>,
     closing: bool,
+    limits: ProcessLimits,
 }
 #[derive(Default)]
 struct Inner {
@@ -65,6 +67,9 @@ pub struct ProcessInfo {
 impl ProcessManager {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn set_limits(&self, limits: ProcessLimits) -> Result<(), String> {
+        self.inner.set_limits(limits)
     }
     pub fn create_scope(&self) -> Result<ProcessScope, String> {
         if self
@@ -204,12 +209,22 @@ impl ProcessScope {
             .map_err(|_| "Process registry unavailable")?;
         self.check()?;
         source.check()?;
-        let active = store
+        let target_active = store
             .sessions
             .values()
-            .filter(|s| (s.owner == self.id || s.owner == source.id) && !s.control.is_done())
+            .filter(|s| s.owner == self.id && !s.control.is_done())
             .count();
-        if active > PER_SCOPE_ACTIVE {
+        let source_active = store
+            .sessions
+            .values()
+            .filter(|s| s.owner == source.id && !s.control.is_done())
+            .count();
+        // Renaming an existing chat's owner must not terminate grandfathered work.
+        // Combining two active owners still has to fit the current per-chat cap.
+        if target_active > 0
+            && source_active > 0
+            && target_active + source_active > store.limits.per_chat
+        {
             return Err("Process ownership transfer exceeds the chat active limit".into());
         }
         while store
@@ -258,6 +273,14 @@ impl ProcessScope {
     }
 }
 impl Inner {
+    fn set_limits(&self, limits: ProcessLimits) -> Result<(), String> {
+        limits.validate()?;
+        self.store
+            .lock()
+            .map_err(|_| "Process registry unavailable")?
+            .limits = limits;
+        Ok(())
+    }
     fn stop_and_join(&self, ids: &[String], timeout: Duration) -> Result<(), String> {
         {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -344,6 +367,9 @@ impl ProcessSessions {
             persistent: true,
         }
     }
+    pub(crate) fn set_limits(&self, limits: ProcessLimits) -> Result<(), String> {
+        self.scope.inner.set_limits(limits)
+    }
     pub(crate) fn list(&self) -> Result<Vec<ProcessInfo>, String> {
         self.scope.list()
     }
@@ -414,18 +440,18 @@ impl ProcessSessions {
                 .values()
                 .filter(|s| !s.control.is_done())
                 .count()
-                >= GLOBAL_ACTIVE
+                >= store.limits.total
             {
-                return Err("Global limit of 32 running sessions reached".into());
+                return Err(format!("App limit of {} concurrent commands reached; wait for or stop an existing command", store.limits.total));
             }
             if store
                 .sessions
                 .values()
                 .filter(|s| s.owner == self.scope.id && !s.control.is_done())
                 .count()
-                >= PER_SCOPE_ACTIVE
+                >= store.limits.per_chat
             {
-                return Err("Eight process sessions are already running in this chat".into());
+                return Err(format!("Chat limit of {} concurrent commands reached; wait for or stop an existing command", store.limits.per_chat));
             }
             let scope_count = store
                 .sessions

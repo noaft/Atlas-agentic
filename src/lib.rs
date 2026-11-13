@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod media;
 pub mod models;
 pub mod permissions;
+pub mod process_limits;
 pub mod runtime;
 pub mod settings;
 pub mod skills;

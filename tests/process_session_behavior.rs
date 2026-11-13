@@ -363,3 +363,46 @@ fn tail_arguments_are_validated_before_execution() {
     assert_eq!(result["stderr_view"]["total_lines"], 0);
     assert!(result["stderr_view"]["start_line"].is_null());
 }
+
+#[test]
+fn configured_cli_sessions_keep_request_local_background_rejection() {
+    use atlas_agentic::{process_limits::ProcessLimits, tools::ExecCommandTool};
+    let root = tempfile::tempdir().unwrap();
+    let exec = ExecCommandTool::new(root.path())
+        .with_process_limits(ProcessLimits {
+            per_chat: 1,
+            total: 2,
+        })
+        .unwrap();
+    let mut registry = ToolRegistry::new(exec.session_tools());
+    registry.register(Box::new(exec));
+    let first = run(
+        &registry,
+        "exec_command",
+        json!({"command":"sleep 20","yield_time_ms":0}),
+    )
+    .unwrap();
+    assert!(run(
+        &registry,
+        "exec_command",
+        json!({"command":"touch rejected","yield_time_ms":0})
+    )
+    .is_err());
+    let background = run(
+        &registry,
+        "exec_command",
+        json!({"command":"sleep 20","lifetime":"background","yield_time_ms":0}),
+    )
+    .unwrap_err();
+    assert!(
+        background.to_lowercase().contains("background"),
+        "{background}"
+    );
+    assert!(!root.path().join("rejected").exists());
+    run(
+        &registry,
+        "stop_process",
+        json!({"session_id":first["session_id"]}),
+    )
+    .unwrap();
+}
