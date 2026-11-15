@@ -634,11 +634,21 @@ fn ask_uses_saved_provider_full_history_and_current_directory_workspace() {
     assert!(metadata_only.contains("execution_id"));
     assert!(!metadata_only.contains(&fixture.workspace.path().display().to_string()));
     let continuation = server.request();
-    assert!(
+    let content: Value = serde_json::from_str(
         continuation["messages"].as_array().unwrap().last().unwrap()["content"]
             .as_str()
-            .unwrap()
-            .contains(&fixture.workspace.path().display().to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    let output: Value = serde_json::from_str(
+        content["tool_results"].as_array().unwrap().last().unwrap()["output"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        output["result"]["text"],
+        format!("Workspace: {}", fixture.workspace.path().display())
     );
 }
 
