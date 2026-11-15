@@ -139,15 +139,18 @@ jobs:
             desktop/src-tauri -> target
 
       - name: Test Rust core on Windows
+        timeout-minutes: 8
         run: cargo test --locked --no-fail-fast -- --nocapture
-
-      - name: Test desktop Rust bridge on Windows
-        if: ${{ !cancelled() }}
-        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
 
       - name: Diagnose failed Windows unit tests in sequence
         if: ${{ failure() }}
+        timeout-minutes: 5
         run: cargo test --locked --lib -- --nocapture --test-threads=1
+
+      - name: Test desktop Rust bridge on Windows
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
 
   desktop:
     runs-on: ubuntu-24.04
