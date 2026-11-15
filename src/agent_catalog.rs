@@ -267,7 +267,7 @@ impl AgentCatalog {
             if original != current {
                 return Err("agent storage changed".into());
             }
-            root.hard_link(&temporary, &root, format!("{}.toml", definition.name))
+            root.hard_link(&temporary, root, format!("{}.toml", definition.name))
                 .map_err(err)
         })();
         drop(file);

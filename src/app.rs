@@ -206,8 +206,10 @@ mod tests {
         let agent_file = folder.path().join("atlas.toml");
         std::fs::write(&agent_file, include_str!("../agents/atlas.toml")).unwrap();
         let store = crate::settings::SettingsStore::at(folder.path().join("settings.json"));
-        let mut settings = crate::settings::EffectiveSettings::default();
-        settings.api_key = None;
+        let settings = crate::settings::EffectiveSettings {
+            api_key: None,
+            ..Default::default()
+        };
         let runtime =
             super::build_dispatch_runtime(folder.path(), &agent_file, &settings, &store).unwrap();
         assert!(runtime
