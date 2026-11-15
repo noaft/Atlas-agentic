@@ -28,6 +28,12 @@ Open **Settings → Models & providers**, choose a provider, add its API key, an
 select or enter a model ID. New chats start in an automatically created `Atlas`
 folder in your home directory; you can choose another folder per chat.
 
+Model capacity fields show limits reported for the selected model and endpoint
+when available, or `Unknown` when the provider does not report them. Viewing these
+values does not save custom overrides. Explicit overrides take precedence;
+editing one reported limit keeps its reported companion value. The default
+output budget remains separate from model capacity.
+
 ## Features
 
 - **Chat:** streaming replies, independent conversations, local history and Activity.

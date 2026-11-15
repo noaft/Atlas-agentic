@@ -626,7 +626,8 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
         previousDraft.defaultPermissionMode === draft.defaultPermissionMode;
       if (previous?.screen === "settings" && previous.settings === state.settings &&
           previous.settingsStatus === state.settingsStatus && previous.settingsErrorMessage === state.settingsErrorMessage &&
-          previous.settingsModels === state.settingsModels && previous.settingsModelsStatus === state.settingsModelsStatus && previous.settingsModelsError === state.settingsModelsError &&
+          (previousDraft === draft || previous.settingsModels === state.settingsModels &&
+            previous.settingsModelsStatus === state.settingsModelsStatus && previous.settingsModelsError === state.settingsModelsError) &&
           (previousDraft === draft || textEdit)) {
         if (draft) {
           const key = settingsScreen.querySelector<HTMLInputElement>("[data-settings-api-key]");

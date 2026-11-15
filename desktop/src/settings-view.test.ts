@@ -519,3 +519,94 @@ test("command concurrency defaults, discard and invalid values preserve Settings
   expect(root.querySelector<HTMLInputElement>('[data-settings-command-limit="perChat"]')?.value).toBe("8");
   expect(store.hasSettingsChanges()).toBe(false);
 });
+
+const modelLimitInput = (root: HTMLElement, label: string) =>
+  root.querySelector<HTMLInputElement>(`[data-settings-field="${label}"]`)!;
+
+test("model capacity fields show reported limits without saving implicit overrides", async () => {
+  const {store, root, api, saves} = fixture(multiSettings);
+  api.listModels = async () => [{id: multiSettings.activeModel, name: "Known model", source: multiSettings.source,
+    contextWindow: 512000, maxOutputTokens: 16384}];
+  await store.initialize(); store.openSettings(); renderSettings(root, store.getState(), store);
+  expect(modelLimitInput(root, "Model context limit (tokens)").value).toBe("512000");
+  expect(modelLimitInput(root, "Model output limit (tokens)").value).toBe("16384");
+  expect(modelLimitInput(root, "Default output budget (tokens)").value).toBe("4096");
+  expect(store.hasSettingsChanges()).toBe(false);
+  store.updateSettingsDraft({defaultPermissionMode: "workspace"}); await store.saveSettings();
+  expect(saves[0].modelLimits?.[multiSettings.activeModel]).toBeUndefined();
+  expect(saves[0].profilePatches?.some(patch => patch.modelLimits?.[multiSettings.activeModel])).not.toBe(true);
+});
+
+test("editing one reported limit preserves the reported companion capacity", async () => {
+  const {store, root, api} = fixture(multiSettings);
+  api.listModels = async () => [{id: multiSettings.activeModel, name: "Known model", source: multiSettings.source,
+    contextWindow: 512000, maxOutputTokens: 16384}];
+  await store.initialize(); store.openSettings(); renderSettings(root, store.getState(), store);
+  const context = modelLimitInput(root, "Model context limit (tokens)");
+  context.value = "700000"; context.dispatchEvent(new Event("input"));
+  expect(store.getState().settingsDraft?.modelLimits?.[multiSettings.activeModel])
+    .toEqual({contextWindow: 700000, maxOutputTokens: 16384});
+});
+
+test("unknown and foreign model metadata never invent capacity from input-only limits", async () => {
+  for (const metadata of [
+    {source: multiSettings.source, inputTokenLimit: 64000},
+    {source: {provider: "deepseek" as const, sourceId: "foreign-endpoint"}, contextWindow: 512000, maxOutputTokens: 16384},
+    {source: null, contextWindow: 512000, maxOutputTokens: 16384},
+  ]) {
+    const {store, root, api} = fixture(multiSettings);
+    api.listModels = async () => [{id: multiSettings.activeModel, name: "Unknown model", ...metadata}];
+    await store.initialize(); store.openSettings(); renderSettings(root, store.getState(), store);
+    for (const label of ["Model context limit (tokens)", "Model output limit (tokens)"]) {
+      const input = modelLimitInput(root, label);
+      expect(input.value).toBe(""); expect(input.placeholder).toBe("Unknown");
+    }
+  }
+});
+
+test("discovered capacities refresh mounted fields while preserving custom limits and focus", async () => {
+  const {store, root, api} = fixture(multiSettings);
+  await store.initialize(); store.openSettings(); renderSettings(root, store.getState(), store);
+  document.body.append(root);
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.focus(); key.setSelectionRange(0, 0);
+  const context = modelLimitInput(root, "Model context limit (tokens)");
+  api.listModels = async () => [{id: multiSettings.activeModel, name: "Known model", source: multiSettings.source,
+    contextWindow: 512000, maxOutputTokens: 16384}];
+  await store.refreshSettingsModels(); updateSettingsChrome(root, store.getState(), store);
+  expect(context.value).toBe("512000");
+  expect(modelLimitInput(root, "Model context limit (tokens)")).toBe(context);
+  expect(document.activeElement).toBe(key);
+  context.value = "700000"; context.dispatchEvent(new Event("input"));
+  await store.refreshSettingsModels(); updateSettingsChrome(root, store.getState(), store);
+  expect(context.value).toBe("700000");
+  store.updateSettingsDraft({baseUrl: "https://different.test/v1"});
+  updateSettingsChrome(root, store.getState(), store);
+  expect(context.value).toBe(""); expect(context.placeholder).toBe("Unknown");
+  expect(document.activeElement).toBe(key);
+  root.remove();
+});
+
+test("a provider without a selected model does not reuse the active provider's limits", async () => {
+  const {store, root} = fixture(multiSettings);
+  await store.initialize(); store.openSettings(); store.selectSettingsProvider("openai");
+  renderSettings(root, store.getState(), store);
+  expect(modelLimitInput(root, "Model context limit (tokens)").disabled).toBe(true);
+  expect(modelLimitInput(root, "Model output limit (tokens)").disabled).toBe(true);
+});
+
+test("fresh discovery at an edited endpoint displays only that endpoint's reported capacities", async () => {
+  const {store, root, api} = fixture(multiSettings);
+  api.listModels = async () => [{id: multiSettings.activeModel, name: "Old model", source: multiSettings.source,
+    contextWindow: 512000, maxOutputTokens: 16384}];
+  await store.initialize(); store.openSettings();
+  store.updateSettingsDraft({baseUrl: "https://new-provider.test/v1"});
+  renderSettings(root, store.getState(), store);
+  expect(modelLimitInput(root, "Model context limit (tokens)").value).toBe("");
+  api.listModels = async () => [{id: multiSettings.activeModel, name: "New model", source: {provider: "deepseek", sourceId: "new-endpoint"},
+    contextWindow: 128000, maxOutputTokens: 8192}];
+  await store.refreshSettingsModels(); updateSettingsChrome(root, store.getState(), store);
+  expect(modelLimitInput(root, "Model context limit (tokens)").value).toBe("128000");
+  expect(modelLimitInput(root, "Model output limit (tokens)").value).toBe("8192");
+  expect(store.getState().settingsDraft?.modelLimits).toEqual({});
+});

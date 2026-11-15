@@ -2312,3 +2312,34 @@ test("saved Wakeup reads show selected log text instead of the protocol envelope
   expect(output?.textContent).not.toContain('"text"');
   expect(output?.querySelector("img")).toBeNull();
 });
+
+test("model discovery updates capacity fields without remounting Settings inputs", async () => {
+  const api = new ViewApi();
+  const source = {provider: "deepseek" as const, sourceId: "capacity-source"};
+  api.settings = {...settings, provider: "deepseek", source, apiKeySource: "settings", providers: [{
+    provider: "deepseek", name: "DeepSeek", envPrefix: "DEEPSEEK", source, apiKeySource: "settings",
+    baseUrl: settings.baseUrl, model: settings.model, activeModel: settings.activeModel, environmentOverrides: [],
+    modelLimits: {}, capabilities: {}, allowKeyless: false, requestOutputTokens: 4096,
+  }]};
+  const {root, store} = setup(api); await store.initialize(); store.openSettings();
+  const context = root.querySelector<HTMLInputElement>('[data-settings-field="Model context limit (tokens)"]')!;
+  const key = root.querySelector<HTMLInputElement>("[data-settings-api-key]")!;
+  key.focus(); key.value = "unsaved credential"; key.dispatchEvent(new Event("input", {bubbles: true}));
+  const models = deferred<ModelInfo[]>(); api.listModels = () => models.promise;
+  const pending = store.refreshSettingsModels();
+  expect(root.querySelector('[data-settings-field="Model context limit (tokens)"]')).toBe(context);
+  expect(root.querySelector<HTMLButtonElement>("[data-refresh-settings-models]")?.disabled).toBe(true);
+  models.resolve([{id: settings.activeModel, name: "Known model", source, contextWindow: 512000, maxOutputTokens: 16384}]);
+  await pending;
+  expect(root.querySelector('[data-settings-field="Model context limit (tokens)"]')).toBe(context);
+  expect(context.value).toBe("512000");
+  expect(root.querySelector<HTMLInputElement>('[data-settings-field="Model output limit (tokens)"]')?.value).toBe("16384");
+  expect(root.querySelector("[data-settings-api-key]")).toBe(key);
+  expect(key.value).toBe("unsaved credential"); expect(document.activeElement).toBe(key);
+  expect(root.querySelector<HTMLSelectElement>("[data-settings-model-list]")?.options[1].textContent).toBe("Known model");
+  api.listModels = async () => { throw new Error("Discovery offline"); };
+  await store.refreshSettingsModels();
+  expect(root.textContent).toContain("Discovery offline");
+  expect(root.querySelector('[data-settings-field="Model context limit (tokens)"]')).toBe(context);
+  expect(context.value).toBe("512000"); expect(document.activeElement).toBe(key);
+});

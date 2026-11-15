@@ -1,3 +1,4 @@
+import { settingsModelLimits } from "./settings-model-limits";
 import { DEFAULT_PROCESS_LIMITS, MAX_COMMANDS_PER_CHAT, MAX_COMMANDS_TOTAL } from "./process-limits";
 import type { ChatStore } from "./chat-state";
 import type { ChatState, SettingsSection } from "./types";
@@ -31,6 +32,8 @@ export function updateSettingsSection(container: HTMLElement, section: SettingsS
 /** Refresh lightweight chrome while typed inputs and connection workers keep their identity. */
 export function updateSettingsChrome(container: HTMLElement, state: Readonly<ChatState>, store: ChatStore): void {
   updateSettingsSection(container, state.settingsSection);
+  updateModelLimitInputs(container, state);
+  updateModelDiscovery(container, state);
   mcpPanels.get(store)?.updateContext(store.mcpContext(), state.activeSessionId);
   skillsPanels.get(store)?.updateContext(store.skillContext(), state.activeSessionId, state.settingsSection === "skills");
   const saving = state.settingsStatus === "saving";
@@ -47,6 +50,51 @@ export function updateSettingsChrome(container: HTMLElement, state: Readonly<Cha
   if (discard) discard.disabled = saving;
   const status = container.querySelector<HTMLElement>(".settings-draft-status");
   if (status) status.textContent = changed ? "Unsaved changes" : "No unsaved changes";
+}
+
+function updateModelLimitInputs(container: HTMLElement, state: Readonly<ChatState>): void {
+  const {model, reported, override} = settingsModelLimits(state);
+  for (const input of container.querySelectorAll<HTMLInputElement>("[data-settings-model-limit]")) {
+    const key = input.dataset.settingsModelLimit as "contextWindow" | "maxOutputTokens";
+    const value = override ? override[key] : reported[key];
+    if (document.activeElement !== input) input.value = value ? String(value) : "";
+    input.placeholder = "Unknown";
+    input.disabled = state.settingsStatus === "saving" || !model;
+    const hint = input.parentElement?.querySelector<HTMLElement>(".settings-hint");
+    if (hint) hint.textContent = override
+      ? "Custom capacity overrides for this model and endpoint. Set both values, or clear both to use reported limits."
+      : reported[key]
+        ? "Reported by the model provider. Edit to override for this model and endpoint."
+        : "Not reported for this model. Refresh models or enter both capacity overrides.";
+  }
+}
+
+function updateModelDiscovery(container: HTMLElement, state: Readonly<ChatState>): void {
+  const host = container.querySelector<HTMLElement>("[data-settings-model-catalog]");
+  const draft = state.settingsDraft;
+  if (!host || !draft) return;
+  const saving = state.settingsStatus === "saving";
+  const refresh = host.querySelector<HTMLButtonElement>("[data-refresh-settings-models]")!;
+  refresh.textContent = state.settingsModelsStatus === "loading" ? "Loading models…" : "Refresh models";
+  refresh.disabled = saving || state.settingsModelsStatus === "loading";
+  const select = host.querySelector<HTMLSelectElement>("[data-settings-model-list]")!;
+  const models = state.settingsModels ?? [];
+  const choices = JSON.stringify(models.map(model => [model.id, model.name]));
+  if (host.dataset.modelChoices !== choices) {
+    host.dataset.modelChoices = choices;
+    const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "Choose a model";
+    select.replaceChildren(placeholder);
+    for (const model of models) {
+      const option = document.createElement("option"); option.value = model.id; option.textContent = model.name; select.append(option);
+    }
+  }
+  select.hidden = !models.length;
+  select.value = draft.model;
+  const profile = state.settings?.providers?.find(item => item.provider === draft.selectedProvider);
+  select.disabled = saving || !!profile?.environmentOverrides.includes("model");
+  const error = host.querySelector<HTMLElement>("[data-settings-model-error]")!;
+  error.textContent = state.settingsModelsError ?? "";
+  error.hidden = !state.settingsModelsError;
 }
 
 function settingsCard(title: string, description?: string): HTMLElement {
@@ -145,7 +193,7 @@ export function renderSettings(
   const overridden = new Set(profile?.environmentOverrides ?? settings.environmentOverrides);
   const credentialSource = profile?.apiKeySource ?? settings.apiKeySource;
   const envPrefix = profile?.envPrefix ?? "DEEPSEEK";
-  const limitModel = draft.model || profile?.activeModel || settings.activeModel;
+  const limitModel = settingsModelLimits(state).model;
   if (settings.providers) {
     const label = document.createElement("label"); label.className = "settings-field";
     const title = document.createElement("span"); title.className = "settings-label"; title.textContent = "Provider";
@@ -209,18 +257,13 @@ export function renderSettings(
     model.dataset.settingsModel = "";
     model.placeholder = "Enter model ID or choose below";
     connectionCard.append(field("Model", model, overridden.has("model") ? `Controlled by ${envPrefix}_MODEL.` : "Enter an exact model ID, or refresh the available models."));
+    const catalog = document.createElement("div"); catalog.dataset.settingsModelCatalog = "";
     const refresh = document.createElement("button"); refresh.type = "button"; refresh.className = "secondary-button"; refresh.dataset.refreshSettingsModels = "";
-    refresh.textContent = state.settingsModelsStatus === "loading" ? "Loading models…" : "Refresh models";
-    refresh.disabled = saving || state.settingsModelsStatus === "loading";
-    refresh.addEventListener("click", () => void store.refreshSettingsModels()); connectionCard.append(refresh);
-    if (state.settingsModels?.length) {
-      const select = document.createElement("select"); select.setAttribute("aria-label","Available models"); select.dataset.settingsModelList = "";
-      const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "Choose a model"; select.append(placeholder);
-      for (const item of state.settingsModels) { const option = document.createElement("option"); option.value = item.id; option.textContent = item.name; select.append(option); }
-      select.value = draft.model; select.disabled = saving || overridden.has("model");
-      select.addEventListener("change", () => { if (select.value) store.updateSettingsDraft({model: select.value}); }); connectionCard.append(select);
-    }
-    if (state.settingsModelsError) { const error = document.createElement("p"); error.className = "settings-error"; error.setAttribute("role","alert"); error.textContent = state.settingsModelsError; connectionCard.append(error); }
+    refresh.addEventListener("click", () => void store.refreshSettingsModels());
+    const select = document.createElement("select"); select.setAttribute("aria-label", "Available models"); select.dataset.settingsModelList = "";
+    select.addEventListener("change", () => { if (select.value) store.updateSettingsDraft({model: select.value}); });
+    const error = document.createElement("p"); error.className = "settings-error"; error.setAttribute("role", "alert"); error.dataset.settingsModelError = "";
+    catalog.append(refresh, select, error); connectionCard.append(catalog);
     const advanced = document.createElement("details"); advanced.className = "settings-advanced";
     const summary = document.createElement("summary"); summary.textContent = "Advanced model options"; advanced.append(summary);
     for (const [name,labelText] of [["temperature","Temperature parameter"],["topP","Top-p parameter"],["jsonMode","JSON response mode"],["streamUsage","Request streamed usage"],["imageInput","Image input"]] as const) {
@@ -325,16 +368,18 @@ export function renderSettings(
     memoryHint.textContent = "Conversation memory sends all history until compaction. Auto-compact at 90%, preserve the latest 10 messages. Choose /compact from the task menu to compact manually.";
     limitsCard.append(memoryHint);
   }
-  const limits = draft.modelLimits?.[limitModel];
   const setLimit = (key: "contextWindow" | "maxOutputTokens", value: string) => {
+    const {model, reported} = settingsModelLimits(store.getState());
+    if (!model) return;
     const next = { ...(store.getState().settingsDraft?.modelLimits ?? {}) };
-    const current = next[limitModel] ?? { contextWindow: 0, maxOutputTokens: 0 };
-    next[limitModel] = { ...current, [key]: value.trim() ? Number(value) : 0 };
-    if (!next[limitModel].contextWindow && !next[limitModel].maxOutputTokens) delete next[limitModel];
+    const current = next[model] ?? { contextWindow: reported.contextWindow ?? 0, maxOutputTokens: reported.maxOutputTokens ?? 0 };
+    next[model] = { ...current, [key]: value.trim() ? Number(value) : 0 };
+    if (!next[model].contextWindow && !next[model].maxOutputTokens) delete next[model];
     store.updateSettingsDraft({ modelLimits: next });
   };
   for (const [key, label] of [["contextWindow", "Model context limit (tokens)"], ["maxOutputTokens", "Model output limit (tokens)"]] as const) {
-    const input = inputFor(limits?.[key] ? String(limits[key]) : "", (value) => setLimit(key, value), saving || !limitModel);
+    const input = inputFor("", (value) => setLimit(key, value), saving || !limitModel);
+    input.dataset.settingsModelLimit = key;
     input.type = "number"; input.min = "1"; input.step = "1";
     limitsCard.append(field(label, input, "Optional combined context and output overrides for this model and endpoint. Set both, or leave both blank."));
   }
