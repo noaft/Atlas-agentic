@@ -24,8 +24,10 @@ does not start GitHub Actions. GitHub Actions must be enabled in repository
 Settings; repository or organization policy must permit the publish job's
 `contents: write` permission.
 
-Ordinary CI also runs the Rust core and desktop tests on Windows before a tag is
-created. Native test output is uncaptured so a process crash retains its
+Ordinary CI also runs the Rust core and desktop tests and builds the NSIS
+installer on Windows before a tag is created. Its `atlas-windows-x64-ci` artifact
+contains the installer and checksum for review; it does not publish a Release.
+Native test output is uncaptured so a process crash retains its
 diagnostics. Failed core targets do not prevent the remaining core targets from
 running; a sequential unit-test rerun provides additional diagnostics without
 clearing the original failure.
