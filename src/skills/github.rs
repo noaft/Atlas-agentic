@@ -58,6 +58,9 @@ mod tests {
                         thread::sleep(Duration::from_millis(2));
                         continue;
                     };
+                    // Accepted sockets inherit the listener's nonblocking mode
+                    // on Windows; this fixture reads complete requests below.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
@@ -119,7 +122,12 @@ mod tests {
     impl Drop for Server {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
-            self.worker.take().unwrap().join().unwrap();
+            let result = self.worker.take().unwrap().join();
+            // Preserve a test's original failure instead of aborting on a
+            // second panic while its failed fixture is being cleaned up.
+            if !thread::panicking() {
+                result.unwrap();
+            }
         }
     }
     fn tree() -> serde_json::Value {
@@ -135,6 +143,30 @@ mod tests {
             revision: COMMIT.into(),
             path: "skills/a".into(),
         }
+    }
+
+    #[test]
+    fn fixture_waits_for_request_bytes_after_accepting_a_connection() {
+        use std::io::Read;
+        let server = Server::new(|path| {
+            assert_eq!(path, "/delayed");
+            (200, b"ready".to_vec())
+        });
+        let mut client =
+            std::net::TcpStream::connect(server.github.base.strip_prefix("http://").unwrap())
+                .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        // Exercise the gap between accept and the first bytes, which exposed
+        // inherited nonblocking mode on Windows under concurrent test load.
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(b"GET /delayed HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.ends_with("ready"), "{response}");
     }
 
     #[test]
