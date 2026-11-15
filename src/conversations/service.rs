@@ -317,11 +317,18 @@ impl<'a> ConversationService<'a> {
             history: &history,
             activity_context: (!activity_context.is_empty()).then_some(activity_context.as_str()),
         };
-        let context: &mut dyn crate::runtime::context::RuntimeContext = if policy.is_some() {
-            &mut managed
-        } else {
-            &mut static_context
-        };
+        // A direct child budgets its frozen snapshot using its own provider. Do not
+        // run Atlas compaction inference while preparing the native dispatch.
+        let mut direct_snapshot = (self.runtime.is_direct_agent() && policy.is_some())
+            .then(|| crate::runtime::context::SnapshotContext(managed.prepared()));
+        let context: &mut dyn crate::runtime::context::RuntimeContext =
+            if let Some(snapshot) = direct_snapshot.as_mut() {
+                snapshot
+            } else if policy.is_some() {
+                &mut managed
+            } else {
+                &mut static_context
+            };
         let mut context = crate::runtime::context::CancellableContext {
             inner: context,
             cancelled: self.cancelled,

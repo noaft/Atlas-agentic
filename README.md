@@ -131,3 +131,19 @@ The former execution job/task modes are rejected with a migration error.
 Run `cargo run --example wakeup` for a deterministic, no-key walkthrough with an
 in-memory tool and fake agent. See [Wakeup architecture](docs/architecture/wakeup.md)
 for ownership, mailboxes, cancellation, output bounds and the model protocol.
+
+
+### Address a saved agent directly
+
+In desktop chat, type `/` to choose a saved agent, then write its task, for example
+`/coder fix the login error`. Selecting an agent inserts its command; sending
+starts that agent directly, without an Atlas model call to delegate or summarize.
+The next ordinary message still goes to Atlas. Extra messages during a direct
+run stay queued for the next turn; Stop cancels the owned run and waits for worker
+exit. Results and agent identity remain in the conversation history.
+
+Agent names must be unique across Personal and the current Project; built-in
+commands such as `compact` are reserved. Existing duplicate definitions are left
+intact, but their slash commands are disabled until you rename a definition.
+The backend grants the selected agent the chat's currently available tools;
+normal tool approvals, provider profiles, selected skills and resource caps apply.

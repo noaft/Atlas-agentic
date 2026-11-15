@@ -2,6 +2,9 @@ import {filterTasks, taskUnavailableReason, type TaskAvailabilityState} from "./
 import type {ChatState, TaskDescriptor} from "./types";
 
 interface MenuData {
+  agentStatus?: "idle" | "loading" | "ready" | "error";
+  agentError?: string | null;
+  onRetryAgents?: () => void;
   tasks: TaskDescriptor[];
   status: ChatState["taskCatalogStatus"];
   error: string | null;
@@ -76,7 +79,7 @@ export function createSlashMenu(
       session = data.sessionId; dismissed = null; active = 0; activeId = null; query = ""; close();
     }
     if (dismissed !== null && textarea.value !== dismissed) dismissed = null;
-    const token = /^(\s*)\/([A-Za-z][A-Za-z0-9_-]*)?(?=\s|$)/.exec(textarea.value);
+    const token = /^(\s*)\/([A-Za-z0-9-][A-Za-z0-9_-]*)?(?=\s|$)/.exec(textarea.value);
     const caret = textarea.selectionStart;
     if (document.activeElement !== textarea || textarea.value === dismissed || !token ||
         caret < token[1].length + 1 || caret > token[0].length || textarea.selectionEnd !== caret) {
@@ -84,7 +87,7 @@ export function createSlashMenu(
     }
     const nextQuery = (token[2] ?? "").toLowerCase();
     if (query !== nextQuery) {active = 0; activeId = null; query = nextQuery;}
-    rows = filterTasks(data.tasks, query);
+    rows = filterTasks(data.tasks.filter(task => task.agentId || data!.status === "ready"), query);
     const retained = activeId ? rows.findIndex(task => task.id === activeId) : -1;
     active = retained >= 0 ? retained : Math.min(active, Math.max(0, rows.length - 1));
     activeId = rows[active]?.id ?? null;
@@ -95,7 +98,7 @@ export function createSlashMenu(
     textarea.setAttribute("aria-expanded", "true");
     textarea.setAttribute("aria-haspopup", "listbox");
     textarea.setAttribute("aria-autocomplete", "list");
-    if (data.status !== "ready") {
+    if (data.status !== "ready" && !data.tasks.some(task => task.agentId)) {
       textarea.removeAttribute("aria-activedescendant");
       const message = document.createElement("p");
       message.className = "slash-menu-message";
@@ -111,15 +114,35 @@ export function createSlashMenu(
       announcement.textContent = message.textContent;
     } else {
       const heading = document.createElement("div"); heading.className = "slash-menu-heading";
-      heading.textContent = "Tasks";
+      heading.textContent = data.tasks.some(task => task.agentId) ? "Tasks & agents" : "Tasks";
       const help = document.createElement("p"); help.className = "slash-menu-help";
-      help.textContent = "Click or press Enter to run · Esc to keep typing";
+      help.textContent = "Choose a task to run or an agent to address · Esc to keep typing";
       popup.append(heading, help);
       announcement.textContent = `${rows.length} ${rows.length === 1 ? "task" : "tasks"} available`;
       if (!rows.length) {
         textarea.removeAttribute("aria-activedescendant");
         const message = document.createElement("p"); message.className = "slash-menu-message";
         message.textContent = "No matching tasks. Try another command."; popup.append(message);
+      }
+      if (data.status !== "ready") {
+        const hint = document.createElement("p"); hint.className = "slash-menu-message";
+        hint.textContent = data.status === "error" ? `Could not load tasks: ${data.error ?? "Unknown error"}` : "Loading tasks…";
+        popup.append(hint);
+        if (data.status === "error") {
+          const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Retry tasks";
+          retry.addEventListener("mousedown", event => event.preventDefault());
+          retry.addEventListener("click", () => {textarea.focus(); onRetry();}); popup.append(retry);
+        }
+      }
+      if (data.agentStatus === "error" || data.agentStatus === "loading") {
+        const hint = document.createElement("p"); hint.className = "slash-menu-message";
+        hint.textContent = data.agentStatus === "loading" ? "Loading agents…" : `Could not load agents: ${data.agentError ?? "Unknown error"}`;
+        popup.append(hint);
+        if (data.agentStatus === "error") {
+          const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Retry agents";
+          retry.addEventListener("mousedown", event => event.preventDefault());
+          retry.addEventListener("click", () => {textarea.focus(); data?.onRetryAgents?.();}); popup.append(retry);
+        }
       }
       rows.forEach((task, index) => {
         const option = document.createElement("div");
@@ -145,11 +168,11 @@ export function createSlashMenu(
   }
   function handleKeydown(event: KeyboardEvent): boolean {
     if (composing || !open || event.isComposing || event.keyCode === 229 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
-    if (event.key === "Enter" && data?.status === "error") {
+    if (event.key === "Enter" && data?.status === "error" && !rows.length) {
       event.preventDefault(); onRetry(); return true;
     }
     if (event.key === "Escape") {event.preventDefault(); dismiss(); return true;}
-    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && rows.length && data?.status === "ready") {
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && rows.length) {
       event.preventDefault();
       if (event.key === "Home") active = 0;
       else if (event.key === "End") active = rows.length - 1;
@@ -159,7 +182,7 @@ export function createSlashMenu(
       return true;
     }
     if (event.key === "Tab") {dismiss(); return false;}
-    if (event.key === "Enter" && data?.status === "ready" && rows.length) {
+    if (event.key === "Enter" && rows.length) {
       const task = rows[active];
       event.preventDefault(); choose(task); return true;
     }

@@ -208,6 +208,10 @@ export interface ChatState {
   stopping?: boolean;
   generating?: boolean;
   compactionFailure: CompactionFailure | null;
+  agentCommands?: TaskDescriptor[];
+  agentCatalogStatus?: "idle" | "loading" | "ready" | "error";
+  agentCatalogError?: string | null;
+  directAgent?: string | null;
   tasks: TaskDescriptor[];
   taskCatalogStatus: "idle" | "loading" | "ready" | "error";
   taskCatalogError: string | null;
@@ -306,6 +310,8 @@ export interface SaveSettingsInput {
 }
 
 export interface TaskDescriptor {
+  agentId?: string;
+  unavailableReason?: string | null;
   id: string;
   command: string;
   title: string;

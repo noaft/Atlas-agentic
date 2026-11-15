@@ -57,3 +57,27 @@ pub async fn resolve_agent_run_approval(
     })
     .await
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCatalogContext {
+    conversation_id: Option<atlas_agentic::conversations::ConversationId>,
+    workspace_path: Option<std::path::PathBuf>,
+}
+
+#[tauri::command]
+pub async fn list_agent_commands(
+    context: AgentCatalogContext,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<atlas_agentic::agent_catalog::AgentCommand>, String> {
+    let state = state.inner().clone();
+    run_blocking("desktop.agent_catalog", move || {
+        state
+            .agent_catalog(
+                context.conversation_id.as_ref(),
+                context.workspace_path.as_deref(),
+            )?
+            .command_catalog()
+    })
+    .await
+}

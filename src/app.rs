@@ -78,6 +78,39 @@ pub(crate) fn build_runtime_from_definition(
 ) -> Result<Runtime, String> {
     let provider: Box<dyn ModelProvider> =
         provider_from_definition_with_settings(&definition, settings)?;
+    build_runtime_with_provider(workspace_root, definition, settings, store, provider)
+}
+
+/// A native dispatcher needs the default registry and memory policy, but no
+/// parent credentials or inference. The selected worker builds its own provider.
+pub fn build_dispatch_runtime(
+    workspace_root: &Path,
+    agent_file: &Path,
+    settings: &EffectiveSettings,
+    store: &SettingsStore,
+) -> Result<Runtime, String> {
+    struct DispatchOnly;
+    impl ModelProvider for DispatchOnly {
+        fn complete(&self, _: &crate::models::ModelRequest) -> Result<String, String> {
+            Err("Native agent dispatch cannot invoke parent inference".into())
+        }
+    }
+    build_runtime_with_provider(
+        workspace_root,
+        LocalAgentDefinition::from_file(agent_file)?,
+        settings,
+        store,
+        Box::new(DispatchOnly),
+    )
+}
+
+fn build_runtime_with_provider(
+    workspace_root: &Path,
+    definition: LocalAgentDefinition,
+    settings: &EffectiveSettings,
+    store: &SettingsStore,
+    provider: Box<dyn ModelProvider>,
+) -> Result<Runtime, String> {
     let mut tools = build_default_tools(workspace_root, settings.process_limits)?;
     let skill_store = crate::skills::SkillStore::for_settings(store, workspace_root.to_path_buf())?;
     if let Ok(Some(tool)) = crate::tools::LoadSkillTool::new(&skill_store) {
@@ -166,6 +199,25 @@ pub fn load_dotenv() {
 #[cfg(test)]
 mod tests {
     use super::build_default_tools;
+
+    #[test]
+    fn dispatch_controller_does_not_require_parent_credentials() {
+        let folder = tempfile::tempdir().unwrap();
+        let agent_file = folder.path().join("atlas.toml");
+        std::fs::write(&agent_file, include_str!("../agents/atlas.toml")).unwrap();
+        let store = crate::settings::SettingsStore::at(folder.path().join("settings.json"));
+        let mut settings = crate::settings::EffectiveSettings::default();
+        settings.api_key = None;
+        let runtime =
+            super::build_dispatch_runtime(folder.path(), &agent_file, &settings, &store).unwrap();
+        assert!(runtime
+            .tool_definitions()
+            .iter()
+            .any(|tool| tool.name == "pwd"));
+        assert!(runtime
+            .ask_stream("Never invoke parent inference", &mut |_| {})
+            .is_err());
+    }
 
     #[test]
     fn default_tools_include_the_workspace_file_family_and_machine_clock() {

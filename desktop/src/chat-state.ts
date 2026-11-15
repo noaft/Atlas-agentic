@@ -53,6 +53,7 @@ export function groupConversations(
 }
 
 const initialState = (): ChatState => ({
+  agentCommands: [], agentCatalogStatus: "idle", agentCatalogError: null, directAgent: null,
   queuedInputs: [], queuePaused: false, stopping: false, generating: false,
   tasks: [], taskCatalogStatus: "idle", taskCatalogError: null,
   compactionFailure: null, memory: null, compactionProgress: null, contextStatus: null, compactionMessage: null,
@@ -152,7 +153,7 @@ const withConfiguredModel = (models: ModelInfo[], configured: string): ModelInfo
     : configured ? [{ id: configured, name: configured }, ...models] : models;
 
 const sessionKeys = [
-  "queuedInputs", "queuePaused", "stopping", "generating",
+  "directAgent", "queuedInputs", "queuePaused", "stopping", "generating",
   "compactionFailure", "memory", "compactionProgress", "contextStatus", "compactionMessage",
   "activeConversationId", "messages", "historyLoaded", "contextUsage", "draftText", "status", "errorMessage",
   "activeWorkspace", "workspaceBusy", "activePermissionMode", "permissionBusy",
@@ -180,6 +181,8 @@ export class ChatStore {
   private settingsToken = 0;
   private modelListToken = 0;
   private taskCatalogToken = 0;
+  private agentCatalogToken = 0;
+  private agentCatalogContext = "";
 
   constructor(private readonly api: AtlasApi) {
     this.chats.set(this.state.activeSessionId, {
@@ -265,6 +268,28 @@ export class ChatStore {
       settingsErrorMessage: null,
     });
     await Promise.all([this.loadConversationList(), this.loadInitialSettings(), this.retryTasks(), this.processContext().catch(() => undefined)]);
+  }
+
+  async retryAgentCommands(): Promise<void> {
+    if (!this.api.listAgentCommands || !this.state.activeWorkspace) return;
+    const token = ++this.agentCatalogToken;
+    const identity = this.agentContextKey(this.state);
+    const context = this.skillContext();
+    this.update({agentCatalogStatus: "loading", agentCatalogError: null});
+    try {
+      const agents = await this.api.listAgentCommands(context);
+      if (token !== this.agentCatalogToken || identity !== this.agentContextKey(this.state)) return;
+      this.update({agentCommands: agents.map(agent => ({...agent,
+        argumentSchema: {type: "object"}, requiresConversation: false, requiresModel: false, cancellable: true,
+      })), agentCatalogStatus: "ready"});
+    } catch (error) {
+      if (token === this.agentCatalogToken && identity === this.agentContextKey(this.state))
+        this.update({agentCommands: [], agentCatalogStatus: "error", agentCatalogError: errorMessage(error)});
+    }
+  }
+
+  private agentContextKey(state: ChatState): string {
+    return JSON.stringify([state.activeSessionId, state.activeConversationId, state.activeWorkspace?.path]);
   }
 
   async retryTasks(): Promise<void> {
@@ -479,7 +504,7 @@ export class ChatStore {
 
   private submitSupplement(owner: string, input: {id: string; content: string}): boolean {
     const chat = this.chats.get(owner)!;
-    if (chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || !this.api.submitTurnInput) return false;
+    if (chat.state.status !== "streaming" || !chat.turn || chat.turn.stopped || chat.state.directAgent || input.content.trimStart().startsWith("/") || !this.api.submitTurnInput) return false;
     const turnInputs = chat.state.messages.slice(chat.turn.baseAssistantIndex).filter(message => message.inputId);
     if (turnInputs.length >= 32) {
       this.updateSession(owner, {errorMessage: "This turn has reached its supplement limit. The message will stay queued."});
@@ -567,7 +592,7 @@ export class ChatStore {
       messages: [...stableMessages, userMessage, assistantMessage],
       draftText: clearDraft ? "" : state.draftText,
       compactionMessage: null, contextStatus: null, compactionFailure: null,
-      status: "streaming", generating: true,
+      status: "streaming", generating: true, directAgent: /^\/([^\s]+)/.exec(prompt)?.[1] ?? null,
       errorMessage: null,
       pendingApproval: null,
       toolActivity: [],
@@ -632,13 +657,14 @@ export class ChatStore {
         activeWorkspace: completed.metadata.workspace ?? workspace,
         activePermissionMode: completed.metadata.permissionMode ?? permissionMode,
         messages: orderedMessages,
-        status: "idle", generating: false,
+        status: "idle", generating: false, directAgent: null,
         stopping: false, queuePaused: completed.interrupted || chat.turn?.stopped || chat.state.queuePaused,
         errorMessage: completed.processWarning ?? null,
         pendingApproval: null,
         toolActivity: [],
       });
       this.finishSteering(owner);
+      if (owner === this.state.activeSessionId) void this.retryAgentCommands();
       this.drainQueue(owner);
     } catch (error) {
       if (generation !== chat.generation) return;
@@ -656,7 +682,7 @@ export class ChatStore {
             : message.failureReason,
         })),
         draftText: chat.turn?.stopped ? chat.state.draftText : chat.state.draftText || prompt,
-        status: "error", stopping: false, queuePaused: true, generating: false,
+        status: "error", stopping: false, directAgent: null, queuePaused: true, generating: false,
         errorMessage: errorMessage(error),
         pendingApproval: null,
       });
@@ -1430,6 +1456,12 @@ export class ChatStore {
   }
 
   private replace(next: ChatState): void {
+    const agentContextChanged = this.agentContextKey(next) !== this.agentCatalogContext;
+    if (agentContextChanged) {
+      this.agentCatalogContext = this.agentContextKey(next);
+      ++this.agentCatalogToken;
+      next = {...next, agentCommands: [], agentCatalogStatus: "idle", agentCatalogError: null};
+    }
     const chat = this.chats.get(next.activeSessionId);
     if (chat) chat.state = sessionState(next);
     this.state = {
@@ -1441,6 +1473,7 @@ export class ChatStore {
     };
     this.state = { ...this.state, sessions: this.sessionSummaries() };
     this.emit();
+    if (agentContextChanged) void this.retryAgentCommands();
   }
 
   private emit(): void {

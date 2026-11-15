@@ -16,6 +16,7 @@ pub struct ContextStatus {
     pub input_tokens: Option<u64>,
     pub max_tokens: Option<u64>,
 }
+#[derive(Clone)]
 pub struct PreparedContext {
     pub memory_blocks: Vec<MemoryBlock>,
     pub history: Vec<ConversationMessage>,
@@ -86,6 +87,18 @@ impl RuntimeContext for StaticContext<'_> {
         })
     }
 }
+pub(crate) struct SnapshotContext(pub PreparedContext);
+impl RuntimeContext for SnapshotContext {
+    fn prepare(
+        &mut self,
+        _: &dyn Agent,
+        _: ContextPreparationRequest<'_>,
+        _: &mut dyn FnMut(&ToolEvent),
+    ) -> Result<PreparedContext, String> {
+        Ok(self.0.clone())
+    }
+}
+
 pub struct ConversationContext<'a> {
     pub store: &'a ConversationStore,
     pub conversation: Option<Conversation>,
@@ -93,7 +106,7 @@ pub struct ConversationContext<'a> {
     pub cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 impl ConversationContext<'_> {
-    fn prepared(&self) -> PreparedContext {
+    pub(crate) fn prepared(&self) -> PreparedContext {
         let mut result = PreparedContext {
             memory_blocks: vec![],
             history: vec![],

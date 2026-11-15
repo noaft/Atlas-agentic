@@ -67,6 +67,7 @@ pub fn run() {
             process_commands::release_process_scope,
             process_commands::read_process_output,
             process_commands::stop_process,
+            agent_commands::list_agent_commands,
             agent_commands::list_agent_runs,
             agent_commands::cancel_agent_run,
             agent_commands::resolve_agent_run_approval,

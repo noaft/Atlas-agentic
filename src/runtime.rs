@@ -44,6 +44,7 @@ struct ProtocolRepair<'a> {
 
 pub struct Runtime {
     agents: AgentRegistry,
+    pub(crate) direct_agent: Option<crate::direct_agent::DirectCommand>,
     tools: ToolRegistry,
     pub(crate) execution_scope: crate::executions::ExecutionScope,
     pub(crate) delegation: Option<crate::delegation::Delegation>,
@@ -63,6 +64,7 @@ impl Runtime {
     pub fn new(agents: AgentRegistry) -> Self {
         Self {
             agents,
+            direct_agent: None,
             tools: ToolRegistry::empty(),
             execution_scope: crate::executions::ToolExecutionManager::new()
                 .scope(&uuid::Uuid::new_v4().to_string()),
@@ -207,6 +209,9 @@ impl Runtime {
         self.tools.definitions()
     }
     pub fn generate_conversation_title(&self, first_input: &str) -> Result<String, String> {
+        if self.is_direct_agent() {
+            return Err("Direct agent turns do not request an Atlas title".into());
+        }
         self.agents
             .default_agent()
             .ok_or_else(|| "no agent is registered".to_string())?
@@ -288,6 +293,9 @@ impl Runtime {
             .transpose()?;
         let _execution_consumer = self.execution_scope.acquire_consumer()?;
         let _tool_request_scope = self.tools.request_scope();
+        if let Some(command) = &self.direct_agent {
+            return self.ask_direct_agent(command, context, permission_mode, callbacks);
+        }
         let RuntimeAskCallbacks {
             authorizer,
             on_delta,

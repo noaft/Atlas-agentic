@@ -10,6 +10,8 @@ The first goal is not to build every agent at once. The first goal is to build a
 
 Atlas can create reusable Personal/Project agents and delegate explicit tasks with caller-selected tools. Each call chooses fork/task-only context and wait/parallel execution. Desktop owns independent runs and scoped approvals, with progress and structured reports in Agent runs. Agents do not retain independent cross-run memory. See [delegated agents](docs/architecture/delegated-agents.md).
 
+Desktop also accepts `/name task` to invoke a uniquely named saved agent for one task without an Atlas model call. Ordinary following messages still use Atlas. Explicit agent selection bypasses automatic routing.
+
 This runtime orchestration is separate from the planned router below. The router remains a selector.
 
 ## Core Idea

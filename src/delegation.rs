@@ -274,6 +274,25 @@ impl Delegation {
     }
     fn call(&self, args: &serde_json::Value, context: CallContext<'_>) -> Result<String, String> {
         let request: AgentRunRequest = parse(args)?;
+        let execution = request.execution_mode;
+        let (view, timeout) = self.start(request, &context)?;
+        if execution == ExecutionMode::Wait {
+            self.wait(&view.run_id, timeout, context)
+        } else {
+            render_run(&view, 0, 16384)
+        }
+    }
+    pub(crate) fn resolve_command(
+        &self,
+        name: &str,
+    ) -> Result<crate::agent_catalog::AgentInfo, String> {
+        self.catalog.resolve_command(name)
+    }
+    pub(crate) fn start(
+        &self,
+        request: AgentRunRequest,
+        context: &CallContext<'_>,
+    ) -> Result<(crate::agent_runs::AgentRunView, Duration), String> {
         request.validate()?;
         if self.depth >= 4 {
             return Err("Agent delegation depth limit of 4 reached".into());
@@ -307,7 +326,6 @@ impl Delegation {
         let mode = context.permission_mode;
         let task = request.task.clone();
         let allowed = request.tools.clone();
-        let execution = request.execution_mode;
         let view = self.manager.start_with_parent(
             &self.owner,
             request,
@@ -378,11 +396,14 @@ impl Delegation {
                 AgentResult::parse(&output?)
             },
         )?;
-        if execution == ExecutionMode::Wait {
-            self.wait(&view.run_id, timeout, context)
-        } else {
-            render_run(&view, 0, 16384)
-        }
+        Ok((view, timeout))
+    }
+    pub(crate) fn read_direct(&self, id: &str) -> Result<crate::agent_runs::AgentRunView, String> {
+        self.manager
+            .wait(&self.owner, id, Duration::from_millis(100))
+    }
+    pub(crate) fn cancel_direct(&self, id: &str) -> Result<(), String> {
+        self.manager.cancel(&self.owner, id).map(|_| ())
     }
     fn wait(
         &self,
@@ -1148,6 +1169,244 @@ mod integration_tests {
         .with_delegation(delegation);
         (dir, runtime, manager, seen)
     }
+    #[test]
+    fn direct_command_runs_selected_child_without_parent_inference_or_title() {
+        let (dir, runtime, manager, seen) = setup("fork", "parallel", vec!["pwd"]);
+        let runtime = runtime
+            .with_direct_agent_command("/REVIEWER Inspect the workspace")
+            .unwrap();
+        let store = crate::conversations::ConversationStore::at(dir.path().join("data"));
+        let result = crate::conversations::ConversationService::new(&runtime, &store, 40)
+            .ask("/REVIEWER Inspect the workspace", None, &mut |_| {})
+            .unwrap();
+        assert!(result.answer.contains("Checked"));
+        assert!(result.answer.contains("personal:reviewer"));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let runs = manager.list("test-chat").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task, "Inspect the workspace");
+        assert!(runs[0].tools.contains(&"pwd".into()));
+        let saved = store.load(&result.metadata.id).unwrap();
+        assert_eq!(saved.messages[0].content, "/REVIEWER Inspect the workspace");
+        assert_eq!(saved.messages[1].content, result.answer);
+        let runtime = runtime
+            .with_direct_agent_command("ordinary request")
+            .unwrap();
+        let answer = runtime.ask_stream("ordinary request", &mut |_| {}).unwrap();
+        assert_eq!(
+            answer, "parent complete",
+            "direct dispatch must not consume parent responses"
+        );
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn direct_commands_reject_missing_task_unknown_and_ambiguous_names() {
+        let (dir, runtime, _, _) = setup("fork", "parallel", vec![]);
+        assert!(runtime.with_direct_agent_command("/reviewer ").is_err());
+        let (_, runtime, _, _) = setup("fork", "parallel", vec![]);
+        assert!(runtime
+            .with_direct_agent_command("/missing do this")
+            .is_err());
+        let (other, runtime, _, _) = setup("fork", "parallel", vec![]);
+        let project = other.path().join(".agents/agents");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("reviewer.toml"),
+            toml::to_string(&definition()).unwrap(),
+        )
+        .unwrap();
+        assert!(runtime
+            .with_direct_agent_command("/reviewer do this")
+            .is_err());
+        assert!(dir.path().exists());
+    }
+
+    #[test]
+    fn direct_stop_waits_for_child_exit_and_rejects_supplemental_input() {
+        let history = tempfile::tempdir().unwrap();
+        let history_root = history.path().to_path_buf();
+        let manager = AgentRunManager::default();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (identity_tx, identity_rx) = std::sync::mpsc::channel();
+        struct BlockingChild {
+            started: std::sync::mpsc::Sender<()>,
+            release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+        }
+        impl ModelProvider for BlockingChild {
+            fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+                self.started.send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                Ok(final_reply(&serde_json::json!({"outcome":"done","summary":"Late answer","work_done":[],"findings":[],"artifacts":[],"verification":[],"remaining":[]}).to_string()))
+            }
+        }
+        let turns = crate::turns::TurnManager::default();
+        let turns_worker = turns.clone();
+        let manager_worker = manager.clone();
+        let worker = std::thread::spawn(move || {
+            let (_dir, mut runtime, _, _) = setup("fork", "parallel", vec![]);
+            let receiver = Arc::new(Mutex::new(release_rx));
+            let delegation = runtime
+                .delegation
+                .take()
+                .unwrap()
+                .with_manager(manager_worker, "test-chat".into())
+                .with_factory(Arc::new(move |_, definition, _, _| {
+                    Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                        LocalAgent::new(
+                            definition,
+                            Box::new(BlockingChild {
+                                started: started_tx.clone(),
+                                release: receiver.clone(),
+                            }),
+                        ),
+                    )])))
+                }));
+            let lease = turns_worker.begin("test-chat").unwrap();
+            identity_tx
+                .send(lease.control().request_id().to_string())
+                .unwrap();
+            let runtime = runtime
+                .with_delegation(delegation)
+                .with_turn_control(lease.control())
+                .with_direct_agent_command("/reviewer wait for work")
+                .unwrap();
+            let cancelled = lease.control().cancelled();
+            let store = crate::conversations::ConversationStore::at(history_root);
+            crate::conversations::ConversationService::new(&runtime, &store, 40)
+                .with_cancellation(&cancelled)
+                .ask("/reviewer wait for work", None, &mut |_| {})
+        });
+        let request_id = identity_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let receipt = turns
+            .submit("test-chat", &request_id, "new-message", "new request")
+            .unwrap();
+        let accepted = receipt.accepted;
+        turns.cancel("test-chat", &request_id).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let runs = manager.list("test-chat").unwrap();
+            if runs[0].status == crate::agent_runs::AgentRunStatus::Cancelling {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                release_tx.send(()).unwrap();
+                panic!("child did not begin cancelling");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let still_running = !worker.is_finished();
+        release_tx.send(()).unwrap();
+        let stopped = worker.join().unwrap().unwrap();
+        assert!(stopped.interrupted);
+        assert!(
+            stopped.answer.is_empty(),
+            "a late child answer must not overwrite the stopped prefix"
+        );
+        let saved = crate::conversations::ConversationStore::at(history.path().to_path_buf())
+            .load(&stopped.metadata.id)
+            .unwrap();
+        assert_eq!(saved.messages.len(), 2);
+        assert!(saved.messages[1].content.is_empty());
+        assert!(saved.activities[0].interrupted);
+        assert!(
+            still_running,
+            "must wait for child exit before completing Stop"
+        );
+        assert!(
+            !accepted,
+            "direct run must leave supplementary messages queued"
+        );
+        assert_eq!(
+            manager.list("test-chat").unwrap()[0].status,
+            crate::agent_runs::AgentRunStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn direct_start_failure_finishes_the_inline_call_without_parent_fallback() {
+        let (dir, runtime, manager, seen) = setup("fork", "parallel", vec![]);
+        let mut value = definition();
+        value.provider = Some("unsupported-provider".into());
+        value.model = Some("worker-model".into());
+        std::fs::write(
+            dir.path().join("agents/reviewer.toml"),
+            toml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        let runtime = runtime
+            .with_direct_agent_command("/reviewer inspect")
+            .unwrap();
+        let mut events = Vec::new();
+        let result = runtime.ask_stream_with_history_and_authorization(
+            "/reviewer inspect",
+            &[],
+            PermissionMode::Ask,
+            &crate::permissions::AllowAllAuthorizer,
+            &mut |_| {},
+            &mut |event| events.push(event.clone()),
+        );
+        assert!(result.is_err());
+        assert!(events.iter().any(|event| matches!(event, ToolEvent::Finished {tool, success: false, ..} if tool == "call_agent")));
+        assert!(manager.list("test-chat").unwrap().is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn direct_worker_uses_its_profile_without_parent_credentials() {
+        let (dir, mut runtime, _, _) = setup("fork", "parallel", vec![]);
+        let mut value = definition();
+        value.provider = Some("openai".into());
+        value.model = Some("worker-model".into());
+        std::fs::write(
+            dir.path().join("agents/reviewer.toml"),
+            toml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let seen_settings = captured.clone();
+        let mut delegation = runtime.delegation.take().unwrap();
+        delegation.settings.api_key = None;
+        let mut profile =
+            crate::settings::ProviderSettings::defaults(crate::settings::ProviderId::Openai);
+        profile.api_key = Some("fixture-worker-key".into());
+        delegation
+            .profiles
+            .providers
+            .insert("openai".into(), profile);
+        let delegation = delegation.with_factory(Arc::new(move |_, definition, settings, _| {
+            seen_settings.lock().unwrap().push((
+                settings.provider,
+                settings.model.clone(),
+                settings.api_key.is_some(),
+            ));
+            Ok(Runtime::new(AgentRegistry::new(vec![Box::new(
+                LocalAgent::new(
+                    definition,
+                    Box::new(ChildModel(Arc::new(Mutex::new(Vec::new())))),
+                ),
+            )])))
+        }));
+        let runtime = runtime
+            .with_delegation(delegation)
+            .with_direct_agent_command("/reviewer inspect")
+            .unwrap();
+        assert!(runtime
+            .ask_stream("/reviewer inspect", &mut |_| {})
+            .unwrap()
+            .contains("Checked"));
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![(
+                crate::settings::ProviderId::Openai,
+                "worker-model".into(),
+                true
+            )]
+        );
+    }
+
     struct BlockedDelegation {
         _directory: tempfile::TempDir,
         manager: AgentRunManager,

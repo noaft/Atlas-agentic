@@ -12,11 +12,12 @@ export function taskUnavailableReason(
   task: TaskDescriptor,
   state: TaskAvailabilityState,
 ): string | null {
+  if (task.unavailableReason) return task.unavailableReason;
   if (state.status === "streaming" || state.status === "loading" || state.historyLoaded === false ||
       state.workspaceBusy || state.permissionBusy || state.modelListStatus === "saving") {
     return "This chat is busy. Wait for it to finish.";
   }
   if (task.requiresConversation && !state.activeConversationId) return "Start a saved conversation first";
-  if (task.requiresModel && (!state.settings || state.settings.apiKeySource === "missing" || !state.settings.activeModel)) return "Configure a model first";
+  if (task.requiresModel && !task.agentId && (!state.settings || state.settings.apiKeySource === "missing" || !state.settings.activeModel)) return "Configure a model first";
   return null;
 }

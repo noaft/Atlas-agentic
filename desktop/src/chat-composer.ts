@@ -87,7 +87,7 @@ export function createChatComposer(
         row.append(text, steer, remove); entry = {row, text, steer}; queueRows.set(input.id, entry);
       }
       entry.text.textContent = input.content; entry.text.title = input.content;
-      entry.steer.hidden = state.status !== "streaming" || !!state.compactionProgress;
+      entry.steer.hidden = state.status !== "streaming" || !!state.compactionProgress || !!state.directAgent || input.content.trimStart().startsWith("/");
       entry.steer.disabled = !!state.stopping;
       if (queueList.children[index] !== entry.row) queueList.insertBefore(entry.row, queueList.children[index] ?? null);
     });
@@ -102,7 +102,7 @@ export function createChatComposer(
   const canStop = (state: Readonly<ChatState>) => state.status === "streaming" && !state.compactionProgress && !textarea.value.trim();
   const updateSendAvailability = (state: Readonly<ChatState>) => {
     const stop = canStop(state);
-    const label = stop ? (state.stopping ? "Stopping response" : "Stop response") : state.status === "streaming" ? (state.generating === false && !state.compactionProgress ? "Add to active turn" : "Queue message") : "Send message";
+    const label = stop ? (state.stopping ? "Stopping response" : "Stop response") : state.status === "streaming" ? (state.generating === false && !state.compactionProgress && !state.directAgent ? "Add to active turn" : "Queue message") : "Send message";
     sendButton.classList.toggle("is-stop", stop);
     sendButton.classList.toggle("is-stopping", stop && !!state.stopping);
     sendButton.textContent = stop ? "" : "↑";
@@ -124,10 +124,18 @@ export function createChatComposer(
   const menuHost = document.createElement("div");
   element.append(menuHost);
   const slashMenu = createSlashMenu(textarea, menuHost, (task) => {
-    void onTask(task);
-  }, () => { void store.retryTasks(); });
+    if (task.agentId) {
+      const suffix = textarea.value.replace(/^\s*\/[^\s]*/, "").trimStart();
+      const prefix = `/${task.command} `;
+      textarea.value = prefix + suffix;
+      textarea.setSelectionRange(prefix.length, prefix.length);
+      store.setDraft(textarea.value);
+      refreshLayout(); updateSendAvailability(store.getState());
+    } else void onTask(task);
+  }, () => { void store.retryTasks(); void store.retryAgentCommands(); });
   const updateMenu = (state: Readonly<ChatState>) => slashMenu.update({
-    tasks: state.tasks, status: state.taskCatalogStatus, error: state.taskCatalogError,
+    tasks: [...state.tasks, ...state.agentCommands ?? []], status: state.taskCatalogStatus, error: state.taskCatalogError,
+    agentStatus: state.agentCatalogStatus, agentError: state.agentCatalogError, onRetryAgents: () => { void store.retryAgentCommands(); },
     state, sessionId: state.activeSessionId,
   });
   updateMenu(store.getState());

@@ -2078,3 +2078,70 @@ test("queued input enters the active turn at the next idle model boundary", asyn
   expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["keep paused"]);
   pending.resolve({...result(first, "", true), interrupted: true}); await running;
 });
+
+test("agent commands stay queued instead of steering the current Atlas turn", async () => {
+  const api = new FakeApi();
+  (api as AtlasApi).submitTurnInput = async (_context, _request, id) => ({id, accepted: true, finished: false});
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const store = new ChatStore(api); await store.initialize();
+  store.setDraft("original work"); const sending = store.send();
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  store.setDraft("/reviewer inspect this"); await store.send();
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["/reviewer inspect this"]);
+  expect(store.getState().messages.filter(message => message.inputId)).toHaveLength(0);
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  expect(store.getState().queuedInputs).toHaveLength(1);
+  // Keep the queued command paused while the first turn ends.
+  pending.resolve({...result(first, "done", true), interrupted: true}); await sending;
+});
+
+
+test("agent catalog discards a response from a previous chat context", async () => {
+  const api = new FakeApi();
+  const old = deferred<import("./agent-types").AgentCommand[]>();
+  let firstCatalog = true;
+  (api as AtlasApi).listAgentCommands = async () => {
+    if (firstCatalog) { firstCatalog = false; return old.promise; }
+    return [{id: "project:builder", command: "builder", title: "Builder", description: "Current project", agentId: "project:builder", unavailableReason: null}];
+  };
+  const store = new ChatStore(api); await store.initialize();
+  await store.newChat();
+  old.resolve([{id: "project:foreign", command: "foreign", title: "Foreign", description: "Old project", agentId: "project:foreign", unavailableReason: null}]);
+  await Promise.resolve(); await Promise.resolve();
+  expect(store.getState().agentCommands?.map(agent => agent.command)).toEqual(["builder"]);
+});
+
+test("direct agent turns queue follow-up text even when a model-idle event arrives", async () => {
+  const api = new FakeApi();
+  (api as AtlasApi).submitTurnInput = async (_context, _request, id) => ({id, accepted: true, finished: false});
+  const pending = deferred<ConversationAskResult>(); api.asks.push(() => pending.promise);
+  const store = new ChatStore(api); await store.initialize();
+  store.setDraft("/reviewer inspect this"); const sending = store.send();
+  expect(store.getState().directAgent).toBe("reviewer");
+  api.eventSinks[0]({event: "modelState", data: {generating: false}});
+  store.setDraft("ordinary next request"); await store.send();
+  expect(store.getState().queuedInputs?.map(input => input.content)).toEqual(["ordinary next request"]);
+  expect(store.getState().messages.filter(message => message.inputId)).toHaveLength(0);
+  pending.resolve({...result(first, "Reviewed", true), interrupted: true}); await sending;
+  expect(store.getState().directAgent).toBeNull();
+});
+
+test("a direct agent finishes in its owning chat after navigation and normal input returns to Atlas", async () => {
+  const api = new FakeApi();
+  const pending = deferred<ConversationAskResult>();
+  api.asks.push(() => pending.promise, async () => result(first, "Atlas response", false));
+  const store = new ChatStore(api); await store.initialize();
+  const owner = store.getState().activeSessionId;
+  store.setDraft("/reviewer inspect this"); const sending = store.send();
+  await store.newChat(); store.setDraft("keep the new chat draft");
+  pending.resolve(result(first, "personal:reviewer · Done\nChecked", true)); await sending;
+  expect(store.getState().messages).toHaveLength(0);
+  expect(store.getState().draftText).toBe("keep the new chat draft");
+  await store.selectSession(owner);
+  expect(store.getState().activeConversationId).toBe(first.id);
+  expect(store.getState().messages.at(-1)?.content).toContain("personal:reviewer");
+  expect(store.getState().directAgent).toBeNull();
+  store.setDraft("ordinary follow-up"); await store.send();
+  expect(api.askCalls.at(-1)?.prompt).toBe("ordinary follow-up");
+  expect(store.getState().messages.at(-1)?.content).toBe("Atlas response");
+});

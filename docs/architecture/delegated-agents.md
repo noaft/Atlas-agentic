@@ -108,3 +108,39 @@ Model-facing listings exclude full tasks, results and approval arguments. Inspec
 archived under the shared execution policy, including completed child results;
 this does not restore run handles or independent child conversations after restart.
 A successful parent turn may also retain inspected reports in bounded Activity.
+
+
+## Direct desktop commands
+
+`/name task` selects a reusable definition for a single task. Native dispatch
+uses the same validated `Delegation::start` path and AgentRunManager as
+`call_agent`, without a parent inference, title request or summary. A dispatcher
+runtime supplies the default registry and conversation policy with a provider
+that cannot perform inference. The selected child applies its own profile,
+skills, deadline and model budgets. Its explicit tool grant is the effective
+chat registry, applied after process/delegation registration.
+
+The existing native `ask` endpoint retains request identity, authoritative saved
+workspace/permission mode, channel cancellation, draft promotion and
+ConversationService persistence. A direct turn takes an unmodified fork snapshot
+of saved memory and remaining history, avoiding parent-model compaction. Completion
+renders the structured report deterministically; failure does not become a
+successful answer. Explicit Stop retains the existing interrupted-prefix rules.
+Run approvals and usage stay attached to the child. The controller requests
+cancellation once and waits for the worker's terminal state before returning.
+
+The slash picker loads bounded metadata independently of built-in tasks and
+rejects responses from a previous chat/workspace. Agent selection inserts a
+prefix and preserves composer focus. Normal following messages still use Atlas;
+during direct work, they queue instead of steering. The native direct turn seals
+its inbox before exposing request identity, so receipts cannot falsely accept
+supplementary input.
+
+Names must be unique across Personal and the active Project. The task registry
+owns reserved command names. Creation serializes both namespaces using private
+bounded leases, preserves no-overwrite publication and rejects invalid storage.
+This requires access to the Personal namespace for Project creation; it may
+initialize lock storage there but never stores Project definitions there.
+The current workspace is the namespace boundary; unrelated project directories
+are not scanned. Manually introduced legacy duplicates remain available by scoped
+ID to existing delegation, while their ambiguous slash commands are disabled.

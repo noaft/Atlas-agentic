@@ -1,4 +1,4 @@
-import type { AgentRunsApi, AgentRunView } from "./agent-types";
+import type { AgentCommand, AgentRunsApi, AgentRunView } from "./agent-types";
 import type { ProcessContext, ProcessesApi, ProcessInfo, ProcessOutput } from "./process-types";
 import type { McpOnboardingApi, McpSettingsView, McpCheckEvent, McpCheckResult } from "./mcp-types";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -28,6 +28,7 @@ export interface AtlasApi extends SkillsApi, McpOnboardingApi, ProcessesApi, Age
   connectMcpServer(server: string): Promise<void>;
   disconnectMcpServer(server: string): Promise<void>;
   cancelMcpConnection(server: string): Promise<void>;
+  listAgentCommands?(context: {conversationId: string | null; workspacePath: string | null}): Promise<AgentCommand[]>;
   listTasks(): Promise<TaskDescriptor[]>;
   runTask(taskId: string, args: Record<string, unknown>, conversationId: string | null, onEvent: (event: ChatEvent) => void): Promise<TaskResult>;
   cancelCompaction(id: string): Promise<void>;
@@ -103,6 +104,7 @@ export function createTauriAtlasApi(): AtlasApi {
     connectMcpServer: (server) => invoke<void>("connect_mcp_server", { server }),
     disconnectMcpServer: (server) => invoke<void>("disconnect_mcp_server", { server }),
     cancelMcpConnection: (server) => invoke<void>("cancel_mcp_connection", { server }),
+    listAgentCommands: (context) => invoke<AgentCommand[]>("list_agent_commands", {context}),
     listTasks: () => invoke<TaskDescriptor[]>("list_tasks"),
     runTask: (taskId, args, conversationId, onEvent) => {
       const channel = new Channel<ChatEvent>(onEvent);

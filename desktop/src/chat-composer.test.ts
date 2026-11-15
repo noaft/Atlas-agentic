@@ -405,3 +405,32 @@ test("queue sits above the input with explicit Steer and stable focused controls
   button.click(); expect(steer).toHaveBeenCalledWith("q1");
   composer.updateState({...state, stopping: true}); expect(button.disabled).toBe(true);
 });
+
+test("choosing an agent inserts its command without running a task or submitting", async () => {
+  const {composer, store, submit, runTask} = await setup();
+  const agent = {...taskFixtures[0], id: "personal:reviewer", command: "reviewer", title: "Reviewer", description: "Review changes · Personal", requiresConversation: false, agentId: "personal:reviewer"};
+  const state = {...store.getState(), settings, agentCommands: [agent], agentCatalogStatus: "ready" as const};
+  composer.updateState(state);
+  composer.textarea.value = "/rev"; composer.textarea.focus();
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true})); composer.updateState(state);
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(composer.textarea.value).toBe("/reviewer ");
+  expect(store.getState().draftText).toBe("/reviewer ");
+  expect(runTask).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(composer.textarea);
+});
+
+
+test("choosing an agent preserves an existing task suffix", async () => {
+  const {composer, store, submit} = await setup();
+  const agent = {...taskFixtures[0], id: "personal:reviewer", command: "reviewer", title: "Reviewer", agentId: "personal:reviewer", requiresConversation: false};
+  const state = {...store.getState(), agentCommands: [agent], agentCatalogStatus: "ready" as const};
+  composer.updateState(state);
+  composer.textarea.value = "/rev inspect the login bug"; composer.textarea.focus();
+  composer.textarea.setSelectionRange(4, 4);
+  composer.textarea.dispatchEvent(new Event("input", {bubbles: true})); composer.updateState(state);
+  composer.textarea.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  expect(composer.textarea.value).toBe("/reviewer inspect the login bug");
+  expect(store.getState().draftText).toBe("/reviewer inspect the login bug");
+  expect(submit).not.toHaveBeenCalled();
+});

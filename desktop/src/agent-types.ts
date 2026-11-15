@@ -33,3 +33,12 @@ export interface AgentRunsApi {
   resolveAgentRunApproval?(context: ProcessContext, runId: string, approvalId: string, allow: boolean): Promise<void>;
   cancelAgentRun?(context: ProcessContext, runId: string): Promise<AgentRunView>;
 }
+
+export interface AgentCommand {
+  id: string;
+  command: string;
+  title: string;
+  description: string;
+  agentId: string;
+  unavailableReason: string | null;
+}

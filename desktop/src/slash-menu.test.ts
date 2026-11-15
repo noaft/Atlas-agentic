@@ -96,3 +96,18 @@ test.each([
   s.key("Enter"); expect(s.choose).not.toHaveBeenCalled();
   expect(s.host.querySelector('[role="listbox"]')).not.toBeNull(); expect(s.textarea.value).toBe("/");
 });
+
+test("agents remain selectable when the independent task catalog fails", () => {
+  const agent: TaskDescriptor = {...taskFixtures[0], id: "personal:reviewer", command: "reviewer", title: "Reviewer", agentId: "personal:reviewer", requiresConversation: false};
+  const s = setup([agent]); s.type("/rev"); s.update({status: "error", error: "tasks unavailable"});
+  expect(s.host.querySelector('[role="option"]')?.textContent).toContain("reviewer");
+  s.key("Enter"); expect(s.choose).toHaveBeenCalledExactlyOnceWith(agent);
+});
+
+test("valid agent names beginning with a digit or hyphen can be picked", () => {
+  for (const command of ["123helper", "-helper"]) {
+    const agent: TaskDescriptor = {...taskFixtures[0], id: `personal:${command}`, command, title: command, agentId: `personal:${command}`, requiresConversation: false};
+    const s = setup([agent]); s.type(`/${command}`);
+    expect(s.host.querySelector('[role="option"]')?.textContent).toContain(command);
+  }
+});

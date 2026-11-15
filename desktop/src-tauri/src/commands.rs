@@ -252,7 +252,16 @@ impl DesktopState {
         let effective =
             resolve_settings_for_agent(&self.settings_with_process_limits()?, &self.agent_file)?;
         let workspace = self.resolve_workspace(conversation_id, workspace_path, &effective)?;
-        let runtime = (self.runtime_factory)(&workspace, &effective)?;
+        let runtime = if prompt.trim_start().starts_with('/') {
+            atlas_agentic::app::build_dispatch_runtime(
+                &workspace,
+                &self.agent_file,
+                &effective,
+                &self.settings_store,
+            )?
+        } else {
+            (self.runtime_factory)(&workspace, &effective)?
+        };
         let runtime = match &process_scope {
             Some(scope) => runtime
                 .with_agent_catalog(atlas_agentic::agent_catalog::AgentCatalog::for_settings(
@@ -275,6 +284,7 @@ impl DesktopState {
             Some(lease) => runtime.with_turn_control(lease.control()),
             None => runtime,
         };
+        let runtime = runtime.with_direct_agent_command(prompt)?;
         let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
             .with_cancellation(&_request.cancelled)
             .ask_with_workspace_permission_authorizer_and_fallible_sink(
@@ -314,6 +324,19 @@ impl DesktopState {
     pub(crate) fn shutdown_processes(&self) -> Result<(), String> {
         self.active_requests.cancel_all();
         self.processes.shutdown()
+    }
+
+    pub(crate) fn agent_catalog(
+        &self,
+        conversation_id: Option<&ConversationId>,
+        requested: Option<&Path>,
+    ) -> Result<atlas_agentic::agent_catalog::AgentCatalog, String> {
+        let effective = resolve_settings_for_agent(&self.settings_store.load()?, &self.agent_file)?;
+        let workspace = self.resolve_workspace(conversation_id, requested, &effective)?;
+        Ok(atlas_agentic::agent_catalog::AgentCatalog::for_settings(
+            &self.settings_store,
+            &workspace,
+        ))
     }
 
     pub(crate) fn skills_store(
@@ -1554,6 +1577,46 @@ mod tests {
         validate_workspace_impl, ChatEvent, ConversationAskResultDto, DesktopAskCallbacks,
         DesktopState, PendingApprovals, SaveSettingsInput,
     };
+
+    #[test]
+    fn agent_command_catalog_uses_saved_workspace_instead_of_frontend_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let foreign = directory.path().join("foreign");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        let store = ConversationStore::at(directory.path().join("data"));
+        let metadata = store
+            .create_turn_with_inputs_and_activity(
+                "question",
+                &[],
+                "answer",
+                Some(&workspace),
+                Some(PermissionMode::Ask),
+                ActivityCollector::new().into_unassociated_turn(),
+            )
+            .unwrap();
+        let settings = SettingsStore::at(directory.path().join("config/settings.json"));
+        let state = DesktopState::new_with_settings(store, settings.clone());
+        let definition = |name: &str| {
+            serde_json::from_value(serde_json::json!({
+            "name": name, "display_name": name, "description": "For this workspace", "system_prompt": "Do the task"
+        })).unwrap()
+        };
+        atlas_agentic::agent_catalog::AgentCatalog::for_settings(&settings, &workspace)
+            .create("project", definition("local"))
+            .unwrap();
+        atlas_agentic::agent_catalog::AgentCatalog::for_settings(&settings, &foreign)
+            .create("project", definition("foreign"))
+            .unwrap();
+        let commands = state
+            .agent_catalog(Some(&metadata.id), Some(&foreign))
+            .unwrap()
+            .command_catalog()
+            .unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command, "local");
+    }
 
     pub(super) fn environment_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

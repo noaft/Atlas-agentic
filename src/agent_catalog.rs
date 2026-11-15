@@ -100,6 +100,17 @@ pub struct AgentInfo {
     pub definition: AgentDefinition,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommand {
+    pub id: String,
+    pub command: String,
+    pub title: String,
+    pub description: String,
+    pub agent_id: String,
+    pub unavailable_reason: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AgentCatalog {
     personal: PathBuf,
@@ -141,16 +152,98 @@ impl AgentCatalog {
         let root = open_root(self.root(scope)?, false)?.ok_or("agent storage does not exist")?;
         read_definition(&root, name)
     }
+    pub fn command_catalog(&self) -> Result<Vec<AgentCommand>, String> {
+        let agents = self.list()?;
+        let mut counts = std::collections::HashMap::new();
+        for agent in &agents {
+            *counts.entry(agent.definition.name.clone()).or_insert(0) += 1;
+        }
+        Ok(agents
+            .into_iter()
+            .map(|agent| {
+                let name = agent.definition.name;
+                let unavailable_reason = if reserved_command(&name) {
+                    Some("Name is reserved for a built-in task; rename this agent".into())
+                } else if counts.get(&name).copied().unwrap_or(0) > 1 {
+                    Some("Duplicate agent name; rename a definition before calling it".into())
+                } else {
+                    None
+                };
+                let scope = if agent.id.starts_with("personal:") {
+                    "Personal"
+                } else {
+                    "Project"
+                };
+                AgentCommand {
+                    id: agent.id.clone(),
+                    agent_id: agent.id,
+                    command: name,
+                    title: agent.definition.display_name,
+                    description: format!("{} · {scope}", agent.definition.description),
+                    unavailable_reason,
+                }
+            })
+            .collect())
+    }
+
+    pub fn resolve_command(&self, name: &str) -> Result<AgentInfo, String> {
+        let name = name.to_ascii_lowercase();
+        validate_name(&name)?;
+        if reserved_command(&name) {
+            return Err(format!("/{name} is a reserved task command"));
+        }
+        let matches: Vec<_> = self
+            .list()?
+            .into_iter()
+            .filter(|agent| agent.definition.name.eq_ignore_ascii_case(&name))
+            .collect();
+        match matches.len() {
+            0 => Err(format!("Unknown agent /{name}. Create an agent with this name first.")),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            _ => Err(format!("Agent name /{name} is duplicated across scopes. Rename a definition before calling it.")),
+        }
+    }
+
     pub fn create(&self, scope: &str, definition: AgentDefinition) -> Result<AgentInfo, String> {
         let path = self.root(scope)?;
         definition.validate()?;
+        if reserved_command(&definition.name) {
+            return Err(format!(
+                "Agent name {} is reserved for a built-in task",
+                definition.name
+            ));
+        }
+        // A shared Personal namespace lease serializes cross-scope creation, including
+        // when the Project root does not exist yet. Never create a Project root for
+        // a Personal operation. A Project operation may initialize the private lock.
+        let personal = open_root(&self.personal, true)?.ok_or("agent storage does not exist")?;
+        let _personal_lease = lease(&personal)?;
+        let project = open_root(&self.project, scope == "project")?;
+        let _project_lease = project.as_ref().map(lease).transpose()?;
+        for (root, existing_scope) in [(Some(&personal), "personal"), (project.as_ref(), "project")]
+        {
+            if let Some(root) = root {
+                if list_scope(root, existing_scope)?
+                    .iter()
+                    .any(|entry| entry.definition.name == definition.name)
+                {
+                    return Err(format!(
+                        "Agent name {} already exists; choose a unique name",
+                        definition.name
+                    ));
+                }
+            }
+        }
         let bytes = toml::to_string(&definition).map_err(err)?.into_bytes();
         if bytes.len() > MAX_FILE {
             return Err("agent definition exceeds 128 KiB".into());
         }
-        let root = open_root(path, true)?.ok_or("agent storage does not exist")?;
-        let _lease = lease(&root)?;
-        if list_scope(&root, scope)?.len() >= MAX_AGENTS_PER_SCOPE {
+        let root = match scope {
+            "personal" => &personal,
+            "project" => project.as_ref().ok_or("agent storage does not exist")?,
+            _ => unreachable!("scope validated before acquiring leases"),
+        };
+        if list_scope(root, scope)?.len() >= MAX_AGENTS_PER_SCOPE {
             return Err("agent scope is full (64 definitions per scope; 128 total)".into());
         }
         let temporary = format!(".agent-{}.tmp", uuid::Uuid::new_v4());
@@ -186,6 +279,13 @@ impl AgentCatalog {
         })
     }
 }
+fn reserved_command(name: &str) -> bool {
+    crate::tasks::TaskRegistry::builtins()
+        .descriptors()
+        .iter()
+        .any(|task| task.command.eq_ignore_ascii_case(name))
+}
+
 fn list_scope(root: &Dir, scope: &str) -> Result<Vec<AgentInfo>, String> {
     let mut result = Vec::new();
     for entry in root.entries().map_err(err)? {
@@ -359,10 +459,12 @@ mod tests {
         assert_eq!(catalog.load(&personal.id).unwrap().max_tool_calls, 40);
         assert_eq!(catalog.load(&personal.id).unwrap().timeout_seconds, 600);
         assert!(catalog.create("personal", definition()).is_err());
-        catalog.create("project", definition()).unwrap();
+        let mut project = definition();
+        project.name = "builder".into();
+        catalog.create("project", project).unwrap();
         assert!(dir
             .path()
-            .join("workspace/.agents/agents/reviewer.toml")
+            .join("workspace/.agents/agents/builder.toml")
             .is_file());
         assert_eq!(catalog.list().unwrap().len(), 2);
         let reloaded = AgentCatalog::new(dir.path().join("personal"), dir.path().join("workspace"));
@@ -370,6 +472,64 @@ mod tests {
             reloaded.load("personal:reviewer").unwrap().system_prompt,
             definition().system_prompt
         );
+    }
+
+    #[test]
+    fn command_names_are_unique_across_scopes_and_reserve_builtin_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = AgentCatalog::new(dir.path().join("p"), dir.path().join("w"));
+        catalog.create("personal", definition()).unwrap();
+        assert!(catalog.create("project", definition()).is_err());
+        assert_eq!(catalog.list().unwrap().len(), 1);
+        let mut reserved = definition();
+        reserved.name = "compact".into();
+        assert!(catalog.create("project", reserved).is_err());
+    }
+
+    #[test]
+    fn concurrent_cross_scope_creation_publishes_one_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = AgentCatalog::new(dir.path().join("p"), dir.path().join("w"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = ["personal", "project"]
+            .into_iter()
+            .map(|scope| {
+                let catalog = catalog.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    catalog.create(scope, definition()).is_ok()
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.into_iter().filter(|ok| *ok).count(), 1);
+        assert_eq!(catalog.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_duplicate_commands_stay_readable_but_cannot_be_invoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = AgentCatalog::new(dir.path().join("p"), dir.path().join("w"));
+        catalog.create("personal", definition()).unwrap();
+        let project = dir.path().join("w/.agents/agents");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("reviewer.toml"),
+            toml::to_string(&definition()).unwrap(),
+        )
+        .unwrap();
+        assert!(catalog.load("project:reviewer").is_ok());
+        assert!(catalog.resolve_command("REVIEWER").is_err());
+        let commands = catalog.command_catalog().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert!(commands
+            .iter()
+            .all(|entry| entry.unavailable_reason.is_some()));
+        let json = serde_json::to_string(&commands).unwrap();
+        assert!(!json.contains("system_prompt"));
+        assert!(!json.contains("Review the supplied changes carefully"));
+        assert!(project.join("reviewer.toml").exists());
     }
 
     #[test]
@@ -416,7 +576,7 @@ mod tests {
         for scope in ["personal", "project"] {
             for i in 0..64 {
                 let mut value = definition();
-                value.name = format!("agent-{i}");
+                value.name = format!("{scope}-agent-{i}");
                 catalog.create(scope, value).unwrap();
             }
             let mut value = definition();
@@ -424,18 +584,17 @@ mod tests {
             assert!(catalog.create(scope, value).is_err());
         }
         assert_eq!(catalog.list().unwrap().len(), 128);
-        std::fs::write(dir.path().join("p/agent-0.toml"), "tools = []").unwrap();
-        assert!(catalog.load("personal:agent-0").is_err());
+        std::fs::write(dir.path().join("p/personal-agent-0.toml"), "tools = []").unwrap();
+        assert!(catalog.load("personal:personal-agent-0").is_err());
     }
 
     #[test]
-    fn project_creation_does_not_inspect_or_create_personal_storage() {
+    fn project_creation_fails_closed_when_personal_namespace_cannot_be_checked() {
         let dir = tempfile::tempdir().unwrap();
         let personal = dir.path().join("personal");
         std::fs::write(&personal, "unavailable personal storage").unwrap();
         let catalog = AgentCatalog::new(personal, dir.path().join("workspace"));
-        catalog.create("project", definition()).unwrap();
-        assert_eq!(catalog.load("project:reviewer").unwrap().name, "reviewer");
+        assert!(catalog.create("project", definition()).is_err());
     }
 
     #[cfg(unix)]

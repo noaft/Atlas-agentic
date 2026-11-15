@@ -346,6 +346,30 @@ Never reuse development .env.local credentials for skill operations.
 
 ## Delegated agents
 
+Desktop `/name task` dispatches a saved agent directly for one turn through the
+same managed delegation launcher. The native ask boundary resolves the command
+against the authoritative workspace; no parent model selects, delegates,
+summarizes or titles it. The dispatcher has no inference provider or credential
+requirement. Fork snapshots retain saved memory/history without parent compaction;
+the child budgets every call using its own provider. Native dispatch explicitly
+grants only the effective registered tools after scope registration. Persist the
+command and readable structured report through ConversationService. Child usage
+and approvals remain scoped to its run. Extra messages queue for the next normal
+Atlas turn; the native direct turn seals supplementary input before publishing
+request identity. Stop waits for child cancellation/exit. Keep inline cards and
+saved agent identity, and preserve ordinary Atlas live steering.
+
+Agent command names are unique across Personal and the current Project; reserved
+built-in task names cannot be created. Command matching is ASCII case-insensitive,
+while stored names retain lowercase validation. Cross-scope creation takes the
+Personal namespace lease first, then an existing/target Project lease, checks both
+catalogs and publishes without overwrite. A Project create may initialize private
+Personal namespace lock storage; never create a Project root for a Personal
+operation. Invalid/unavailable namespace storage fails closed. Legacy duplicates
+remain readable by scoped ID but cannot be invoked by slash command; never rename
+or delete them automatically. Catalog metadata excludes system instructions.
+
+
 Reusable definitions live in SettingsStore.directory()/agents (Personal) or
 workspace/.agents/agents (Project), with distinct scoped IDs. Keep their schema
 separate from the bundled entry agent. No fixed tools or credentials in definitions:
