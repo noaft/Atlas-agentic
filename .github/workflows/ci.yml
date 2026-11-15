@@ -113,7 +113,7 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   windows:
-    name: Windows tests and installer
+    name: Windows Rust tests
     runs-on: windows-2022
     timeout-minutes: 45
     env:
@@ -152,39 +152,6 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 15
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
-
-      - name: Install Node for Windows packaging
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: Validate Windows package version
-        shell: pwsh
-        run: |
-          $version = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          node scripts/check-release-version.mjs "v$version"
-
-      - name: Install Windows frontend dependencies
-        run: npm ci --prefix desktop
-
-      - name: Build Windows installer for review
-        timeout-minutes: 20
-        run: npm --prefix desktop run tauri -- build --config src-tauri/tauri.release.conf.json --target x86_64-pc-windows-msvc --ci -- --locked
-
-      - name: Stage Windows installer and checksum
-        shell: pwsh
-        run: node scripts/prepare-windows-release.mjs "desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" "$env:RUNNER_TEMP/atlas-windows-ci"
-
-      - name: Upload Windows installer for review
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: atlas-windows-x64-ci
-          path: ${{ runner.temp }}/atlas-windows-ci/
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
 
   desktop:
     runs-on: ubuntu-24.04
@@ -244,6 +211,3 @@ jobs:
 
       - name: Lint desktop Rust bridge
         run: cargo clippy --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-
-      - name: Compile Tauri desktop application
-        run: npm --prefix desktop run tauri -- build --debug --no-bundle --ci -- --locked

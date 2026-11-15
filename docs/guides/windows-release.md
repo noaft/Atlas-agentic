@@ -24,9 +24,10 @@ does not start GitHub Actions. GitHub Actions must be enabled in repository
 Settings; repository or organization policy must permit the publish job's
 `contents: write` permission.
 
-Ordinary CI also runs the Rust core and desktop tests and builds the NSIS
-installer on Windows before a tag is created. Its `atlas-windows-x64-ci` artifact
-contains the installer and checksum for review; it does not publish a Release.
+Ordinary pushes, merges and pull requests run CI tests, linting and frontend
+validation. They do not invoke Tauri app builds, package installers or upload app
+binaries. Only a pushed version tag starts the Windows app build and subsequent
+GitHub Release publication.
 Native test output is uncaptured so a process crash retains its
 diagnostics. Failed core targets do not prevent the remaining core targets from
 running; a sequential unit-test rerun provides additional diagnostics without
