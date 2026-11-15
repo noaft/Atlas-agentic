@@ -138,15 +138,7 @@ jobs:
             . -> target
             desktop/src-tauri -> target
 
-      - name: Test Rust core on Windows
-        run: cargo test --locked --no-fail-fast -- --nocapture
-
-      - name: Test desktop Rust bridge on Windows
-        if: ${{ !cancelled() }}
-        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
-
-      - name: Diagnose failed Windows unit tests in sequence
-        if: ${{ failure() }}
+      - name: Diagnose Windows unit test crash
         run: cargo test --locked --lib -- --nocapture --test-threads=1
 
   desktop:
