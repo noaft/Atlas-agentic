@@ -65,9 +65,18 @@ impl Tool for ReadFileTool {
         options.read(true);
         #[cfg(unix)]
         options.custom_flags(libc::O_NONBLOCK);
-        let mut file = workspace
-            .open_with(&args.path, &options)
-            .map_err(|error| format!("failed to open read_file target: {error}"))?;
+        let mut file = workspace.open_with(&args.path, &options).map_err(|error| {
+            // Windows cannot open a directory as a plain file. Preserve the
+            // same target-type error as the post-open check on other OSes.
+            if workspace
+                .metadata(&args.path)
+                .is_ok_and(|metadata| metadata.is_dir())
+            {
+                format!("read_file target is not a file: {}", args.path)
+            } else {
+                format!("failed to open read_file target: {error}")
+            }
+        })?;
         if !file
             .metadata()
             .map_err(|error| format!("failed to inspect read_file target: {error}"))?
