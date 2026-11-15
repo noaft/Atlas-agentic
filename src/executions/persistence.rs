@@ -127,12 +127,14 @@ fn lease(path: &Path, wait: bool) -> Result<File, String> {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(file),
             Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock && wait && Instant::now() < end =>
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    // Windows reports ERROR_LOCK_VIOLATION rather than WouldBlock.
+                    || e.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
             {
+                if !wait || Instant::now() >= end {
+                    return Err("Execution storage lease is busy".into());
+                }
                 thread::sleep(Duration::from_millis(5))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return Err("Execution storage lease is busy".into())
             }
             Err(_) => return Err("Execution storage lease is unavailable".into()),
         }
@@ -819,6 +821,35 @@ pub(super) fn retry<'a>(
 #[cfg(test)]
 mod archive_merge_tests {
     use super::*;
+
+    #[test]
+    fn contended_storage_lease_is_busy_and_cannot_be_stolen() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("executions.lock");
+        let owner = lease(&path, false).unwrap();
+
+        assert_eq!(
+            lease(&path, false).unwrap_err(),
+            "Execution storage lease is busy"
+        );
+        drop(owner);
+        assert!(lease(&path, false).is_ok());
+    }
+
+    #[test]
+    fn contended_storage_lease_waits_before_reporting_busy() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("import.lock");
+        let _owner = lease(&path, false).unwrap();
+        let started = Instant::now();
+
+        assert_eq!(
+            lease(&path, true).unwrap_err(),
+            "Execution storage lease is busy"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(500));
+    }
+
     #[test]
     fn aliased_archive_import_respects_the_native_owner_retention_limit() {
         let root = tempfile::tempdir().unwrap();
