@@ -161,6 +161,10 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
                 let count = stream.read(&mut request).unwrap();
                 assert_eq!(
                     String::from_utf8_lossy(&request[..count])

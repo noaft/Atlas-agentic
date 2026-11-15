@@ -46,6 +46,12 @@ impl CliFixture {
             .env("ATLAS_SKIP_DOTENV", "1")
             .env("ATLAS_DATA_DIR", self.data.path())
             .env("ATLAS_CONFIG_DIR", self.config.path());
+        // Winsock providers need SystemRoot in a fresh Windows process. Keep
+        // the rest of the environment isolated from user/provider settings.
+        #[cfg(windows)]
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", root);
+        }
         command
     }
 
@@ -826,6 +832,7 @@ impl FakeDeepSeek {
                     }
                     Err(error) => panic!("accept failed: {error}"),
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
