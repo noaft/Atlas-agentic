@@ -19,7 +19,13 @@ fn small_default_text_lists_remain_sorted_and_compatible() {
     let result = ListDirTool::new(workspace.path())
         .execute(&json!({"path":"notes"}))
         .unwrap();
-    assert_eq!(result.message, "notes/a.txt\nnotes/b.txt");
+    assert_eq!(
+        result.message,
+        format!(
+            "notes{sep}a.txt\nnotes{sep}b.txt",
+            sep = std::path::MAIN_SEPARATOR
+        )
+    );
 }
 
 #[test]

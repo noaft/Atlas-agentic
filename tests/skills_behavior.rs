@@ -287,7 +287,16 @@ fn loaded_instructions_include_frozen_folder_and_all_relative_files_without_io()
         .execute(&json!({"id":"personal:demo"}))
         .unwrap()
         .message;
-    assert!(result.contains(&serde_json::to_string(&directory.to_string_lossy()).unwrap()));
+    let folder: String = serde_json::from_str(
+        result
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("Skill folder: ")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(std::path::Path::new(&folder), directory);
     assert!(result.contains("scripts/check.sh"));
     assert!(result.contains("assets/icon.bin"));
     assert!(result.contains("relative to the skill folder"));

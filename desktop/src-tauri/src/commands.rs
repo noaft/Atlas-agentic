@@ -2676,13 +2676,13 @@ mod tests {
                     PermissionMode::FullAccess
                 )
                 .unwrap(),
-            (workspace, PermissionMode::Ask)
+            (workspace.canonicalize().unwrap(), PermissionMode::Ask)
         );
         assert_eq!(
             state
                 .mcp_inspection_context(None, Some(&requested), PermissionMode::Workspace)
                 .unwrap(),
-            (requested, PermissionMode::Workspace)
+            (requested.canonicalize().unwrap(), PermissionMode::Workspace)
         );
         assert_eq!(store.load(&saved.id).unwrap().messages.len(), 2);
     }
