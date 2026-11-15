@@ -7,7 +7,10 @@ pub fn validate_relative_path(tool: &str, field: &str, value: &str) -> Result<Pa
     if path.as_os_str().is_empty() {
         return Err(format!("{tool} {field} is required"));
     }
-    if path.is_absolute() {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
         return Err(format!("{tool} {field} must be relative"));
     }
     if path

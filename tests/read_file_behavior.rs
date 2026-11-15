@@ -66,6 +66,30 @@ fn rejects_paths_that_can_leave_or_do_not_name_a_file() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn rejects_rooted_and_drive_relative_windows_paths_before_authorization() {
+    let workspace = TempDir::new().unwrap();
+    let tool = ReadFileTool::new(workspace.path());
+    for path in [
+        r"\secret.txt",
+        r"C:\secret.txt",
+        r"C:secret.txt",
+        r"\\server\share\secret.txt",
+        r"\\?\C:\secret.txt",
+    ] {
+        assert_eq!(
+            tool.risk(&serde_json::json!({"path": path})).unwrap_err(),
+            "read_file path must be relative",
+            "{path}"
+        );
+        assert_eq!(
+            execute(&tool, path).unwrap_err(),
+            "read_file path must be relative"
+        );
+    }
+}
+
 #[test]
 fn rejects_non_utf8_content() {
     let workspace = TempDir::new().unwrap();
