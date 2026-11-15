@@ -138,8 +138,13 @@ jobs:
             . -> target
             desktop/src-tauri -> target
 
-      - name: Diagnose Windows unit test crash
-        run: cargo test --locked --lib -- --nocapture --test-threads=1
+      - name: Reproduce parallel Windows unit test crash
+        run: |
+          foreach ($attempt in 1..5) {
+            Write-Output "Parallel unit test attempt $attempt"
+            cargo test --locked --lib -- --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
   desktop:
     runs-on: ubuntu-24.04
