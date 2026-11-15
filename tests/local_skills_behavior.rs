@@ -129,3 +129,82 @@ fn local_import_rejects_symlinks_and_special_files() {
     symlink(&path, t.path().join("link")).unwrap();
     assert!(local::preview(&t.path().join("link")).is_err());
 }
+
+#[test]
+fn staged_skill_handles_are_released_before_publish_and_recovery() {
+    let t = tempfile::tempdir().unwrap();
+    let personal = t.path().join("personal");
+    let store = SkillStore::new(personal.clone(), t.path().join("workspace"));
+    let skill = store.create(draft(), SkillScope::Personal).unwrap();
+    store.set_enabled(&skill.id, false).unwrap();
+    let document = store.read(&skill.id, None).unwrap();
+    store
+        .update_document(
+            &skill.id,
+            &document
+                .content
+                .replace("Read the guide.", "Updated instructions."),
+            &document.fingerprint,
+        )
+        .unwrap();
+    // Simulate interruption after the previous generation was renamed, then
+    // recover through the same public reader used when Atlas starts.
+    let backup = personal.join(format!(".previous-{}", uuid::Uuid::new_v4()));
+    std::fs::rename(personal.join("local-demo"), &backup).unwrap();
+    let catalog = store.list().unwrap();
+    assert!(catalog.issues.is_empty(), "{:?}", catalog.issues);
+    assert_eq!(catalog.skills.len(), 1);
+    assert!(!catalog.skills[0].enabled);
+    assert!(store
+        .read(&skill.id, None)
+        .unwrap()
+        .content
+        .contains("Updated instructions."));
+    assert_eq!(
+        store
+            .read(&skill.id, Some("refs/guide.txt"))
+            .unwrap()
+            .content,
+        "Guide"
+    );
+    assert!(!backup.exists());
+    // A valid published generation wins over a leftover valid backup.
+    std::fs::create_dir_all(backup.join("refs")).unwrap();
+    for path in ["SKILL.md", "refs/guide.txt"] {
+        std::fs::copy(personal.join("local-demo").join(path), backup.join(path)).unwrap();
+    }
+    let catalog = store.list().unwrap();
+    assert!(catalog.issues.is_empty(), "{:?}", catalog.issues);
+    assert_eq!(catalog.skills.len(), 1);
+    assert!(!catalog.skills[0].enabled);
+    assert!(!backup.exists());
+    assert!(std::fs::read_dir(&personal).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name();
+        !name.to_string_lossy().starts_with(".install-")
+            && !name.to_string_lossy().starts_with(".previous-")
+    }));
+}
+
+#[test]
+fn failed_staging_removes_the_open_staging_directory() {
+    let t = tempfile::tempdir().unwrap();
+    let personal = t.path().join("personal");
+    let store = SkillStore::new(personal.clone(), t.path().join("workspace"));
+    let mut input = draft();
+    input.files = Some(BTreeMap::from([
+        (
+            "refs".into(),
+            "This file conflicts with a required directory".into(),
+        ),
+        ("refs/guide.txt".into(), "Guide".into()),
+    ]));
+    assert!(store.create(input, SkillScope::Personal).is_err());
+    assert!(!personal.join("local-demo").exists());
+    assert!(std::fs::read_dir(&personal).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".install-")
+    }));
+}

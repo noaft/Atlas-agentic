@@ -410,6 +410,9 @@ fn publish(
         }
         Ok::<_, String>(())
     })();
+    // Windows capability directory handles prevent rename and deletion. Keep
+    // the root lease, but close the verified staging directory before either.
+    drop(stage);
     if let Err(error) = prepared {
         let _ = root.remove_dir_all(&staging);
         return Err(error);
@@ -778,6 +781,9 @@ fn recover(root: &Dir, scope: SkillScope) -> Vec<String> {
                     std::str::from_utf8(&bytes).map_err(|_| "SKILL.md must be UTF-8")?,
                 )?;
                 load_directory(&dir, &metadata.name, scope)?;
+                // Release the child handle before restoring or removing it on
+                // Windows; the root capability and storage lease remain held.
+                drop(dir);
                 match root.symlink_metadata(&metadata.name) {
                     Ok(_) => {
                         load(root, &metadata.name, scope)?;
