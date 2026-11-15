@@ -447,6 +447,22 @@ Legacy source-less readings remain readable but are not shown as attributed usag
 Input-only limits are separate from combined context limits; never add independent
 input/output maxima to invent combined capacity. Keep unknown capacities unknown.
 
+## Windows releases
+
+`.github/workflows/release-windows.yml` handles pushed stable `vX.Y.Z` tags.
+Keep tag, app manifests and local package entries in npm/Cargo locks aligned;
+`scripts/check-release-version.mjs` validates them without mutation. CI runs its
+portable helper tests via `node --test scripts/release.test.mjs`. The Windows x64
+job uses the pinned Node/Rust toolchains, tests, and locked Tauri CLI. Only the
+release overlay `desktop/src-tauri/tauri.release.conf.json` enables NSIS packaging;
+retain base resources and do not change developer bundling defaults.
+Stage exactly one nonempty installer plus its SHA-256 sidecar. Build permissions
+stay contents:read; only the separate artifact publication job gets contents:write.
+Use GITHUB_TOKEN, verify the remote tag, never overwrite existing Releases/assets,
+and publish only after tests/build/uploads succeed. Pin external actions by full
+commit SHA. No provider keys, development .env files, user settings or local
+credentials are needed or bundled. See docs/guides/windows-release.md.
+
 ## Configure and Run
 
 Show CLI help without configuring a model:

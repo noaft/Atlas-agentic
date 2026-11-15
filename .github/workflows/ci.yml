@@ -57,6 +57,9 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Test release helpers
+        run: node --test scripts/release.test.mjs
+
       - name: Install frontend dependencies
         run: npm ci --prefix desktop
 

@@ -34,6 +34,14 @@ values does not save custom overrides. Explicit overrides take precedence;
 editing one reported limit keeps its reported companion value. The default
 output budget remains separate from model capacity.
 
+## Windows release builds
+
+Push a stable version tag such as `v0.1.0` to build a Windows x64 `.exe` installer
+and publish it with a SHA-256 checksum to GitHub Releases. The tag must match the
+app manifests and lock files; GitHub Actions runs tests before packaging and
+publishing. See the [Windows release guide](docs/guides/windows-release.md) for
+version updates, commands, and troubleshooting.
+
 ## Features
 
 - **Chat:** streaming replies, independent conversations, local history and Activity.

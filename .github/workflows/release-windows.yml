@@ -1,0 +1,145 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  ATLAS_SKIP_DOTENV: "1"
+
+jobs:
+  windows:
+    name: Test and package Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Record source revision
+        id: source
+        shell: pwsh
+        run: |
+          $revision = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+
+      - name: Install Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Validate release version
+        shell: pwsh
+        run: node scripts/check-release-version.mjs "$env:GITHUB_REF_NAME"
+
+      - name: Test release helpers
+        run: node --test scripts/release.test.mjs
+
+      - name: Install project Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-pc-windows-msvc
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-release-x64
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix desktop
+
+      - name: Test frontend
+        run: npm --prefix desktop test
+
+      - name: Check Rust core formatting
+        run: cargo fmt --check
+
+      - name: Check desktop Rust formatting
+        run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+
+      - name: Test Rust core on Windows
+        run: cargo test --locked
+
+      - name: Test desktop Rust bridge on Windows
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Build Windows installer
+        run: npm --prefix desktop run tauri -- build --config src-tauri/tauri.release.conf.json --target x86_64-pc-windows-msvc --ci -- --locked
+
+      - name: Stage installer and checksum
+        shell: pwsh
+        run: node scripts/prepare-windows-release.mjs "desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" "$env:RUNNER_TEMP/atlas-windows-release"
+
+      - name: Upload tested installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: atlas-windows-x64
+          path: ${{ runner.temp }}/atlas-windows-release/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish tagged Windows release
+    needs: windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested installer
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: atlas-windows-x64
+          path: release-assets
+
+      - name: Verify checksum and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILT_REVISION: ${{ needs.windows.outputs.revision }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(release-assets/*-setup.exe)
+          checksums=(release-assets/*-setup.exe.sha256)
+          if (( ${#installers[@]} != 1 || ${#checksums[@]} != 1 )); then
+            echo "Expected one Windows installer and one checksum" >&2
+            exit 1
+          fi
+          (cd release-assets && sha256sum --check -- "${checksums[0]##*/}")
+          tag_revision="$(gh api "repos/$GH_REPO/commits/$GITHUB_REF_NAME" --jq .sha)"
+          if [[ "$tag_revision" != "$BUILT_REVISION" ]]; then
+            echo "The release tag moved after checkout; refusing to publish old binaries" >&2
+            exit 1
+          fi
+          # gh creates a draft, uploads the assets, and publishes only after upload succeeds.
+          # An existing release is rejected; never replace an already published installer.
+          gh release create "$GITHUB_REF_NAME" "${installers[0]}" "${checksums[0]}" \
+            --verify-tag \
+            --title "Atlas $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Download the Windows x64 setup executable below. The matching .sha256 file verifies its contents."
