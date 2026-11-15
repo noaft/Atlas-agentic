@@ -138,6 +138,10 @@ jobs:
             . -> target
             desktop/src-tauri -> target
 
+      - name: Verify isolated CLI networking on Windows
+        timeout-minutes: 5
+        run: cargo test --locked --test cli_binary ask_uses_saved_provider_full_history_and_current_directory_workspace -- --nocapture
+
       - name: Reproduce parallel Windows unit test crash
         run: |
           foreach ($attempt in 1..5) {
