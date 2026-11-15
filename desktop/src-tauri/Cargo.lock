@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-agentic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "active-win-pos-rs",
  "base64 0.22.1",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "atlas-agentic",
  "serde",

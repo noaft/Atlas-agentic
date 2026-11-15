@@ -7,14 +7,14 @@ GitHub-hosted Windows build machines and the repository's automatic
 
 ## First release
 
-The current app version is `0.1.0`. Commit and push the workflow and application
+The current app version is `0.1.1`. Commit and push the workflow and application
 changes before pushing a matching tag:
 
 ```bash
 git push origin main
-node scripts/check-release-version.mjs v0.1.0
-git tag -a v0.1.0 -m "Atlas 0.1.0"
-git push origin v0.1.0
+node scripts/check-release-version.mjs v0.1.1
+git tag -a v0.1.1 -m "Atlas 0.1.1"
+git push origin v0.1.1
 ```
 
 The workflow must be present in the tagged commit. Open **Actions → Windows
@@ -39,14 +39,14 @@ Refresh the lock files without upgrading dependencies:
 npm --prefix desktop install --package-lock-only --ignore-scripts
 cargo check
 cargo check --manifest-path desktop/src-tauri/Cargo.toml
-node scripts/check-release-version.mjs v0.1.1
+node scripts/check-release-version.mjs v0.1.2
 ```
 
 Commit the manifests and locks together. Then push that commit and a matching
 annotated tag as above. The validation helper checks both npm version entries,
 both Cargo manifests, and Atlas's local package entries in both Cargo lock files.
 A stale lock version or mismatched tag stops the build before publishing.
-Only stable tags such as `v0.1.1` are supported; prerelease and malformed tags fail
+Only stable tags such as `v0.1.2` are supported; prerelease and malformed tags fail
 validation. Do not move or reuse published version tags.
 
 ## Build and publication
@@ -76,7 +76,7 @@ can be configured separately when a signing certificate is available.
 
 ```bash
 node --test scripts/release.test.mjs
-node scripts/check-release-version.mjs v0.1.0
+node scripts/check-release-version.mjs v0.1.1
 ```
 
 On Windows, build the installer locally with:
