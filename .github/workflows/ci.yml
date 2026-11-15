@@ -112,6 +112,43 @@ jobs:
       - name: Lint Rust
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+  windows:
+    name: Windows Rust tests
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      ATLAS_SKIP_DOTENV: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install project Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Cache Windows Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-release-x64
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+
+      - name: Test Rust core on Windows
+        run: cargo test --locked --no-fail-fast -- --nocapture
+
+      - name: Test desktop Rust bridge on Windows
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
+
+      - name: Diagnose failed Windows unit tests in sequence
+        if: ${{ failure() }}
+        run: cargo test --locked --lib -- --nocapture --test-threads=1
+
   desktop:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

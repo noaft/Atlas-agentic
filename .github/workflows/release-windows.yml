@@ -80,10 +80,10 @@ jobs:
         run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
 
       - name: Test Rust core on Windows
-        run: cargo test --locked
+        run: cargo test --locked -- --nocapture
 
       - name: Test desktop Rust bridge on Windows
-        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml -- --nocapture
 
       - name: Build Windows installer
         run: npm --prefix desktop run tauri -- build --config src-tauri/tauri.release.conf.json --target x86_64-pc-windows-msvc --ci -- --locked
