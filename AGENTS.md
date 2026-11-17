@@ -1,697 +1,96 @@
 # Atlas Agentic Repository Guide
 
-## What This Repository Is
-
-Atlas Agentic is a Rust project for a desktop-first AI agent system.
-
-The current product includes a Rust CLI and a Tauri desktop app. Both load the
-default Atlas agent from `agents/atlas.toml`, share model/settings/runtime code,
-and persist multiple local conversations. Atlas is a general assistant for
-conversation and OS tasks as well as coding. The desktop app adds an automatic
-Atlas home, optional native project-folder selection, per-conversation starting
-folder persistence, grouped history, and local Settings.
-
-Reusable child agents and parent-selected tool delegation are implemented. The planned direction includes a router that selects the best agent for each user task. The router chooses an agent; it does not perform the task itself.
-
-Read `RULE.md` before changing agent, provider, runtime, router, or tool architecture.
-
-## General Repository Structure
-
-```text
-.
-├── agents/                 Local agent definitions
-│   └── atlas.toml          Default Atlas agent configuration
-├── src/
-│   ├── agent_catalog.rs     Safe scoped reusable TOML definitions
-│   ├── agent_runs.rs        Owner-scoped background workers, approvals and results
-│   ├── delegation.rs        Runtime delegation, snapshots and per-call tool grants
-│   ├── main.rs             CLI entrypoint and command execution
-│   ├── lib.rs              CLI command parsing and rendering
-│   ├── app.rs              Shared runtime and default-tool construction
-│   ├── runtime.rs          Agent and tool orchestration
-│   ├── agent_output.rs     Final-answer and tool-call parsing
-│   ├── agents/             Agent traits and local agent implementation
-│   ├── conversations/      Local conversation types, storage, and orchestration
-│   │   ├── activity.rs     Bounded activity records, redaction, and model summaries
-│   │   ├── types.rs        UUIDs, messages, workspace metadata, and context policy
-│   │   ├── store.rs        Locked message/activity JSONL and atomic metadata updates
-│   │   ├── service.rs      Ask, activity capture, workspace persistence, and titles
-│   │   └── title.rs        Title sanitization
-│   ├── skills/            Scoped skill catalog, safe storage, and GitHub imports
-│   ├── tasks/             Authoritative built-in task catalog and validated dispatch
-│   ├── process_limits.rs   Validated concurrent-command policy shared by CLI/desktop
-│   ├── diagnostics.rs      Private rotating backend logs and request correlation
-│   ├── settings.rs         Versioned private settings and environment precedence
-│   ├── workspace.rs        Automatic Atlas home provisioning and validation
-│   ├── models/             Native/compatible adapters, discovery, usage, and budgets
-│   └── tools/              Tool trait, registry, and built-in tools
-├── desktop/
-│   ├── public/             Atlas Compass browser assets
-│   ├── src/                Workspace chat state, adapter, chat and Settings UI
-│   └── src-tauri/          Workspace/settings bridge, permissions, icons, and config
-├── tests/                  Integration and behavior tests
-├── Cargo.toml              Rust package configuration
-├── README.md               User-facing project documentation
-├── VISION.md               Product direction
-└── RULE.md                 Coding and architecture rules
-```
-
-The built-in runtime tools are:
-
-- `create_agent`, `list_agents`: explicitly save and discover reusable scoped agent definitions
-- `call_agent`: delegate with parent-selected tools, fork/task_only context and wait/parallel execution
-- `list_agent_runs`, `read_agent_run`, `wait_agent_run`, `cancel_agent_run`: inspect/control owned child runs
-
-- `create_skill`: save an explicitly requested new Personal or Project skill without overwriting
-- `load_skill`: preload enabled skill metadata, then lazily read instructions or a registered UTF-8 resource
-- `preview_skill`: download and review bounded pinned public GitHub skill packages without installing
-- `install_skill`: install exact previewed bytes into Personal or Project storage without overwriting
-- `current_time`: show the current date and time from the user's machine, including its local UTC offset
-- `pwd`: show the current workspace path
-- `ls`: list bounded, sorted directory pages inside the workspace
-- `read_file`: safely read bounded UTF-8 text, inclusive line ranges, or byte-cursor pages inside the workspace
-- `ripgrep`: search file contents with compiled-in ripgrep matching, including
-  approved paths outside the workspace
-- `search_files`: search workspace filenames and UTF-8 contents
-- `create_file`: safely create a new file inside the workspace
-- `apply_patch`: atomically edit an existing workspace UTF-8 file with exact, unique replacements
-- `create_directory`: create directories inside the workspace
-- `copy_file`, `move_file`, `delete_file`: manage files inside the workspace
-- `open_file`: open a workspace file with the OS default application
-- `open_application`: launch an application
-- `exec_command`: execute an unrestricted platform shell command from the workspace
-- `list_processes`: discover resources owned by this runtime/chat scope
-- `read_process`: read new, explicit-cursor, or last-N-line output/status from an owned session
-- `stop_process`: stop an owned command session and its contained descendants
-- `mouse_move`: move the pointer with absolute or relative coordinates
-- `mouse_click`: click left, middle, right, back, or forward in the active application
-- `mouse_scroll`: scroll horizontally or vertically in the active application
-- `type_text`: type bounded Unicode text into the active application
-- `key_press`: press named or Unicode keys with optional modifiers
-- `get_ui_state`: read pointer, primary-display, and active-window metadata
-- `capture_screen`: capture the primary display as an in-memory PNG for model vision
-
-`ls` defaults to 100 entries per page (1–1000), accepts `offset` up to 100000,
-and bounds text/JSON output to 64 KiB. `format: "json"` uses the same
-`{data,truncated,next_cursor}` envelope as `read_file`, with typed file/directory/
-symlink/other entries. Merge its cursor with the same directory `path`. Child
-symlinks are classified without following them. Pagination reflects the current
-directory rather than a snapshot. Beyond the offset cap, a truncated JSON page
-sets `data.pagination_limit_reached` and has no next cursor; narrow the directory
-or search instead. Retain only the smallest offset+limit+1 names while scanning.
-
-`read_file` keeps plain text by default. Optional `start_line`/`end_line` select
-inclusive 1-based lines; `line_numbers` adds labels. `format: "json"` returns
-`{data,truncated,next_cursor}` with content and source byte positions. Merge a
-returned cursor with `path` to resume: byte cursors are unnumbered and preserve
-remaining range lines through `line_count`. Cursors assume unchanged file bytes.
-Output is bounded to 64 KiB including JSON/labels. Line-start scans are bounded
-to 32 MiB; use `byte_offset` beyond that. Byte offsets must be UTF-8 boundaries.
-
-`apply_patch` accepts one relative path and 1–64 sequential `{old_text,new_text}`
-edits. Source, result and aggregate replacement input are bounded to 1 MiB. Old
-text must match exactly once, including overlapping occurrences. Preserve bytes
-outside edits and Unix permission bits. Reject symlink/special-file targets and
-unsafe parents. Capture the full preimage at authorization and verify its content
-and inode under a bounded source-file lease before same-directory atomic replace;
-re-resolve the original workspace path and parent identity at execution/publication,
-and reject moved/replaced parents rather than writing through a detached handle;
-stale approvals must not overwrite newer files. Patch overwrites use Destructive
-risk in Ask and Workspace modes. No shell execution or partial edit publication.
-
-The displayed workspace is a starting directory, not a shell sandbox.
-User-local `mcp.toml` adds optional `mcp_list_servers`, `mcp_list_tools` and
-`mcp_call_tool` gateways, shared by CLI and desktop. `src/mcp/` owns validated
-stdio/HTTP configuration, JSON-RPC transports, negotiation, discovery and
-result conversion. `ATLAS_MCP_CONFIG` overrides the file; otherwise load it beside
-settings using `ATLAS_CONFIG_DIR` or the platform user configuration directory.
-Never discover configuration from the workspace or launch processes during
-runtime construction or authorization validation. Server discovery and calls
-start connections only during tool execution, after existing runtime approval.
-Ask and Workspace require confirmation for both; external calls use
-`ExternalTool` risk regardless of remote annotations. Full access preserves
-existing semantics. No frontend permissions are added.
-Local servers inherit Atlas's environment and workspace. Preserve bounded requests,
-pagination and protocol framing; never automatically replay failed calls.
-Timeouts have unknown action outcomes. Keep arbitrary server stderr and protocol
-error bodies out of backend errors/logs. Only text and structured tool results
-are supported; reject non-text content without persisting image payloads.
-HTTP uses Streamable HTTP with bounded JSON/SSE replies and negotiated session
-and protocol headers. Disable redirects and automatic retries, including after
-authentication failure or an expired session. Keep OAuth entirely in Rust under
-`src/mcp/oauth/`: explicit desktop Settings Connect/Cancel/Disconnect commands
-run on background workers; chat requests never initiate browser authorization.
-Use protected-resource and issuer metadata discovery, public-client registration
-or a configured public client ID, state and S256 PKCE, a bounded literal-loopback
-callback, resource/client-bound credentials and OS credential storage. OAuth
-endpoints require HTTPS; no plaintext credential fallback, client secret or
-frontend native permissions. Never expose codes/tokens/verifiers to model
-context, diagnostics or frontend state. Preserve useful per-server storage errors
-and Disconnect recovery controls without hiding other servers. Refresh under
-process and file leases, including refresh rotation; disconnect increments a
-nonsecret invalidation generation under the same lease so pending sign-ins from
-other processes cannot republish credentials. Cancel during a keyring write must
-remove any late save. Browser sign-in cancellation and deadlines must not publish
-late network results. The Settings MCP panel owns asynchronous status updates
-without remounting model inputs or disturbing their drafts/focus/scroll.
-Settings may add new servers through the bounded user-local McpConfigStore:
-preserve original bytes/comments, reject duplicate names and malformed/unsupported
-or symlink/special-file inputs, and bind writes to a path/content fingerprint under
-a bounded file lease with private atomic publication. Never overwrite existing
-server identities or probe on load/save. Explicit Check tools uses the existing
-MCP registry authorization and discovery with Settings-owned operation IDs,
-approvals and cancellation. Saved conversation workspace and permission mode are
-native authority. Check cancellation stops at the next RPC boundary; an in-flight
-RPC remains bounded to 30 seconds. Retain Cancelling state until its worker exits;
-ignore stale approvals/results and reject pre-save refresh responses after a save.
-Keep sign-in status distinct from checked tool availability. Config/context changes
-invalidate checks without cancelling chat approvals or browser sign-ins. Check
-transports are short-lived; no business tools execute during inspection.
-
-Connections belong to one runtime and close on transport failure/drop. Preserve
-valid tool-error details as failed results while keeping the session usable.
-Unix terminates owned process groups; Windows contains the server in a
-kill-on-close Job Object before resuming it, so descendants are cleaned up too.
-
-`ripgrep` is compiled into Atlas and does not require an `rg` executable on
-`PATH`. It defaults to the workspace, respects ignore files, skips hidden and
-binary files and symlinks, and accepts absolute roots. A canonical root outside
-the workspace requires approval in Ask and Workspace modes; Full access skips
-that Atlas confirmation but remains subject to OS-user permissions.
-`exec_command` is available on Linux, WSL, macOS, and Windows and is intentionally
-unrestricted. It supports shell operators, pipes, redirects, and paths outside
-the starting folder, and it runs with the same permissions as the Atlas process.
-The structured file helpers remain workspace-scoped. The command's default
-timeout is 30 seconds, with stdout and stderr each truncated after 64 KiB.
-Opt-in `yield_time_ms` (0–10000) returns process sessions. Desktop shares an
-app-owned ProcessManager through native chat scopes; CLI remains request-local
-and rejects background. Desktop also tracks synchronous commands (default 30s).
-`lifetime` defaults to job, cleaned on request exit; background is only for an
-explicit user request and survives final/model errors in its chat. Job timeout is
-1–600000ms (session default10min); background default1h/max24h. `list_processes`
-metadata is bounded and contains no command/raw output; inspect actual cwd/status
-before reusing a service. No automatic retries/restarts, stdin/PTY or daemon.
-
-Concurrent-command limits live in version2 settings as `processes:{perChat,total}`,
-default8/32 with validated ranges1–32/chat and1–128/app. Enforce both caps under the
-manager store lock, before launching; lower limits drain existing work without
-stopping it. Empty-destination draft ownership handoff preserves existing commands
-above a lowered cap, while merges of two active scopes respect the current cap.
-CLI applies the same saved policy to yielded and synchronous commands, reserving
-capacity for the latter until return/error while preserving their original output
-and timeout behavior. It remains request-local and rejects background commands.
-Settings → Permissions exposes both integers with Save/Discard and draft/focus
-preservation. Native load/save/configuration is serialized with the settings-policy
-mutex; configure the app-owned manager only from loaded or successfully published
-settings. Failed publication must not alter active policy. These resource caps
-apply to every new command start, including an already running request. Retained records remain32/scope128/app. These
-are session limits, not total OS process/CPU/RAM quotas. Output uses64KiB byte
-rings with absolute offsets, per-chat default agent cursor and independent UI
-cursors. Flag gaps; preserve incomplete UTF8 tails. Reads0–10000ms default1000ms. `read_process` also accepts `tail_lines`1–1000,
-exclusive with `cursor`, for the latest retained LF-delimited lines per stream.
-Tail never advances any reader cursor. Preserve CRLF, incomplete UTF-8 tails and
-partial oldest-line warnings; a trailing LF does not invent an empty line.
-`stdout_view`/`stderr_view` carry absolute byte/line ranges, totals, returned-line
-counts, lines after the range, partial-first-line, retention-loss and pending-byte
-flags at snapshot time. Keep cursor-gap flags distinct from intentional tail
-selection and ring-buffer loss. Activity shortening must retain process JSON
-metadata when budget permits, label `display_truncated`, and show positions as
-captured rather than current; retain the last displayed log text within budgets.
-The retained native Stop endpoint requires explicit user intent and native
-ownership checks. The current UI uses agent tool calls to stop resources. Agent
-Start/Stop use Command risk, reads/list ReadOnly. Stop_requested is not
-confirmation; report Stopping until worker completion.
-
-Draft tokens belong to native window/client epochs; no history is created for
-scope allocation. Bind successful drafts to saved conversations without changing
-resource IDs; keep failed drafts retryable, release abandoned empty drafts and
-reject active/foreign releases. Reload closes old client draft scopes, while
-saved scope mappings remain. Saved requests derive workspace/mode from metadata,
-ignoring conflicting frontend paths/modes. Model args never select another owner.
-Close deleted chat scopes and run app shutdown cleanup on background workers,
-with bounded deadlines and no new frontend native permissions. Resources/IDs are
-not persisted/restored after restart. Preserve Unix groups, signal before reaping
-leaders (WNOWAIT), and Windows suspended-start kill-on-close Jobs. Keep command
-text raw-quoted correctly for cmd.exe. MCP/OAuth ownership remains unchanged.
-
-The UI accesses backend operations only via atlas-api.ts. Show tool execution
-inline as a terminal card with command, status and scrollable plain-text output;
-keep raw call details collapsed and preserve expansion for the same session/call.
-Do not mount a separate Processes panel or poll processes automatically. Output
-comes from tool events, not simulated streaming. Saved Activity retains output.
-Process tools still list/read/stop resources under existing authorization; reject
-stale callbacks after navigation and preserve independent cursor semantics.
-See docs/architecture/process-sessions.md and docs/guides/process-manager-demo.md.
-
-Runtime permission modes are `ask`, `workspace`, and `fullAccess`. Ask permits
-read-only tools automatically. Workspace also permits non-destructive structured
-workspace changes. Outside-workspace searches, destructive actions, launches,
-and commands still require an approval in Workspace mode. Desktop observation
-and mouse/keyboard control require approval in both Ask and Workspace modes
-because they can expose or change sensitive state. Full access skips Atlas
-confirmations but never
-elevates beyond the Atlas process's OS-user permissions. The Settings default
-applies to new drafts; a saved conversation stores and restores its own mode.
-
-Computer input targets the application active at execution time. Windows may
-reject input into a higher-integrity process, macOS requires user-granted
-Accessibility access, and Linux currently requires a usable X11 display.
-Wayland-only sessions return an actionable error. Keep these capabilities in
-the Rust backend; do not broaden frontend Tauri shell, process, accessibility,
-screen-capture, or filesystem permissions.
-
-`capture_screen` uses `ComputerObserve`. Ask and Workspace modes require
-approval because visible desktop data may be sent to the configured model
-provider. Captures are primary-display-only, remain in memory for the current
-turn, and are never written to disk or conversation history. The DeepSeek
-adapter rejects images over 8192 pixels per side or 32 MiB. Windows uses native
-capture, macOS requires Screen Recording permission, and Linux requires X11.
-Linux development/runtime environments need `libxcb`, `libxrandr`, and `dbus`
-(Debian/Ubuntu packages: `libxcb1 libxrandr2 libdbus-1-3`).
-Building the OAuth credential-store integration also requires `libdbus-1-dev`
-and `pkg-config` on Debian/Ubuntu; runtime sign-in requires an unlocked desktop
-Secret Service session.
-
-## Skills
-
-Skills are source-independent YAML-frontmatter `SKILL.md` folders. Project skills
-live under the validated workspace's `.agents/skills/`. New Personal skills use
-absolute XDG_CONFIG_HOME/agents/skills or ~/.config/agents/skills on all platforms,
-matching the Universal layout. Also discover ~/.agents/skills (canonical global
-CLI installs), then the legacy Atlas config skills folder. Primary wins duplicate
-names; operations on an existing fallback skill resolve its actual root. Explicit
-ATLAS_CONFIG_DIR and custom SettingsStore instances remain isolated. Never move
-or delete existing skills automatically.
-
-Keep personal:name/project:name identities distinct. No remote source is required.
-Create validates name/title/summary/instructions and supporting UTF-8 file maps,
-never overwrites, and produces one folder per skill. `create_skill` is available
-even when the catalog is empty; only save when the user explicitly asks. Project
-creation is ModifyWorkspace; Personal is ModifyOutsideWorkspace and requires
-approval in Ask and Workspace modes. No implicit script/dependency execution.
-
-Local imports accept a single SKILL.md (only that file) or whole skill folders /
-bounded collections. Preview full instructions/resources, then bind installation
-to a whole-package fingerprint. Edits preserve resources/enabled state, reject
-renames, and bind their token to both content and the selected storage root so a
-new primary copy cannot redirect a legacy editor. Editing a remote skill clears
-remote provenance. Retain safe staging, leases, recovery, and existing bounds.
-
-The `load_skill` tool exposes enabled metadata first, then frozen full instructions,
-base folder, relative file list, and UTF-8 resources on demand. Invalid/disabled
-skills stay out of the request catalog; valid others remain usable. Running
-requests keep their snapshots; newly saved skills are available next request.
-Instructions cannot grant permissions or override user/system guidance.
-
-Preload concise enabled metadata, not full instructions; descriptions should aim
-for roughly 30 tokens describing when to use the skill. Runtime catalog bounds
-are 128 enabled skills, 64 KiB metadata and 32 MiB package snapshots. Preserve
-omission notices and frozen resources. Ratings remain a later feature.
-`preview_skill` and `install_skill` are available even with an empty catalog.
-Preview uses ExternalTool approval and retains up to 8 pinned packages / 8 MiB
-in memory, returning at most 64 KiB of instructions and file metadata. Install
-requires a token from that runtime's successful preview, reuses its exact bytes,
-and never redownloads, overwrites, executes scripts or installs dependencies.
-A successful new preview replaces old tokens; tokens do not survive a request.
-The runtime owns a tool request-scope guard that clears transient import state on
-entry and every exit, including errors, without resetting frozen skill catalogs.
-Project installation is ModifyWorkspace; Personal is ModifyOutsideWorkspace.
-Never discover credentials from development .env.local for either operation.
-
-Skills Settings keeps one Add skill action and scope selection at the top. The
-add panel opens on demand with one source picker (GitHub/folder/file), showing
-only the selected source's controls. A separate Installed skills library shows
-scoped search, installed/enabled counts and focus-preserving on/off switches.
-View/edit/update actions live in each skill's collapsed Details; refresh and
-other installation methods live under Library options. Group catalog issues in
-a collapsed warning without dropping diagnostics or weakening symlink checks.
-Closing the add panel preserves drafts/previews and does not cancel operations.
-Pending reads must respect a user collapsing Details; background refresh must
-preserve expanded details and editor focus/drafts.
-Keep the Create form removed; runtime creation remains available. Single installs
-track the selected source, preserve other candidates, and merge verified backend
-results immediately even if a subsequent refresh fails. Install all uses a bounded
-backend batch over reviewed pinned sources; reuse commit/tree metadata, retain
-per-source results, and never implicitly overwrite existing skills. Verify staged
-and published package bytes under the storage lease before returning success.
-Installed instructions toggle closed without discarding cached documents.
-Search skills through the Rust BM25 index over metadata and instructions, within
-the selected scope; debounce frontend input and reject stale results. Edit drafts and input
-focus survive navigation/background refreshes. Capture
-workspace/context per operation; saved conversations ignore conflicting frontend
-paths. Filesystem/network work runs on workers without broader frontend access.
-Folders installed by other tools using the shared locations require no
-Atlas-specific manifest.
-Never reuse development .env.local credentials for skill operations.
-
-## Delegated agents
-
-Desktop `/name task` dispatches a saved agent directly for one turn through the
-same managed delegation launcher. The native ask boundary resolves the command
-against the authoritative workspace; no parent model selects, delegates,
-summarizes or titles it. The dispatcher has no inference provider or credential
-requirement. Fork snapshots retain saved memory/history without parent compaction;
-the child budgets every call using its own provider. Native dispatch explicitly
-grants only the effective registered tools after scope registration. Persist the
-command and readable structured report through ConversationService. Child usage
-and approvals remain scoped to its run. Extra messages queue for the next normal
-Atlas turn; the native direct turn seals supplementary input before publishing
-request identity. Stop waits for child cancellation/exit. Keep inline cards and
-saved agent identity, and preserve ordinary Atlas live steering.
-
-Agent command names are unique across Personal and the current Project; reserved
-built-in task names cannot be created. Command matching is ASCII case-insensitive,
-while stored names retain lowercase validation. Cross-scope creation takes the
-Personal namespace lease first, then an existing/target Project lease, checks both
-catalogs and publishes without overwrite. A Project create may initialize private
-Personal namespace lock storage; never create a Project root for a Personal
-operation. Invalid/unavailable namespace storage fails closed. Legacy duplicates
-remain readable by scoped ID but cannot be invoked by slash command; never rename
-or delete them automatically. Catalog metadata excludes system instructions.
-
-
-Reusable definitions live in SettingsStore.directory()/agents (Personal) or
-workspace/.agents/agents (Project), with distinct scoped IDs. Keep their schema
-separate from the bundled entry agent. No fixed tools or credentials in definitions:
-every call explicitly grants a subset of the caller's real registry. Register native
-process/delegation tools before filtering; never reintroduce a removed tool. Skills
-are selected scoped IDs and need granted load_skill access. Provider overrides use
-their own Settings profile; children otherwise inherit the parent's effective model.
-
-AgentRunManager owns4 active/chat16/app and32 retained/chat128/app. Native ProcessScope
-is the authority; never accept model-selected chat owners. All descendant commands
-share root chat/app quotas while keeping request-local cleanup. Child process reads
-use explicit cursors/tail to preserve the parent's default reader. Fork snapshots
-prepared history/summary blocks/activity/current continuation; task_only excludes
-parent history. No independent memory or restart restoration. Budget every model call.
-
-Per-run approvals use native owner/run/approval identity and UI-owned controls;
-never route child usage, answer streams or tool events into the parent's current
-row/context meter. Cooperative cancellation must remain Cancelling until worker exit.
-Native scope deletion/reload/shutdown cancels owned children. Normal draft promotion
-retains scope identity; reject different-scope merges with active child workers.
-Render active agent runs inline in the assistant conversation, not as a separate
-bar above the composer. Preserve agent identity/status/duration. Activate monitoring
-only after delegation is used (including saved delegation activity), refresh while
-a child is starting or unfinished, and hide completed rows. A running call_agent
-uses its child card instead of a duplicate parent terminal. Keep child approvals
-visible/actionable, preserve focus, reject navigation-stale callbacks, stop polling
-when leaving chat, and keep native calls in atlas-api.ts.
-
-Reports follow config/agent-result-prompt.md, strict64KiB JSON with outcome,summary,
-work_done,findings,artifacts,verification,remaining. Runtime supplies actual lifecycle
-and metrics separately. Model-facing lists are metadata-only/bounded; long reports
-use UTF-8 byte pages through read_agent_run. No image payloads or child ordinary
-conversation persistence. See docs/architecture/delegated-agents.md for contracts.
-
-## Model providers
-
-Atlas supports provider IDs `deepseek`, `openai`, `anthropic`, `gemini`, and
-`openai-compatible`. `config/providers.toml` holds endpoint, environment-prefix,
-API-version, and default output-request settings; do not infer model catalogs or
-capacities from names. Native OpenAI uses Responses with remote storage disabled,
-Anthropic uses Messages, Gemini uses generateContent, and custom compatible
-endpoints use Chat Completions. Keep their payloads, finish reasons, image formats,
-and usage normalization inside `src/models/`, behind `ModelProvider`.
-`prompt.rs` renders shared Atlas tool/memory instructions; `sse.rs` frames streams.
-Provider-native tools do not execute outside the existing Atlas runtime protocol.
-
-Settings version 2 adds a selected provider and independent profiles. Retain the
-legacy DeepSeek fields as a compatibility boundary; targeted DeepSeek updates
-synchronize them. Loading version 1 migrates only in memory, binding old limits
-to the original endpoint; explicit settings updates publish version 2 atomically.
-Never overwrite unsupported future versions. `ATLAS_PROVIDER` overrides the saved
-selection, then the agent supplies a fallback. Provider prefixes `DEEPSEEK`,
-`OPENAI`, `ANTHROPIC`, `GEMINI`, and `ATLAS_COMPATIBLE` support `_API_KEY`,
-`_BASE_URL`, and `_MODEL`; one provider's variables never configure another.
-Only compatible endpoints can opt into keyless requests. API keys must not appear
-in settings views, Debug output, provider errors, or conversation artifacts.
-
-Desktop Settings uses separate Models & providers, MCP connections, Skills, Workspace,
-and Permissions pages. Category navigation and Back to chat preserve per-provider
-drafts in memory; Save changes stays on the selected page and Discard resets all
-Settings edits. Preserve mounted fields, keyboard focus, category scroll positions,
-and the asynchronous MCP and Skills panels during navigation and background chat updates.
-Desktop Settings supports
-transient model discovery without persisting credentials or selecting a model.
-Manual model IDs remain usable after discovery errors. Provider catalog responses
-carry source identity per model and use generation tokens to reject stale results.
-A model change must validate the current source before saving. Keep optional
-request capabilities explicit; omit unsupported/unknown sampling fields. Output
-request defaults are configurable and are never interpreted as model capacity.
-
-Provider source identity hashes provider ID plus normalized base URL, excluding
-credentials. Scope model-limit overrides and new usage readings to that source.
-Usage preserves the requested model ID when an API returns a dated alias target.
-Legacy source-less readings remain readable but are not shown as attributed usage.
-Input-only limits are separate from combined context limits; never add independent
-input/output maxima to invent combined capacity. Keep unknown capacities unknown.
-
-## Windows releases
-
-`.github/workflows/release-windows.yml` handles pushed stable `vX.Y.Z` tags.
-Keep tag, app manifests and local package entries in npm/Cargo locks aligned;
-`scripts/check-release-version.mjs` validates them without mutation. CI runs its
-portable helper tests via `node --test scripts/release.test.mjs`. The Windows x64
-job uses the pinned Node/Rust toolchains, tests, and locked Tauri CLI. Only the
-release overlay `desktop/src-tauri/tauri.release.conf.json` enables NSIS packaging;
-retain base resources and do not change developer bundling defaults.
-Stage exactly one nonempty installer plus its SHA-256 sidecar. Build permissions
-stay contents:read; only the separate artifact publication job gets contents:write.
-Use GITHUB_TOKEN, verify the remote tag, never overwrite existing Releases/assets,
-and publish only after tests/build/uploads succeed. Pin external actions by full
-commit SHA. No provider keys, development .env files, user settings or local
-credentials are needed or bundled. See docs/guides/windows-release.md.
-
-## Configure and Run
-
-Show CLI help without configuring a model:
-
-```bash
-cargo run -- help
-```
-
-Set the DeepSeek API key in the environment or a local `.env` file:
-
-```bash
-export DEEPSEEK_API_KEY="your_api_key_here"
-```
-
-Optional model configuration:
-
-```bash
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-flash"
-```
-
-The same fields can be saved from the desktop Settings screen. User-local
-`settings.json` is plaintext with private filesystem permissions, not keychain
-storage. Environment variables override saved fields without being copied into
-the file. `ATLAS_CONFIG_DIR` overrides the settings directory for tests.
-
-Run a request. Responses stream by default:
-
-```bash
-cargo run -- ask "hello atlas"
-```
-
-The existing `--stream` form remains available as an alias:
-
-```bash
-cargo run -- ask --stream "hello atlas"
-```
-
-Every `ask` without `--conversation` starts a new conversation. After the streamed
-answer, Atlas prints its ID and title. Use that ID explicitly to continue:
-
-```bash
-cargo run -- ask --conversation <id> "now explain the runtime"
-cargo run -- conversation list
-cargo run -- conversation show <id>
-cargo run -- conversation rename <id> "Atlas runtime work"
-cargo run -- conversation delete <id>
-```
-
-`--stream` and `--conversation` accept either order before the prompt. Quote
-multiword titles. Help and all conversation management commands parse and run
-without a model API key or agent configuration. List is newest-update-first and
-shows IDs, titles, creation/update times, and message counts; show includes saved
-roles, content, and UTC timestamps.
-
-Backend diagnostics initialize at CLI/desktop startup and write JSON lines to
-`logs/atlas.jsonl` under the same data root (`ATLAS_DATA_DIR` applies).
-`ATLAS_LOG_DIR` overrides only the log directory; `ATLAS_LOG_STDERR=1` also emits
-entries to stderr. Keep files bounded at 5 MiB with three backups, private Unix
-creation modes, and process-safe rotation. Logging failures must not block app
-use; bound log-lock acquisition and omit response-derived parser-error values.
-Correlate worker operations and nested model calls with a request ID; log
-startup, operation outcomes/durations, provider/model metadata, and tool
-names/outcomes. Never log prompts, response bodies, tool arguments/output,
-screenshots, or credentials. Register saved credentials for redaction before
-provider setup; omit endpoint URLs from diagnostics. Failed requests belong in
-these diagnostic logs even though failed turns remain absent from chat history.
-
-Conversation storage is resolved using a platform directory library: Linux/WSL
-uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses
-`~/Library/Application Support/atlas`, and Windows uses `%LOCALAPPDATA%\atlas`.
-`ATLAS_DATA_DIR` overrides the root for tests and development. The root contains
-`conversations.json`, `conversations.lock`, `conversations/<uuid>.jsonl`, optional
-`activities/<uuid>.jsonl` sidecars, and `trash/`. Delete moves history and any
-activity and memory sidecars to `trash/` and reports the history recovery location; recovery
-is manual, with no CLI restore command.
-
-`ConversationService` coordinates the store and runtime. Successful ordinary
-history stores the original User, ordered applied supplemental Users, and final
-Assistant atomically. Explicit user Stop additionally saves the authoritative
-displayed partial answer with an interrupted Activity marker and skips title
-inference. Generic failure, channel loss, and scope teardown still save no turn.
-See docs/architecture/live-chat-input.md.
-
-Ordinary `tool_call` responses may include an optional top-level `message` string
-of 1–1000 Unicode characters after trimming. Runtime-injected protocol instructions
-explain this field; the agent prompt guides when to provide next-step updates.
-Place it after `type`, before `tool` and `args`, for early streaming. No separate
-progress tool or model call is needed. Runtime emits transient cumulative
-`progressPreview` events and clears them on every model-call exit. Never execute
-or persist previews, expose ordinary arguments as commentary, or add message text
-to diagnostic logs. Only complete protocol-valid messages on recognized tool
-requests with a valid authorization context emit committed `Progress` events,
-before any required user approval or execution. These messages express intent,
-not approval or successful completion. Existing tool calls without a message stay
-valid. Keep preview text separate from the last committed update in each owning
-session; rejection restores that update, and streamed/final answer text replaces
-it. Ignore late callbacks. Save committed updates as activity only on successful
-turns, include them in bounded future context/compaction as progress rather than
-completed work, and never create separate ordinary chat messages. Preserve legacy
-saved progress records. The CLI sends committed updates to stderr.
-
-During desktop requests, show one current tool row below the pending assistant
-message, using the newest requested tool rather than the most recently received
-event. Older call results must not replace it. Keep status and expandable details
-on that row, preserve its expansion across updates to the same session/call, and
-collapse details when the call changes. Hide the live terminal immediately when
-the newest tool succeeds, fails or is denied, including while the answer is still
-streaming; never fall back to an older call. Keep the records for saved Activity.
-Runtime statuses do not create tool rows.
-Do not duplicate live activity in notices or render a growing live timeline. Keep
-all session activity and saved records intact; the final answer replaces the live
-row and retains the complete collapsed Activity disclosure.
-
-Save sanitized, bounded runtime status and tool activity from successful or
-explicitly stopped turns in the separate sidecar; other failed turns save neither. Never persist screenshot pixels, image data,
-or tool attachments. New activity batches also store elapsed runtime/model work
-duration; legacy batches without it remain valid. Raw activity details remain
-local, while later model turns receive only a separately capped summary from the
-same uncompacted turns selected for message history. Keep all original history
-on disk. The bundled agent enables `[memory]`: full history before compaction,
-then one model message per persisted summary block followed by original messages
-from the checkpoint's exclusive boundary onward. Never silently apply the old
-40-message cap in this mode. Explicit `ATLAS_HISTORY_MESSAGES` opts into legacy
-bounded history; third-party agents without memory configuration retain legacy
-behavior. The environment limit must be positive.
-
-Compaction is token-based: automatic at 90%; manual `/compact` chooses one block
-below 30%, two below 60%, and three from 60% upward. Preserve at least the latest
-10 original messages as whole exchanges. Recompact prior summaries with eligible
-newer messages and replace them, never accumulate endless summary blocks. Each
-block is a separate no-tool request using `conversation_summary_prompt`, with an
-explicit output limit. Split oversized inputs under bounded request/pass limits;
-reject empty or truncated results. Keep summary usage separate from chat usage.
-
-Save `memory/<uuid>.json` atomically with version, policy version, checkpoint ID,
-original-prefix SHA-256 fingerprint, covered ranges, model, trigger, occupancy
-estimate and summary usage. Validate against originals before loading/publishing;
-advance the boundary only with a fully successful fitting checkpoint. A checkpoint
-can survive a subsequent failed ordinary answer. Keep private filesystem modes,
-trash memory with history, and hold per-conversation execution leases for
-ask/compact/delete. Do not hold the global index lock during model calls.
-
-Prepare and budget-check context before every runtime model call, including tool
-continuations and repair calls; never replay tools during compaction. DeepSeek
-currently uses a conservative byte estimate, not an exact tokenizer; distinguish
-that from actual usage. Unknown model capacity or unsupported image accounting
-makes auto-compaction explicitly unavailable. Optional per-model context/output
-limits live in `conversation.modelLimits`; never infer capacities from model
-names. Known oversized requests fail without discarding the protected tail.
-Selecting the desktop Compact task must not create a chat message or persist an unsaved draft;
-progress, checkpoint restoration, cancellation and memory details belong to the
-owning session while other chats continue independently.
-Compaction progress/results/failures use the persistent status card. Keep failure
-metadata and retry task arguments per session; retries dispatch that saved task
-without consuming a newer draft. Preserve open diagnostic details during unrelated
-UI updates. Automatic compaction failures keep their chat prompt available for a
-normal resend; do not silently launch another summary job.
-DeepSeek summary requests explicitly disable thinking to reserve the bounded output
-budget for summary content. Keep this provider-specific switch in the adapter,
-not shared runtime logic. Distinguish empty output, output-limit truncation, and
-unexpected finish reasons; none may publish partial memory or echo response text.
-
-
-`src/tasks/mod.rs` is the authoritative built-in task registry, initially
-`conversation.compact` (`/compact`, empty-object arguments). Keep descriptors,
-argument validation and typed handlers together; reject duplicate IDs/commands.
-Tauri `list_tasks` needs no model configuration, and `run_task` validates requests
-before provider setup, obtains native ownership once, derives the saved workspace,
-and delegates to the service's existing execution lease. CLI compact shares the
-registry; automatic compaction retains its direct runtime path without nested leases.
-All frontend task access stays in `atlas-api.ts`. The composer discovers tasks
-from the backend catalog and filters command/title/description. Clicking a task
-or pressing Enter on the highlighted row runs the selected descriptor directly;
-never infer task execution or arguments from the text submitted through Send.
-Send always calls ordinary chat, including literal `/compact`, bare `/`, unknown
-slash text, paths and prose. Escape/outside click/Tab close the menu and preserve
-input; Tab does not run a task. Explain each task and show its progress/result in
-the owning chat. Keep unavailable tasks visible with reasons. Catalog
-failure/retry cannot block ordinary messages or overwrite drafts. Keep task/menu
-ownership per session. Do not add frontend fallback task names or automatic model
-routing in this release. Future handlers need registry validation/dispatch tests,
-argument support and typed outcome adapters as needed.
-
-
-After the first successful answer, the agent makes one non-streaming, no-tool title
-request using only the first input and `conversation_title_prompt` from
-`agents/atlas.toml`. Sanitize generated titles to at most 60 Unicode characters;
-failure leaves `Untitled conversation`. Continuing and manual rename never
-regenerate the title. The default agent prompt guides workspace inspection,
-command execution, verification, preservation of unrelated changes, and honest
-reporting of results and blockers. `max_tool_calls` is an optional positive
-per-turn agent limit; omit it for no Atlas-imposed limit. Tool schemas and protocol remain runtime-injected.
-Malformed tool-protocol replies go back to the model with the validation error,
-latest invalid reply, and a stable pending request. Continue repair by default;
-optional positive `max_protocol_repairs` caps consecutive repairs and resets after
-a valid reply. Never nest repair envelopes, lose prior tool results, or replay
-executed tools during repair. Prepare/budget context for every retry. Providers
-may explicitly classify incomplete generation outcomes as repairable through the
-provider/agent boundary; never match provider error strings in shared runtime
-logic. DeepSeek distinguishes empty/reasoning-only output, length truncation,
-missing completion markers, resource interruptions, aborted output, filtering,
-and unsupported finish reasons. Only known repairable generation outcomes enter
-the same repair loop and cap. Authentication, transport, filtering, unknown errors,
-and context failures still propagate normally. Log safe stream-completion metadata
-without answer/reasoning text or arbitrary finish-reason values. Keep invalid reply bodies out of
-backend logs and ordinary conversation history; log sanitized `protocol.repair`
-metadata instead. If a malformed response already emitted text, send a
-`responseReset` event before retrying: clear only that session's pending assistant
-text in the desktop and explicitly mark the restarted answer in CLI output.
-
-Use the pinned Rust toolchain in `rust-toolchain.toml` (including rustfmt/clippy)
-and Node version in `.node-version`. CI independently validates workflows,
-frontend tests/build, Rust core, and the native desktop bridge tests/lints.
-Windows core/desktop tests run on ordinary pushes and pull requests before a
-release tag, with uncaptured output for native crash diagnosis. Native Tauri app
-builds, NSIS packaging and installer uploads run only in the version-tag release
-workflow; ordinary CI does not build or upload desktop app binaries. Failed Windows
-core targets do not suppress the other targets; a sequential unit-test rerun is
-diagnostic only and never clears the original failure. Keep action
-references pinned to reviewed commit SHAs and preserve locked dependency checks.
-Frontend CI also rejects high/critical npm advisories; use compatible reviewed
-dependency updates rather than forcing unrelated major upgrades.
-
-Format and test the repository:
+## Project
+
+Atlas is a desktop-first general AI assistant with a Rust CLI and Tauri app.
+Both use `agents/atlas.toml`, shared runtime/settings/providers, and local history.
+Reusable child agents and direct `/name task` dispatch are implemented;
+automatic routing is planned. A future router selects an agent; the selected agent performs the task.
+
+Read [RULE.md](RULE.md) before changing agent, provider, runtime, router, or tool
+architecture. Read the relevant contracts below before editing that subsystem.
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| `agents/`, `config/` | Bundled agent, provider defaults, and runtime prompts |
+| `src/main.rs`, `src/lib.rs`, `src/app.rs` | CLI and shared runtime construction |
+| `src/runtime.rs`, `src/runtime/`, `src/agent_output.rs` | Orchestration and protocol |
+| `src/agents/`, `src/agent_catalog.rs`, `src/agent_runs.rs`, `src/delegation.rs` | Agents, definitions, owned child runs |
+| `src/executions/`, `src/tools/`, `src/process_limits.rs` | Managed tools, processes, and quotas |
+| `src/models/`, `src/settings.rs` | Providers, budgets, profiles, and settings |
+| `src/conversations/`, `src/diagnostics.rs` | History, activity, memory, and private logs |
+| `src/skills/`, `src/mcp/`, `src/tasks/`, `src/workspace.rs` | Skills, MCP/OAuth, built-in tasks, starting folders |
+| `desktop/src/`, `desktop/src-tauri/` | Frontend and native bridge |
+| `tests/`, `examples/` | Behavior tests and no-key demos |
+
+## Read by change area
+
+These documents contain required implementation constraints, not optional background.
+Read only the areas relevant to the change; cross-cutting work may need several.
+
+| Change area | Required reference |
+| --- | --- |
+| Tool execution, wakeups, results, cancellation | [Execution decisions](docs/architecture/tool-execution-control.md), [Wakeup protocol](docs/architecture/wakeup.md) |
+| Shell commands, quotas, resource ownership | [Process sessions](docs/architecture/process-sessions.md) |
+| File helpers, search, computer input/capture | [File and computer tools](docs/architecture/file-and-computer-tools.md) |
+| MCP config, transports, OAuth, Settings checks | [MCP contracts](docs/architecture/mcp.md) |
+| Skill discovery, creation, imports, Settings | [Skill contracts](docs/architecture/skills.md) |
+| Child agents, grants, reports, slash dispatch | [Delegated agents](docs/architecture/delegated-agents.md) |
+| Providers, profiles, discovery, limits, usage | [Model provider contracts](docs/architecture/model-providers.md) |
+| History, memory, compaction, progress, repair, logs | [Conversation contracts](docs/architecture/conversations.md) |
+| Desktop state, task dispatch, workspace, IME | [Desktop contracts](docs/architecture/desktop-state.md) |
+| Queuing, steering, interruptible inference, Stop | [Live chat input](docs/architecture/live-chat-input.md) |
+| Native Vietnamese input on WSLg | [UniKey reproduction and workaround](docs/platforms/wslg-unikey.md) |
+| CI, checks, toolchains | [Development guide](docs/guides/development.md) |
+| Windows tags, packaging, publication | [Windows release guide](docs/guides/windows-release.md) |
+
+## Shared invariants
+
+- Keep provider payloads and behavior behind `ModelProvider`; runtime controls tools.
+  Configure prompts/defaults outside implementation code. Never infer model
+  catalogs or capacities from names; unknown limits stay unknown.
+- Native saved conversation metadata determines workspace and permission mode.
+  Model arguments or conflicting frontend paths never choose another owner.
+- Modes are `ask`, `workspace`, and `fullAccess`. Ask allows ordinary read-only
+  tools; Workspace also allows non-destructive structured workspace changes.
+  Commands, destructive actions, launches, outside-workspace searches, computer
+  observation/control, and external MCP discovery/calls require approval in both.
+  Full access skips Atlas confirmations without elevating OS-user permissions.
+- The starting folder is not a shell sandbox. Structured file helpers remain
+  workspace-scoped; `exec_command` is unrestricted and ripgrep supports approved
+  outside roots. Do not broaden frontend Tauri native permissions.
+- Every tool call is tracked. Preserve authorization snapshots, grants, owner
+  scopes, quotas, bounded output, and atomic/private storage. Never replay actions
+  automatically after failure, timeout, protocol repair, compaction, or restart.
+- Cancellation is cooperative: show Cancelling/Stopping until worker exit.
+  Preserve Unix process groups and Windows kill-on-close Jobs. Only explicitly
+  requested background services may survive final; no model calls after final/restart.
+- Screenshots remain in-memory for the active turn, never history/logs/artifacts.
+  Keep credentials, prompts, raw responses, tool arguments/output, and image data
+  out of diagnostics. MCP OAuth credentials stay in the OS credential store.
+- Frontend backend access goes through `desktop/src/atlas-api.ts`. Preserve
+  session-owned drafts, focus, scroll, approvals, and stale-callback rejection.
+  Blocking native work runs on workers. Tool/agent activity stays inline;
+  no separate permanent Processes panel or automatic process-output polling.
+- Child agents receive only explicitly granted tools from the effective registry;
+  skills never grant permissions. Save new reusable agents/skills only when requested.
+- Use fake providers in tests, isolated workspaces/data roots, and child-only
+  environment changes. Never use real API keys or external model services in tests.
+
+## Verification
+
+Use `rust-toolchain.toml` and `.node-version`. Before every commit:
 
 ```bash
 cargo fmt --check
 cargo test
+```
+
+Run additional checks appropriate to changed code:
+
+```bash
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path desktop/src-tauri/Cargo.toml
@@ -701,201 +100,24 @@ npm --prefix desktop run build
 npm --prefix desktop run tauri -- build --debug --no-bundle
 ```
 
-Install desktop dependencies and launch the Tauri app from the repository root:
+See the [development guide](docs/guides/development.md) for CI and test isolation.
+Report platform verification separately; compilation/browser tests do not prove
+native Windows/macOS behavior. Review documentation links after moving content.
 
-```bash
-npm ci --prefix desktop
-npm --prefix desktop run tauri dev
-```
+## Documentation and commits
 
-The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
-chat** as an unsaved frontend draft; only a successful or explicitly stopped first `ask` may create
-local conversation data or persist its validated starting folder. New chats use
-an explicitly chosen draft folder, then a custom Settings default, then the
-automatic `Atlas` folder in the user's home directory. Saved continuations derive
-workspace authority from conversation metadata and must ignore a conflicting
-frontend path. Legacy unassigned conversations use the current default and gain
-that assignment only with their next successful saved turn. The CLI continues to
-use its process's current directory.
-
-Desktop chat sessions have stable frontend identities separate from saved
-conversation IDs. Keep request callbacks, live messages, drafts, tool activity,
-errors, and approvals owned by their session, even when another chat or Settings
-is visible. Independent chats may run concurrently, but only one request may
-run per saved conversation in the desktop backend. Navigation must not cancel
-all pending approvals. First requests remain in-memory sidebar sessions until
-successful or explicitly stopped persistence supplies an ID; other failures stay retryable without writing
-conversation data. Session state and unfinished requests do not survive an app
-reload or restart. Running requests retain their starting settings and folder.
-Keep Settings inputs and user scroll position stable during background updates,
-and coalesce visible streaming renders to animation frames. Blocking native
-storage/settings operations run on background workers rather than the Tauri
-event thread. Do not broaden frontend permissions to achieve concurrency.
-
-Keep the chat textarea stationary and browser-owned for native Vietnamese/IME
-input. Never collapse its live height to zero for measurement or rewrite an
-unchanged draft. Measure auto-height in a hidden, inert mirror and defer live
-layout changes while composition is active. Composition lifecycle, per-event
-isComposing and key code 229 must all guard Send and slash tasks. Native input,
-backspace, replacement and paste must remain unmodified; do not implement Telex
-conversion in JavaScript. Clear cancelled composition state on blur and session
-changes without erasing text, and remove measurement/listener resources on
-unmount. Browser composition checks do not establish Windows UniKey acceptance;
-report native verification separately.
-When debugging through WSL, identify whether the window is a Linux app through
-WSLg or a native Windows app. If host interop is available, test the actual
-Windows UniKey path instead of declaring Windows testing unavailable. Compare
-with an ordinary native GTK input to separate bridge failures from editor bugs.
-For the reproduced WSLg backspace-without-Unicode case, UniKey's global clipboard
-Unicode compatibility option worked; disclose any IME preference changes and
-clipboard implications. Do not bypass Windows Application Control to run an
-unsigned test build, and do not add JavaScript Telex conversion to mask a broken
-OS input bridge.
-
-Model discovery preserves optional provider-reported `contextWindow` and
-`maxOutputTokens` limits in the shared model catalog. Model options contain names
-only; a compact context ring beside Send exposes exact used/max token details
-on hover, focus, or tap. The ring uses the latest chat-model call's reported
-input plus output usage, never the sum of repeated calls or the title-generation
-request. Input already includes system instructions, selected history, tools,
-and the current request; cached and reasoning breakdowns are subsets, not extra
-tokens. Carry optional usage through typed model responses and runtime events,
-and save it with successful activity turns. Restore only the newest saved turn's
-reading, and show an em dash when usage is absent or belongs to another selected
-model. Maximum context includes input and output. Missing or zero limits remain unknown; do not infer limits from
-model names or use hard-coded capacities.
-
-Keep native platform access narrow. Folder selection uses
-`@tauri-apps/plugin-dialog` with `dialog:allow-open`, and the fullscreen
-control uses only `core:window:allow-set-fullscreen`; do not add shell,
-process, or unrestricted filesystem permissions to the frontend.
-
-CLI binary tests isolate their workspace and `ATLAS_DATA_DIR`, use child-only
-environment configuration, and serve fake DeepSeek responses over loopback TCP.
-Do not use real API keys or external model services in tests.
-
-## Documentation and Workflow Drafts
-
-Keep project reference documentation and explicitly user-approved designs under
-`docs/`. Document implemented behavior as implemented; distinguish it from future
-proposals. Do not mark a design approved merely because the user asked to write
-it, or because its wording looks complete.
-
-Superpowers design drafts, plans, execution ledgers, research scratch, previews,
-screenshots and test logs belong under `.superpowers/` and are Git-ignored. This
-repository rule overrides skill defaults that would write to `docs/superpowers/`.
-That old location and local `.worktrees/` are also ignored. Do not force-add these
-artifacts or ignore runtime skills/agent definitions as workflow scratch.
-
-When the user explicitly approves a design, promote a curated copy from
-`.superpowers/specs/` to `docs/architecture/` (or a relevant docs section), record
-its approval and implementation status, update `docs/README.md` and links, and
-commit the reviewed document. Keep local plans/logs out of that promotion. Pending
-drafts stay local until approved. Older workflow documents are preserved locally
-under `.superpowers/archive/2026-11-09-docs/`; their prior versions also remain in
-Git history. Do not infer approval from their presence in that archive.
-
-## Commit Traceability Rule
-
-After completing and verifying each feature, bug fix, or requested documentation
-change, create a focused Git commit before moving on to the next feature, unless
-the user explicitly asks not to commit. Do not leave multiple completed features
-accumulated as uncommitted work. Include the commit hash in the handoff so the
-change can be traced. A multi-feature request should produce separate commits
-for independently completed features. This authorizes local commits, not an
-automatic push, merge, release, or deployment.
-
-Before committing:
-
-- Run `cargo fmt --check`.
-- Run `cargo test`.
-- Check `git status --short`.
-- Review the staged diff.
-- Commit only files that belong to the current task.
-- Never commit `.env`, API keys, secrets, `target/`, or unrelated changes.
-
-Use a short commit message that describes the completed change, such as:
-
-```text
-feat: send tool results back to agents
-fix: handle streamed tool responses
-docs: simplify agent repository guide
-```
-
-
-## Tool execution and hard/lazy wakeups
-
-Read docs/architecture/tool-execution-control.md and docs/architecture/wakeup.md
-before changing tool execution. All production tool calls register owned execution
-records, including calls without wake_up. Synchronous custom tools retain tracked
-inline fallback. ProcessManager and AgentRunManager remain specialized resource
-adapters beneath ToolExecutionManager; never create an OS process per tool.
-
-Top-level wake_up selects hard with interval_seconds from0.1 to below30seconds, or lazy with a
-fixed600second interval. Hard requires an explicit interval; lazy forbids one.
-config/execution-defaults.toml supplies default hard2seconds, lazy600seconds and
-bounded storage quotas. Reject old execution.mode job/task with a migration error;
-command lifetime job/background and child execution_mode wait/parallel are separate.
-All request-owned executions block final equally until terminal notifications are
-handled. Only explicitly user-requested background services may survive final.
-No model calls after final/restart. Desktop busy chats use native modelState events: Send supplements the active
-turn while waiting, and queues during inference. Forward queued messages into
-the active turn on the next native idle-model event instead of waiting for final;
-keep paused queues paused. Start conservatively until a
-phase event arrives. Show the queue above the composer, with per-message Steer
-to interrupt current inference and apply that input while preserving other queued
-messages and the composer draft.
-Send/Stop share one primary button: show Stop for an empty busy composer, and
-Queue message during inference or Add to active turn while waiting when it contains text. Enter never implicitly stops a turn. Keep
-queue controls mounted/focused during streaming updates. Native chat channel fields
-requestId/responseEpoch must serialize in camelCase and match the shared frontend
-wire fixture. On native input acceptance, move the active reply below the accepted
-message immediately, clear superseded text, preserve the current request identity
-and default cursors, and ignore duplicate acknowledgements for reply resets.
-FIFO queues are frontend-local (16/chat), pause on Stop/error,
-and require explicit Resume after pausing. Active supplements use native
-owner/request/input identities with idempotent receipts, 32 inputs/request,
-64KiB/input and 256KiB total. One runtime consumer drains at safe boundaries,
-withdraws stale approvals/actions, and interrupts execution waits without parallel
-inference or fabricated tool events. Agent/ModelProvider controlled entrypoints
-abort production inference HTTP send/body futures on pending input or Stop,
-including silent streams. Drop old inference before starting the next; do not
-replay/cancel managed tools implicitly. Keep transport cancellation provider-neutral,
-bounded SSE framing, existing timeout policies, no redirects/retries, and no
-detached reader. Remote compute/aborted-call usage cannot be assumed. Final seals acceptance atomically; reconcile
-receipt races against accepted events and authoritative additionalInputs.
-Stop freezes visible text and stays Stopping until worker exit. Persist only the
-backend-validated epoch/UTF8 byte prefix, never client-provided answer text.
-Transient display buffers retain at most64 epochs/16MiB; unavailable cursors fail
-closed. Teardown invalidation overrides explicit Stop persistence. Future context
-labels interrupted answers as partial; history/compaction keep original requests
-with supplements. Queues and turn handles are not restored after restart.
-
-set_execution_wakeup changes policy without replay. await_execution waits for
-scheduled events without changing policy; its legacy yield_ms field is validated
-in100–29999ms but never creates a notification deadline. Await and final guards wait on scheduled events without periodic model
-polling. Completion/error/input-needed enqueue immediately, including lazy.
-All five execution controls accept dedicated top-level types or tool_call with
-the reserved control name and args. Normalize both forms before registry dispatch;
-reject unknown control args and top-level wake_up. Never launch another execution
-for a control or bypass native ownership, read bounds or cancellation approval.
-Keep one consumer per agent, bounded coalesced batches, exact ack and stale timer
-invalidation. No raw logs in wakeups. Read1–200 lines or cursor pages, at most4096
-UTF-8 bytes; retain64KiB/execution, flags and cursor semantics. No read-all mode.
-
-Persist bounded private versioned results under the conversation data root's
-tool-executions directory, independently of successful chat turns. Native owner
-bindings and child prefixes preserve artifact ownership across draft promotion.
-Per-manager journals use lifetime leases; short bounded import/publication leases
-allow CLI and desktop coexistence. Skip live journals; recover inactive unfinished
-records as interrupted without replaying actions or restoring handles. Closed
-child artifacts remain archived; chat deletion moves owned artifacts to bounded
-trash. Never publish late output into deleted scopes. Preserve registered-secret
-redaction, ephemeral images, atomic publication and disk/memory quotas.
-
-Never hold execution state locks during storage I/O, model calls or worker launch.
-Publish terminal state only after its exact revision is saved; failed writes must
-not authorize replay. Keep authorization snapshots, tool grants, native scopes,
-OS process groups/Windows Jobs, child cancellation/deadlines and existing approvals.
-Use inline tool/agent UI, no separate permanent process panel, and keep diagnostics
-metadata-only. Cancellation is cooperative; Cancelling lasts until worker exit.
+- Keep `README.md` for quick start, `RULE.md` for coding rules, and `VISION.md` for
+  direction. Put detailed contracts in `docs/` and link them from this guide and
+  [the documentation index](docs/README.md). Update the owning reference when
+  behavior changes; avoid copying its full contract into multiple documents.
+- Distinguish implemented behavior, approved designs, and proposals. Writing a
+  design does not approve it. Follow [the documentation workflow](docs/README.md#drafts-and-approval-workflow).
+- Superpowers drafts, plans, ledgers, previews, screenshots, and test logs belong
+  in Git-ignored `.superpowers/`, overriding skill defaults. Never force-add them.
+  Runtime skills/agent definitions are not workflow scratch.
+- After verifying each feature, fix, or requested documentation change, create a
+  focused local Git commit unless the user asks otherwise. Commit independently
+  completed features separately and include the hash in the handoff. This does
+  not authorize push, merge, release, or deployment.
+- Before committing, check `git status --short` and review the staged diff. Include
+  only task files; never commit `.env`, credentials, `target/`, or unrelated work.

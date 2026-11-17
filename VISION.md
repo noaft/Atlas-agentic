@@ -1,129 +1,34 @@
 # Atlas Vision
 
-Atlas is a desktop-first general assistant that can converse, work with files and
-applications, run computer tasks, and help with software projects. Its planned
-multi-agent system will choose the right AI worker for each task.
+Atlas is a desktop-first general assistant for conversation, files, applications,
+OS tasks, and software projects. It should feel like a local companion, with a
+shared Rust core supporting both the desktop app and CLI.
 
-The first goal is not to build every agent at once. The first goal is to build a clean agent runtime where a router can look at a user request and choose the best agent name to process it.
+## Current foundation
 
-## Implemented delegation
+The app already has local conversations, memory compaction, multiple model
+providers, runtime-controlled tools, Skills, MCP connections, and reusable agents.
+Users can invoke a saved agent with `/name task`; Atlas can also delegate with
+explicit tool grants, fork/task-only context, and wait/parallel execution.
+Child agents have scoped approvals and inline reports, without independent
+cross-run memory. See the [current features](README.md#features) and
+[delegation contracts](docs/architecture/delegated-agents.md).
 
-Atlas can create reusable Personal/Project agents and delegate explicit tasks with caller-selected tools. Each call chooses fork/task-only context and wait/parallel execution. Desktop owns independent runs and scoped approvals, with progress and structured reports in Agent runs. Agents do not retain independent cross-run memory. See [delegated agents](docs/architecture/delegated-agents.md).
+Automatic routing is not implemented. Atlas remains the default entry agent.
 
-Desktop also accepts `/name task` to invoke a uniquely named saved agent for one task without an Atlas model call. Ordinary following messages still use Atlas. Explicit agent selection bypasses automatic routing.
+## Next direction: agent selection
 
-This runtime orchestration is separate from the planned router below. The router remains a selector.
-
-## Core Idea
-
-Atlas uses a Jev-like router as the decision layer.
-
-```text
-User task
-  -> Router chooses agent name
-  -> Selected agent processes the task
-  -> Atlas returns the result
-```
-
-The router does not execute tools and does not complete the task itself. Its job is only to choose the right agent or model path.
-
-## Why A Router
-
-The main problem is agent selection. A single assistant prompt becomes messy when every task, tool, and model is described in one place. Atlas should keep the decision separate from the worker.
-
-The router answers questions like:
-
-- Which agent should process this task?
-- Is this coding, planning, research, memory, or normal chat?
-- Does the task need a specialist model?
-- Is confidence high enough to continue?
-- Should Atlas ask the user for clarification instead of guessing?
-
-## Desktop First
-
-Atlas starts as a desktop app because the user experience should feel like a
-local companion, not only a terminal script. A new chat is immediately usable
-from an automatic Atlas home starting directory, while an optional project folder
-can provide task-specific context.
-
-The starting folder organizes tools and conversations; it does not confine shell
-access. On Linux, WSL, macOS, and Windows, `exec_command` can reach other
-locations allowed by the current user's OS permissions. Most structured file
-helpers remain scoped to the selected starting folder. Native ripgrep may search
-an approved absolute root outside it without requiring an installed `rg`
-executable. Per-conversation permission modes
-decide when Atlas must ask before changing files, launching applications, or
-executing commands; they do not grant OS privileges. Atlas can also observe
-basic desktop state, capture the primary display for model vision, and send
-mouse or keyboard input through runtime-controlled tools. Those sensitive
-computer operations require confirmation in Ask and Workspace modes and remain
-subject to native OS accessibility, screen-recording, integrity, and
-desktop-session protections even in Full access. Screenshot pixels remain
-turn-local and in memory: Atlas sends an approved capture to the configured
-model provider but does not write it to disk or conversation history. Capture
-stays in the Rust backend without expanding frontend Tauri permissions.
-
-The current repo starts with a Rust CLI because it is the simplest runtime foundation. The CLI lets us build and test the agent core before adding the desktop interface.
-
-Planned direction:
+A router should choose the right worker for a task:
 
 ```text
-Rust core
-  -> CLI for development
-  -> Desktop app shell
-  -> Agent router
-  -> Agent registry
-  -> Model providers
-  -> Memory later
+User task -> Router chooses agent -> Selected agent works -> Result
 ```
 
-## First Phase
+The router selects an agent; it does not perform the task or execute tools.
+Explicit user selection should bypass automatic routing. Keep the selection
+boundary separate from worker prompts, tool execution, and model providers.
 
-Phase 1 builds the agent runtime around local agent definitions.
-
-The target is:
-
-```text
-atlas ask "build a login page"
-  -> runtime loads agents/atlas.toml
-  -> Atlas uses its model/provider
-  -> response returns to user
-```
-
-For this phase, there is no router. Atlas is the default local agent. Later, the router can choose between multiple local agent definitions.
-
-## Model Strategy
-
-DeepSeek AI is the first planned worker model for agent processing.
-
-The router chooses an agent name. The selected agent decides how to use its model prompt and provider.
-Local agent definitions declare their provider with `model_provider`, so the runtime is not hard-wired to one model service.
-
-Example:
-
-```text
-Task: "make a project plan"
-Router decision: planner_agent
-Worker model: DeepSeek
-```
-
-Later, different agents can use different models.
-
-## Initial Agent Names
-
-Atlas should start with a small set of clear agents:
-
-- `chat_agent`: default conversation and simple questions
-- `code_agent`: coding, repo edits, debugging, tests, and technical work
-- `planner_agent`: breaks goals into steps and milestones
-- `research_agent`: gathers information and summarizes findings
-- `memory_agent`: stores and retrieves user/project memory later
-
-More agents should only be added when there is a real routing need.
-
-## Routing Contract
-
-The router should return a typed decision:
+A future router decision should be typed, for example:
 
 ```json
 {
@@ -133,18 +38,22 @@ The router should return a typed decision:
 }
 ```
 
-The important field is `agent`. Confidence and reason help with debugging and future UI display.
+The selected agent is the essential field. Confidence and reason support
+inspection; low confidence should lead to clarification rather than arbitrary
+routing. This is a proposed contract, not an existing runtime API.
 
-If confidence is low, Atlas should ask a clarifying question instead of sending the task to the wrong agent.
+## Growth principles
 
-## Design Rule
+- Add specialists for demonstrated needs such as coding, planning, or research;
+  do not build a large fixed roster before routing needs justify it.
+- Let workers use appropriate configured providers/models without coupling the
+  router to a single provider. Existing profile and capacity boundaries still apply.
+- Preserve the desktop experience: usable default starting folder, optional
+  project context, independent chats, and visible approvals and results.
+- Keep permission and ownership boundaries in the Rust runtime. A starting folder
+  organizes work; it does not grant OS privileges or confine shell commands.
+- Keep responsibilities clear: router selects, agent works, provider calls the
+  model, memory supplies context, and UI presents the interaction.
 
-Atlas should keep these responsibilities separate:
-
-- Router chooses the agent.
-- Agent processes the task.
-- Provider calls the model.
-- Memory stores context.
-- UI displays the interaction.
-
-This keeps the system simple enough to grow.
+Implementation constraints belong in [RULE.md](RULE.md) and the
+[architecture references](docs/README.md), rather than being repeated here.

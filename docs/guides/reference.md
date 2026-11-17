@@ -27,8 +27,8 @@ an automatically created `Atlas` folder in your home directory; choose another
 folder per chat or set a default in Settings.
 
 Chats can run independently, with their own drafts, activity, and approvals.
-History is saved after successful replies; unsaved drafts and unfinished requests
-do not survive an app restart.
+History is saved after successful replies or explicit Stop, which retains a marked
+partial answer. Unsaved drafts and unfinished requests do not survive an app restart.
 
 The chat box uses your operating system's input method for Vietnamese and other
 languages. Atlas does not convert Telex itself. Enter sends after composition is
@@ -76,8 +76,14 @@ cargo run -- conversation compact <id>
 cargo run -- conversation delete <id>
 ```
 
+Replies stream by default; `--stream` remains an explicit alias. `--stream` and
+`--conversation` accept either order before the prompt. Quote multiword titles.
+Conversation lists show newest updates first, with IDs, titles, timestamps, and
+message counts; `show` includes saved roles, content, and UTC timestamps.
+
 `cargo run -- help` and conversation management (except compaction) work without
-an API key. The CLI uses your current directory as its starting folder.
+an API key or agent configuration. The CLI uses your current directory as its
+starting folder. `ATLAS_CONFIG_DIR` overrides the settings directory for tests.
 
 ## Settings and access
 
@@ -244,8 +250,9 @@ Implementation is verified. See the [Wakeup protocol](../architecture/wakeup.md)
 for controls, bounded reads, and persistence details. Legacy execution job/task
 envelopes are rejected with a migration error. Required tool work must be resolved before
 a final answer; lazy is not permission to leave it unfinished. Command
-`lifetime: job/background` remains a separate cleanup policy. Receiving additional
-user messages during an active turn is deferred.
+`lifetime: job/background` remains a separate cleanup policy. Desktop supports
+queued messages, active-turn supplements, and steering; see
+[Live chat input and Stop](../architecture/live-chat-input.md).
 
 ## Skills
 
@@ -485,9 +492,10 @@ unknown combined capacity, or a different selected provider/model shows an em
 dash. Older saved readings without provider identity load but remain unattributed.
 
 For manual compaction, type `/` in the desktop composer and select **/compact**,
-or use the CLI command above. **Send always sends ordinary chat text**, including
-literal `/compact`; selecting the task runs compaction. Recent exchanges remain
-intact. Deleted conversations move to local trash for manual recovery.
+or use the CLI command above. Sending literal `/compact` uses ordinary chat;
+selecting the built-in task runs compaction. Saved agent `/name task` commands
+use separate direct-agent dispatch. Recent exchanges remain intact. Deleted
+conversations move to local trash for manual recovery.
 
 For tasks with multiple steps, Atlas includes a brief user-facing message with
 its next tool request to explain the action and its purpose. This uses an optional
@@ -503,8 +511,9 @@ A message describes intent, not proof that the tool succeeded or that the user
 approved execution.
 Successful turns save updates in activity JSONL and collapsed Activity details;
 later turns receive them through the existing bounded context and compaction
-path. Failed turns save neither chat messages nor activity. The automatic
-"Preparing answer" label stays hidden. The CLI writes committed updates to stderr
+path. Explicit Stop retains a marked partial answer and Activity; other failed
+turns save neither chat messages nor activity. The automatic "Preparing answer"
+label stays hidden. The CLI writes committed updates to stderr
 and the final answer to stdout.
 During a request, the desktop shows only the latest requested tool in one compact
 row beneath the assistant message. The row updates as that call waits for approval,
@@ -571,7 +580,7 @@ ATLAS_LOG_STDERR=1 npm --prefix desktop run tauri dev
 Find an `operation.failed` entry and use its `requestId` to follow the related
 operations and model calls. This diagnostic log is separate from saved chat
 activity; failed requests are logged even though they are not saved as messages.
-An app already running needs a restart to use the new logging behavior.
+Restart the app after changing logging environment variables.
 
 ## Development
 
@@ -588,14 +597,16 @@ Build a desktop debug executable:
 npm --prefix desktop run tauri -- build --debug --no-bundle
 ```
 
-See [AGENTS.md](../../AGENTS.md) for repository structure, storage paths, configuration
-details, and the full verification commands; [RULE.md](../../RULE.md) for architecture
-rules; and [VISION.md](../../VISION.md) for product direction.
+See the [development guide](development.md) for CI and verification,
+[AGENTS.md](../../AGENTS.md) for the repository map and contributor instructions,
+[RULE.md](../../RULE.md) for coding rules, and [VISION.md](../../VISION.md) for direction.
 
 ## Delegated agents
 
 Use `create_agent` for explicitly requested reusable Personal/Project definitions,
 then `call_agent` with task, caller-selected tools, context_mode and execution_mode.
-Desktop Agent runs shows ongoing work, independent tool approvals and final reports.
+Desktop shows active runs, independent tool approvals, and reports inline in chat.
+Use `/name task` to address a saved agent directly for one turn without a parent
+Atlas model call. The next ordinary message goes to Atlas.
 See [the delegation reference](../architecture/delegated-agents.md) for storage,
 limits, CLI lifetime, cancellation semantics and report paging.

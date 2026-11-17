@@ -75,6 +75,9 @@ the run's tested artifact, checks its checksum and the tag's current commit, and
 --verify-tag` to upload both assets and publish the Release. GitHub CLI holds the
 release as a draft until all asset uploads succeed.
 
+Pin external actions by full commit SHA. Keep provider keys, development `.env`
+files, user settings, and local credentials out of release inputs and bundles.
+
 An existing release is never overwritten. An interrupted upload can leave a
 draft; inspect that draft and deliberately remove it before rerunning publication
 for the same tag. Build artifacts remain available from the Actions run for seven

@@ -69,81 +69,17 @@ Keep `execution_id` as the shared control ID. OS-process `session_id` and child
 `run_id` are mapped internally and must not be interchanged. Native scope is the
 authority; model arguments cannot choose a chat owner.
 
-## 3. Protocol
+## 3. Protocol and scheduler reference
 
-`wake_up` is a top-level tool_call field, separate from args:
+[Wakeup](wakeup.md#model-protocol) owns the current envelopes, control arguments,
+interval defaults, and compatibility rules. Its [scheduler contract](wakeup.md#scheduler-and-mailbox)
+owns deadline generations, single-consumer delivery, coalescing, priority, and
+acknowledgement. Keep protocol changes there rather than maintaining a second copy.
 
-```json
-{
-  "type": "tool_call",
-  "tool": "exec_command",
-  "wake_up": {"mode": "hard", "interval_seconds": 5},
-  "args": {"command": "cargo test"}
-}
-```
+The active-turn inbox can interrupt waits at safe boundaries; it does not replace
+tool scheduling or native cancellation authority. See [Live chat input](live-chat-input.md).
 
-```json
-{
-  "type": "tool_call",
-  "tool": "mcp_call_tool",
-  "wake_up": {"mode": "lazy"},
-  "args": {"server": "configured-server", "tool": "configured-tool", "arguments": {}}
-}
-```
-
-The MCP example illustrates the envelope only; actual server/tool names must come
-from the authorized catalog. Hard requires a finite interval in the valid range;
-lazy accepts no custom interval. Reject invalid values rather than silently
-converting them to lazy.
-
-Existing `list_executions`, `read_execution`, and `cancel_execution` controls use
-the same authority and preserve bounded reads and cancellation permissions. Add:
-
-```json
-{
-  "type": "set_execution_wakeup",
-  "execution_id": "opaque-id",
-  "wake_up": {"mode": "hard", "interval_seconds": 2}
-}
-```
-
-Updating a policy increments schedule generation, invalidates
-old timers, never redispatches the tool, and does not delete terminal notifications.
-`await_execution` yields agent execution to wait for the mailbox; waiting does not
-change an execution's policy without an explicit update.
-
-## 4. Scheduler, mailbox, and agent execution authority
-
-One backend scheduler manages deadlines for many executions. A generation-tagged
-deadline heap ignores stale timers. At a hard/lazy deadline, queue metadata and
-schedule the next deadline if still running. A terminal state cancels periodic
-timers and queues the final notification. Do not poll the model every 30 seconds
-while waiting for lazy. If an internal wait is limited to less than 30 seconds,
-continue waiting inside the backend without calling the provider until a
-deliverable event arrives.
-
-Each agent owner has only one active consumer/model call. Short locks protect
-state, mailbox, and turn acquisition; never hold them during I/O, approvals, or
-model calls. When the agent is busy, notifications wait until the next safe
-boundary; do not insert into a streaming response or start a second agent call.
-
-Notifications contain metadata: execution ID, status, reason, elapsed time,
-revision, unread lines, and retention/truncation flags. They contain no full logs
-or raw errors. Keep batches at most 16 events and preserve Wakeup coalescing/ack:
-
-- Coalesce periodic notices by execution ID and revision; terminal replaces periodic.
-- Error, completion, and interaction-needed notices precede periodic ones; FIFO within priority.
-- Events arriving during batch processing remain pending; acknowledge only that batch.
-- Provider failures or invalid responses neither lose notifications nor replay tools.
-- Terminal delivery is logically once; an unacknowledged delivery may repeat with
-  the same identity for idempotent consumption, without creating a new terminal event.
-
-The active-turn inbox interrupts execution waits at a safe boundary when user
-input arrives; see [Live chat input and Stop](live-chat-input.md). Wakeup scheduling
-retains its tool-notification authority. Explicit Stop uses native cancellation
-authority rather than depending on an agent reading logs.
-
-## 5. Verification responsibility and final answers
+## 4. Verification responsibility and final answers
 
 The backend blocks final answers while required work has running or cancelling
 executions, or unprocessed terminal notifications. Apply this equally to hard and
@@ -165,40 +101,21 @@ running. Do not call the model automatically after final; retain background even
 for the next authorized turn. Cross-turn autonomous agent activation needs separate
 design/authorization and must not be enabled implicitly by lazy.
 
-## 6. Results, conversation history, and restart
+## 5. Durable result decisions
 
-Store execution results separately from ordinary chat. Conversation history keeps
-the successful turn's original user request, applied supplements, and final
-assistant answer; explicit Stop retains a marked partial answer. Activity keeps execution references
-and bounded summaries. Do not insert every wakeup or all stdout into history.
-Execution storage retains actual state/results even for failed turns absent from
-successful chat history. Drafts use temporary native owners; promotion preserves
-execution identity and links to the conversation without creating history just to
-allocate a scope.
+Results persist separately from successful chat history, including failed turns.
+Activity retains bounded summaries/references rather than every wakeup and log.
+Persist before dispatch and publish terminal state only after its exact revision
+is stored. Storage failure is recoverable and must never cause action replay.
+Keep images, credentials, and approval tokens out of artifacts.
 
-The implementation stores durable metadata and bounded UTF-8 results with private file
-permissions, a schema version, and atomic publication. Persist a record before
-dispatch; publish only successfully stored results. If terminal persistence fails,
-retain an uncommitted record and report a recoverable storage error; never turn a
-disk-write failure into success or automatically rerun the tool. Never store
-credentials, approval tokens, or images in execution artifacts; preserve redaction.
+Restart recovers unfinished actions as interrupted with potentially unknown
+outcomes. It restores evidence, never live process/agent handles. Draft promotion
+preserves ownership; chat deletion stops owned resources and prevents late saves.
+The [Wakeup persistence contract](wakeup.md#output-and-persistence) owns journal
+leases, quotas, bounded reads, redaction, and archived-child recovery details.
 
-Use existing bounds as the baseline: 64 KiB output/execution, reads at most 4 KiB
-and 1–200 lines each; tail reads do not advance cursors. Oversized results require
-truncation/retention flags. Do not automatically read every page upon wakeup.
-Durable journal and trash collections are independently bounded by configured
-record/byte quotas. Active executions and unprocessed results are not silently
-evicted. Memory limits of 32 records/owner and 128/backend are separate.
-
-After restart, committed results remain readable. Mark nonterminal executions
-interrupted, with potentially unknown action outcomes; never restore handles,
-leave them Running forever, or automatically replay them. Interrupted is the implemented recovery
-state. History records the past; live state comes from the manager. Reading a retained artifact
-after restart grants no control over an old execution/process ID. Chat deletion
-uses the same trash/cleanup policy for owned artifacts and stops resources before
-scope closure; late workers must not republish into deleted owners.
-
-## 7. Cancellation, limits, and permissions
+## 6. Cancellation, limits, and permissions
 
 Cancellation is cooperative. OS processes use existing process groups/Windows
 Jobs; MCP or noncancellable I/O may remain Cancelling until deadline. Do not report
@@ -215,7 +132,7 @@ The UI remains inline in conversation, with no permanent Processes panel or
 frontend polling. Native operations stay in atlas-api.ts. Running, Cancelling,
 and Interrupted labels must reflect actual state.
 
-## 8. Migration and acceptance criteria
+## 7. Migration and acceptance criteria
 
 The former baseline used `ExecutionMode::{Job, Task}`, an untracked synchronous
 tool branch, and in-memory-only results. The parser now rejects legacy execution
@@ -225,20 +142,8 @@ Command `lifetime: job/background`, child `execution_mode: wait/parallel`, built
 conversation tasks, and MCP Tasks remain separate concepts. A parent's active
 call_agent execution still prevents an early final answer.
 
-Durable records use per-manager UUID journals under the Atlas data root's
-`tool-executions/`, with a lifetime lease per manager. A bounded 500 ms
-`import.lock` coordinates cross-process import/publication, skipping live managers
-and recovering inactive nonterminal records as interrupted. Native saved-chat
-aliases include descendant prefixes; promotion preserves draft identities and
-checked deletion moves records to `tool-executions/trash`. No process/agent handle
-is restored. Defaults set 128 records and 12582912 bytes (12 MiB), each bound
-applied independently to shared journals and trash. Valid storage options are
-1–128 records and 4096–67108864 bytes. This does not create user-message queuing.
-
-Sources include `src/executions/persistence.rs`,
-`config/execution-defaults.toml`, `tests/execution_protocol.rs`, and
-`tests/execution_manager_control.rs`. See [Wakeup](wakeup.md) for operational details.
-Verification passed on Linux: 615 Rust tests, 74 native desktop tests, and 336 frontend tests. Root/native Clippy, formatting, frontend/native builds, and the no-key demo passed. The checklist below describes the coverage requirements.
+See [Wakeup](wakeup.md) for operational details, source files, and the dated
+implementation verification record. The checklist below describes required coverage.
 
 Required implementation verification:
 
@@ -253,22 +158,9 @@ Required implementation verification:
 - Background requires user intent; no automatic model calls after final or restart.
 - Preserve approvals, command containment, cancellation, and child-scope cleanup.
 
-## Await compatibility
+## Compatibility and recovered evidence
 
-`await_execution` waits for the selected executions' existing hard/lazy schedules
-or terminal/interaction events. Its legacy `yield_ms` field is accepted and
-validated in the 100–29999 ms range but never schedules an early model wakeup.
-Use `set_execution_wakeup` to change cadence. In particular, `lazy` plus
-`await_execution` with `yield_ms:100` still waits for the 10-minute reminder or an
-earlier completion/error; it does not poll the model every 100 ms.
-
-## Retired child scopes and recovered evidence
-
-Retiring a child scope abandons its private pending notifications for retention,
-without changing the recorded action outcome. The parent's managed `call_agent`
-execution still reports the child's lifecycle and prevents an early final answer.
-Frozen child results remain durable until bounded retention or chat deletion.
-After restart, recovered descendant results appear as read-only archived evidence
-to the owning root chat; unfinished results generate interrupted notifications
-there. They cannot be cancelled, rescheduled, or used to restore live child handles.
-Live children keep their separate mailboxes and native ownership.
+See [Await compatibility](wakeup.md#await-compatibility) and
+[Retired child scopes](wakeup.md#retired-child-scopes-and-recovered-evidence).
+Those sections are the authoritative contracts for legacy `yield_ms` and
+read-only descendant evidence after restart.

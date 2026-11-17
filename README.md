@@ -65,7 +65,8 @@ commands, and troubleshooting.
   preview, edit, search, and enable/disable skills.
 - **MCP:** local stdio and remote HTTP servers, OAuth sign-in, and explicit tool checks.
 - **Agents:** reusable Personal/Project definitions, fork or task-only runs, parallel
-  delegation, scoped approvals, and live run/results inspection.
+  delegation, scoped approvals, and inline run/results inspection. Use `/name task`
+  to address a saved agent directly for one turn; the next ordinary message uses Atlas.
 - **Context:** token-usage display and automatic/manual conversation compaction.
 
 ## CLI
@@ -129,37 +130,7 @@ npm --prefix desktop run build
 - [Repository guide](AGENTS.md) · [Coding rules](RULE.md) · [Product vision](VISION.md).
 
 
-### Wakeup for long tool calls
-
-Every tool call is tracked by the backend. An optional top-level
-`wake_up: {"mode":"hard","interval_seconds":2}` selects frequent checks;
-`wake_up: {"mode":"lazy"}` schedules reminders every ten minutes. Completion and
-errors notify immediately in either mode. Calls without a policy default to hard.
-Wakeup messages contain metadata only; agents explicitly select bounded output
-reads (1–200 lines, at most4KiB). Changing the policy or waiting never repeats a
-tool. Both modes require unfinished work to be resolved before a final answer;
-explicitly requested background services retain their separate lifecycle.
-
-Bounded results persist separately from chat history. Restart recovers unfinished
-executions as interrupted, without replaying actions or restoring process handles.
-The former execution job/task modes are rejected with a migration error.
-
-Run `cargo run --example wakeup` for a deterministic, no-key walkthrough with an
-in-memory tool and fake agent. See [Wakeup architecture](docs/architecture/wakeup.md)
-for ownership, mailboxes, cancellation, output bounds and the model protocol.
-
-
-### Address a saved agent directly
-
-In desktop chat, type `/` to choose a saved agent, then write its task, for example
-`/coder fix the login error`. Selecting an agent inserts its command; sending
-starts that agent directly, without an Atlas model call to delegate or summarize.
-The next ordinary message still goes to Atlas. Extra messages during a direct
-run stay queued for the next turn; Stop cancels the owned run and waits for worker
-exit. Results and agent identity remain in the conversation history.
-
-Agent names must be unique across Personal and the current Project; built-in
-commands such as `compact` are reserved. Existing duplicate definitions are left
-intact, but their slash commands are disabled until you rename a definition.
-The backend grants the selected agent the chat's currently available tools;
-normal tool approvals, provider profiles, selected skills and resource caps apply.
+For a no-key tool-execution demo, run `cargo run --example wakeup`. See the
+[Wakeup protocol](docs/architecture/wakeup.md) for scheduling and durable results,
+and [direct agent commands](docs/architecture/delegated-agents.md#direct-desktop-commands)
+for `/name task` behavior and naming rules.

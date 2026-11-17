@@ -35,8 +35,9 @@ the foreground; never use `&` to detach them from management. When the shell exi
 remaining descendants in its process group/Windows Job are cleaned up even if their
 output was redirected.
 
-Draft scopes are allocated in memory without creating history. The first successful
-saved answer binds the scope to the conversation while preserving session IDs.
+Draft scopes are allocated in memory without creating history. The first
+successful or explicitly stopped saved answer binds the scope to the conversation
+while preserving session IDs.
 A failed draft with background work remains inspectable/stoppable; New chat does
 not adopt its resources. Close draft cleans its scope and discards the draft
 without creating/deleting saved history. Empty abandoned drafts are released on
@@ -182,7 +183,18 @@ These are command limits, not permission to parallelize ordinary tool calls.
 Old completed records are evicted when space is needed; IDs may expire after
 completion. Session limits do not bound total OS descendants or CPU/RAM consumption.
 
+Admission checks both active caps under the manager store lock before launch.
+Native settings load/save/configuration is serialized by the settings-policy
+mutex; update the manager only from loaded or successfully published settings.
+A failed settings save must not change active policy. Empty-destination draft
+handoffs preserve existing commands above a lowered cap; merging two active
+scopes must respect the current cap. Job timeouts accept 1–600000 ms.
+
 ## Cleanup and scope
+
+Draft tokens belong to native window/client epochs. Reject active or foreign
+draft releases; saved requests derive workspace/mode from metadata rather than
+conflicting frontend values. Preserve raw command quoting for `cmd.exe`.
 
 Jobs are cleaned only by their owning request. Background ends on Stop, timeout,
 chat deletion, draft closure, or normal app shutdown; chat/Settings navigation does

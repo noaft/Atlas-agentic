@@ -136,11 +136,15 @@ during direct work, they queue instead of steering. The native direct turn seals
 its inbox before exposing request identity, so receipts cannot falsely accept
 supplementary input.
 
-Names must be unique across Personal and the active Project. The task registry
+Names must be unique across Personal and the active Project. Command matching is
+ASCII case-insensitive; stored names retain lowercase validation. The task registry
 owns reserved command names. Creation serializes both namespaces using private
 bounded leases, preserves no-overwrite publication and rejects invalid storage.
+Take the Personal namespace lease before the existing/target Project lease.
 This requires access to the Personal namespace for Project creation; it may
 initialize lock storage there but never stores Project definitions there.
+Personal operations must never create a Project root. Invalid/unavailable
+namespace storage fails closed; never rename or delete legacy duplicates automatically.
 The current workspace is the namespace boundary; unrelated project directories
 are not scanned. Manually introduced legacy duplicates remain available by scoped
 ID to existing delegation, while their ambiguous slash commands are disabled.

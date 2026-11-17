@@ -1,162 +1,80 @@
 # Atlas Coding Rules
 
-Follow these rules when changing this repo.
+Follow these rules when changing the repository. Detailed subsystem contracts are
+linked from [AGENTS.md](AGENTS.md#read-by-change-area).
 
-## 1. Do Not Hard-Code
+## 1. Configure values and behavior
 
-Do not hard-code secrets, API keys, model names, file paths, URLs, prompts, or agent behavior inside random code.
-Do not hard-code sampling settings like temperature or top-p in provider code.
+Keep secrets, model names, paths, URLs, prompts, and agent behavior out of random
+implementation code. Use configuration files or environment variables, such as
+`DEEPSEEK_API_KEY` and `agents/atlas.toml`. Do not hard-code provider sampling settings.
 
-Use config files or environment variables.
+## 2. Design for change
 
-Good:
-
-```text
-DEEPSEEK_API_KEY from .env or process env
-agents/atlas.toml for default agent prompt and model
-```
-
-Bad:
-
-```rust
-let api_key = "sk-...";
-let prompt = "big prompt inside main.rs";
-```
-
-## 2. Design For Change
-
-Do not write code that only works for the first provider, first model, first tool, or first use case.
-
-Build small boundaries that can be swapped later.
-
-Good:
+Keep small, replaceable boundaries:
 
 ```text
 Runtime -> Agent -> ModelProvider
-Runtime -> ToolRegistry -> ModelRequest.tools
-Agent definition -> model_provider -> provider factory
 Runtime -> ToolRegistry -> Tool
-agents/*.toml for local agent definitions
+Agent definition -> provider factory
 ```
 
-Bad:
+New paths should support another provider/tool, fake test implementations, and
+configuration changes. Avoid functions that combine parsing, validation,
+execution, and rendering.
 
-```text
-DeepSeek-specific logic inside Runtime
-create_file-specific logic mixed into Agent
-tool JSON instructions hard-coded in agents/*.toml
-one giant function that parses, decides, executes, and prints
-```
+## 3. Test behavior first
 
-When adding behavior, ask:
+Write or update focused tests before changing behavior. Every new behavior needs
+a test proving it. Run `cargo test` and `cargo fmt --check` before finishing;
+[AGENTS.md](AGENTS.md#verification) lists additional checks by scope.
 
-- Can another provider use this path?
-- Can another tool use this pattern?
-- Can tests use a fake implementation?
-- Can config change without code changes?
+## 4. Keep functions focused
 
-## 3. Test First
+Give each function one job. Split parsing, validation, execution, and formatting
+when they become separate responsibilities.
 
-Write or update tests before changing behavior.
+## 5. Keep boundaries clear
 
-For every new behavior, add a focused test that proves it.
+- CLI reads input and renders output.
+- Runtime coordinates agents and controls tool execution.
+- Agents call model providers; providers call external APIs.
+- Tools perform controlled side effects; config loads settings.
 
-Use:
+## 6. Keep providers behind ModelProvider
 
-```bash
-cargo test
-```
+Core code depends on Atlas types, not provider response structs. Keep native
+payloads, parsing, and provider-specific behavior inside adapters rather than
+spreading them through runtime or UI.
 
-Before finishing, also run:
+## 7. Prefer local agent definitions
 
-```bash
-cargo fmt --check
-```
+Use local TOML definitions when prompts differ. Add a Rust agent type only when
+its behavior requires a different implementation.
 
-## 4. Keep Functions Small
+## 8. Runtime controls tools
 
-Functions should do one job.
+Agents request tools; runtime parses, validates, authorizes, and executes them.
+Every tool needs typed input, validation, focused tests, and clear errors.
+Tool schemas and protocol instructions belong to runtime, not agent TOML prompts.
 
-If a function starts doing parsing, validation, execution, and formatting together, split it.
+## 9. Preserve file-operation safety
 
-Good shape:
+Structured workspace file helpers reject absolute paths, `..`, unsafe parents,
+and symlink escapes. Keep writes within the validated workspace; overwrite only
+when explicitly supported and authorized. Test path safety and stale approvals.
 
-```text
-parse input
-validate input
-execute action
-format result
-```
+`exec_command` is intentionally unrestricted; `ripgrep` accepts approved absolute
+roots outside the workspace. Preserve their separate authorization contracts in
+[file and computer tools](docs/architecture/file-and-computer-tools.md).
 
-Each step should be easy to test.
+## 10. Make small changes
 
-## 5. Keep Boundaries Clear
+Keep changes reviewable. Do not rewrite unrelated code while adding a feature.
 
-Do not mix responsibilities.
+## 11. Update the owning documentation
 
-- CLI only reads input and prints output.
-- Runtime coordinates agents and tools.
-- Agents call model providers.
-- Model providers call external APIs.
-- Tools perform controlled side effects.
-- Config loads settings.
-
-## 6. Provider-Agnostic Code
-
-Do not spread provider-specific logic through the app.
-
-DeepSeek, OpenAI, local models, or any other provider should hide behind `ModelProvider`.
-
-Core code should depend on Atlas types, not provider response structs.
-
-## 7. Agents Are Local Config First
-
-Do not create a new Rust agent class just because the prompt is different.
-
-Use local files first:
-
-```text
-agents/atlas.toml
-agents/coder.toml
-agents/planner.toml
-```
-
-Create a new Rust agent type only when behavior is truly different.
-
-## 8. Tools Are Runtime Controlled
-
-Agents do not execute tools directly.
-
-Agents can request a tool. Runtime parses, validates, and executes it.
-
-Every tool needs:
-
-- typed input
-- validation
-- tests
-- clear errors
-
-## 9. Keep File Operations Safe
-
-For file tools:
-
-- no absolute paths
-- no `..`
-- no writes outside workspace
-- no overwrite unless explicitly supported
-- create tests for path safety
-
-## 10. No Big-Bang Refactors
-
-Make small, reviewable changes.
-
-Do not rewrite unrelated code while adding a feature.
-
-## 11. Update Docs When Structure Changes
-
-If repo structure, commands, env vars, or agent files change, update:
-
-- `README.md`
-- `AGENTS.md`
-- `VISION.md` when product direction changes
-- `RULE.md` when coding rules change
+Update the relevant reference when behavior, configuration, or structure changes.
+Keep `README.md` for quick start, `AGENTS.md` for contributor instructions and links,
+`VISION.md` for product direction, and this file for coding rules. Avoid repeating
+a detailed contract across these documents.
