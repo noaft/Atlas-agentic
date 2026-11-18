@@ -23,6 +23,11 @@ assistant message in the owning in-memory session. Keep unfinished outcomes
 unconfirmed; do not infer success or failure from provider failure. This local
 view is removed with the failed messages on retry and is not persisted as history.
 
+Wakeup-selected output is literal text unless the backend marks a complete,
+untruncated JSON result from a process tool. Format those process results with
+the same stdout/stderr positions, loss flags, and exit details as direct results.
+Partial selections, ordinary log text, and JSON file contents stay literal.
+
 ## Built-in tasks
 
 `src/tasks/mod.rs` is the authoritative built-in task registry, initially

@@ -2374,3 +2374,48 @@ test("failed turn Activity stays with its chat and unfinished calls keep an unkn
   expect(root.querySelector("[data-activity]")).toBeNull();
   retry.resolve({answer:"done",metadata,created:true,activities:[]}); await resending;
 });
+
+test("complete Wakeup process result uses readable process formatting", async () => {
+  const api = new ViewApi();
+  const output = {stdout:"hello\n<img src=x>\n",stderr:"",exit_code:0,session_id:"owned",running:false,stdout_truncated:false,stderr_truncated:false,
+    stdout_view:{start_byte:0,end_byte:18,total_bytes:18,start_line:1,end_line:2,total_lines:2,returned_lines:2,lines_after:0,starts_mid_line:false,older_output_dropped:false,has_more:false},
+    stderr_view:{start_byte:0,end_byte:0,total_bytes:0,start_line:null,end_line:null,total_lines:0,returned_lines:0,lines_after:0,starts_mid_line:false,older_output_dropped:false,has_more:false}};
+  api.load = async () => ({...conversation(), activities: [{turnId:"review",assistantMessageIndex:1,records:[{
+    sequence:0,kind:"toolResult",tool:"read_execution",arguments:'{"execution_id":"owned"}',outcome:"succeeded",summary:"Selected output",createdAt:metadata.updatedAt,
+    details:JSON.stringify({success:true,result:{execution:{execution_id:"owned",tool:"exec_command",status:"succeeded"},text:JSON.stringify(output),format:"json",complete_result:true,truncated:false,retention_loss:false,error:null}}),
+  }]}]});
+  const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const terminal = root.querySelector("[data-activity] .tool-terminal-output")!;
+  expect(terminal.textContent).toContain("[stdout · captured lines 1–2");
+  expect(terminal.textContent).toContain("[exit 0]");
+  expect(terminal.textContent).toContain("<img src=x>");
+  expect(terminal.querySelector("img")).toBeNull();
+});
+
+
+test.each([
+  {format: "json", complete_result: false, truncated: false, text: '{"stdout":"partial","stderr":""}'},
+  {format: "json", complete_result: true, truncated: true, text: '{"stdout":"cut","stderr":""}'},
+  {format: "text", complete_result: true, truncated: false, text: '{"stdout":"ordinary log","stderr":""}'},
+  {format: "json", complete_result: true, truncated: false, text: '{"stdout":'},
+])("Wakeup keeps partial, plain, or malformed output literal: $text", async (selected) => {
+  const api = new ViewApi();
+  api.load = async () => ({...conversation(), activities: [{turnId:"partial",assistantMessageIndex:1,records:[{
+    sequence:0,kind:"toolResult",tool:"read_execution",arguments:null,outcome:"succeeded",summary:"Selected output",createdAt:metadata.updatedAt,
+    details:JSON.stringify({success:true,result:{execution:{execution_id:"owned",tool:"exec_command",status:"succeeded"},...selected,retention_loss:false,error:null}}),
+  }]}]});
+  const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  expect(root.querySelector("[data-activity] .tool-terminal-output")!.textContent).toContain(selected.text);
+});
+
+
+test("Wakeup does not interpret JSON file contents as process output", async () => {
+  const api = new ViewApi();
+  const text = '{"stdout":"this is file content","stderr":""}';
+  api.load = async () => ({...conversation(), activities: [{turnId:"file",assistantMessageIndex:1,records:[{
+    sequence:0,kind:"toolResult",tool:"read_execution",arguments:null,outcome:"succeeded",summary:"Selected output",createdAt:metadata.updatedAt,
+    details:JSON.stringify({success:true,result:{execution:{execution_id:"owned",tool:"read_file",status:"succeeded"},text,format:"json",complete_result:true,truncated:false,retention_loss:false,error:null}}),
+  }]}]});
+  const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  expect(root.querySelector("[data-activity] .tool-terminal-output")!.textContent).toBe(text);
+});

@@ -198,37 +198,47 @@ function terminalOutput(details: string | null, fallback: string): HTMLPreElemen
       const result = JSON.parse(details);
       const selected = result?.result?.execution ? result.result : result?.execution ? result : null;
       if (selected && typeof selected.text === "string") {
-        const lines = [selected.text];
+        let selectedText = selected.text;
+        if (selected.format === "json" && selected.complete_result === true && !selected.truncated &&
+            ["exec_command", "read_process", "stop_process"].includes(selected.execution?.tool)) {
+          try { selectedText = processOutput(JSON.parse(selected.text)) ?? selectedText; }
+          catch { /* A malformed or legacy payload remains literal text. */ }
+        }
+        const lines = [selectedText];
         if (selected.truncated) lines.push("[Selected output was limited; use the cursor to read another page.]");
         if (selected.retention_loss) lines.push("[Earlier output was dropped from the retained buffer.]");
         if (typeof selected.error === "string" && selected.error) lines.push(`[error] ${selected.error}`);
         pre.textContent = lines.filter(Boolean).join("\n") || "No output returned.";
         return pre;
       }
-      if (result && typeof result === "object" &&
-          (typeof result.stdout === "string" || typeof result.stderr === "string")) {
-        const lines: string[] = [];
-        if (Number.isSafeInteger(result.tail_lines) && result.tail_lines > 0 && result.tail_lines <= 1000) {
-          lines.push(`[Tail: up to ${result.tail_lines} lines per stream]`);
-        }
-        if (result.display_truncated === true) lines.push("[Display shortened; positions describe full captured output]");
-        lines.push(...processPosition("stdout", result.stdout_view));
-        if (typeof result.stdout === "string") lines.push(result.stdout);
-        const stderrPosition = processPosition("stderr", result.stderr_view);
-        lines.push(...stderrPosition);
-        if (typeof result.stderr === "string" && result.stderr) {
-          lines.push(`${stderrPosition.length ? "" : "[stderr]\n"}${result.stderr}`);
-        }
-        if (result.stdout_truncated || result.stderr_truncated) lines.push("[Earlier output was truncated]");
-        if (typeof result.error === "string" && result.error) lines.push(result.error);
-        if (result.exit_code != null) lines.push(`[exit ${result.exit_code}]`);
-        if (typeof result.session_id === "string") lines.push(`[session ${result.session_id}${result.running === true ? " · running" : ""}]`);
-        text = lines.filter(Boolean).join("\n") || "No output returned.";
-      }
+      text = processOutput(result) ?? text;
     } catch { /* Result details may be plain text or a bounded JSON fragment. */ }
   }
   pre.textContent = text;
   return pre;
+}
+
+function processOutput(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const result = value as Record<string, unknown>;
+  if (typeof result.stdout !== "string" && typeof result.stderr !== "string") return null;
+  const lines: string[] = [];
+  if (typeof result.tail_lines === "number" && Number.isSafeInteger(result.tail_lines) && result.tail_lines > 0 && result.tail_lines <= 1000) {
+    lines.push(`[Tail: up to ${result.tail_lines} lines per stream]`);
+  }
+  if (result.display_truncated === true) lines.push("[Display shortened; positions describe full captured output]");
+  lines.push(...processPosition("stdout", result.stdout_view));
+  if (typeof result.stdout === "string") lines.push(result.stdout);
+  const stderrPosition = processPosition("stderr", result.stderr_view);
+  lines.push(...stderrPosition);
+  if (typeof result.stderr === "string" && result.stderr) {
+    lines.push(`${stderrPosition.length ? "" : "[stderr]\n"}${result.stderr}`);
+  }
+  if (result.stdout_truncated || result.stderr_truncated) lines.push("[Earlier output was truncated]");
+  if (typeof result.error === "string" && result.error) lines.push(result.error);
+  if (result.exit_code != null) lines.push(`[exit ${result.exit_code}]`);
+  if (typeof result.session_id === "string") lines.push(`[session ${result.session_id}${result.running === true ? " · running" : ""}]`);
+  return lines.filter(Boolean).join("\n") || "No output returned.";
 }
 
 function processPosition(stream: "stdout" | "stderr", value: unknown): string[] {
