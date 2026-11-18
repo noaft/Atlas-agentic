@@ -17,6 +17,9 @@ Runtime statuses do not create tool rows.
 Do not duplicate live activity in notices or render a growing live timeline. Keep
 all session activity and saved records intact; the final answer replaces the live
 row and retains the complete collapsed Activity disclosure.
+Preserve an unchanged Activity disclosure, its open state, output scroll, and
+keyboard focus when rebuilding the same chat. Do not transfer disclosure state
+between chats or reuse it for changed activity records.
 
 If a request fails after tools have run, retain captured Activity on its failed
 assistant message in the owning in-memory session. Keep unfinished outcomes

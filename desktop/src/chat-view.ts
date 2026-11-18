@@ -199,7 +199,7 @@ function terminalOutput(details: string | null, fallback: string): HTMLPreElemen
       const selected = result?.result?.execution ? result.result : result?.execution ? result : null;
       if (selected && typeof selected.text === "string") {
         let selectedText = selected.text;
-        if (selected.format === "json" && selected.complete_result === true && !selected.truncated &&
+        if (selected.format === "json" && selected.complete_result === true && selected.truncated === false &&
             ["exec_command", "read_process", "stop_process"].includes(selected.execution?.tool)) {
           try { selectedText = processOutput(JSON.parse(selected.text)) ?? selectedText; }
           catch { /* A malformed or legacy payload remains literal text. */ }
@@ -261,7 +261,7 @@ function processPosition(stream: "stdout" | "stderr", value: unknown): string[] 
   return lines;
 }
 
-function renderMessage(message: DisplayMessage): HTMLElement {
+function renderMessage(message: DisplayMessage, previousActivity?: HTMLDetailsElement): HTMLElement {
   const article = document.createElement("article");
   article.className = `message message-${message.role} delivery-${message.delivery}`;
   article.dataset.messageRole = message.role;
@@ -284,7 +284,7 @@ function renderMessage(message: DisplayMessage): HTMLElement {
   }
   article.append(label);
   if (message.role === "assistant" && message.activity?.length) {
-    article.append(renderActivity(message.activity, message.activityDurationMs));
+    article.append(previousActivity ?? renderActivity(message.activity, message.activityDurationMs));
   }
   article.append(content);
   if (message.delivery === "failed") {
@@ -599,6 +599,14 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
       ?.querySelector<HTMLButtonElement>(".composer-picker-trigger")?.dataset.pickerLabel;
     const oldMemoryDisclosure = messages.querySelector<HTMLDetailsElement>("[data-memory-checkpoint]");
     const oldCurrentTool = messages.querySelector<HTMLElement>("[data-current-tool]");
+    const oldMessageElements = messages.querySelectorAll<HTMLElement>(":scope > article[data-message-role]");
+    // Chromium resets nested scroll offsets while a disclosure is disconnected.
+    const activityScrollPositions = [...messages.querySelectorAll<HTMLElement>(
+      ":scope > article[data-message-role] > details[data-activity] .tool-terminal-output",
+    )].map(output => ({output, top: output.scrollTop, left: output.scrollLeft}));
+    const focusedActivityElement = document.activeElement instanceof HTMLElement &&
+      messages.contains(document.activeElement) && document.activeElement.closest("[data-activity]")
+      ? document.activeElement : null;
     const focusedMemoryElement = oldMemoryDisclosure?.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
     const metadata = activeMetadata(state);
     const isStreaming = state.status === "streaming";
@@ -828,7 +836,12 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     } else {
       state.messages.forEach((message, index) => {
         if (state.memory && index === state.memory.compactedMessageCount) messages.append(oldMemoryDisclosure?.dataset.memoryCheckpoint === state.memory.checkpointId ? oldMemoryDisclosure : renderMemory(state.memory));
-        const rendered = renderMessage(message);
+        const previousMessage = sameSession ? renderedState?.messages[index] : undefined;
+        const previousActivity = previousMessage?.activity === message.activity &&
+          previousMessage?.activityDurationMs === message.activityDurationMs
+          ? oldMessageElements.item(index)?.querySelector<HTMLDetailsElement>(":scope > details[data-activity]") ?? undefined
+          : undefined;
+        const rendered = renderMessage(message, previousActivity);
         if (
           isStreaming &&
           index === state.messages.length - 1 - [...state.messages].reverse().findIndex(item => item.role === "assistant") &&
@@ -845,6 +858,10 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
 
     mountInlineAgents();
     if (focusedAgentControl?.isConnected) focusedAgentControl.focus({preventScroll: true});
+    for (const {output, top, left} of activityScrollPositions) {
+      if (output.isConnected) { output.scrollTop = top; output.scrollLeft = left; }
+    }
+    if (focusedActivityElement?.isConnected) focusedActivityElement.focus({preventScroll: true});
     pickerCleanups.splice(0).forEach((cleanup) => cleanup());
     composer.modelHost.replaceChildren();
     composer.permissionHost.replaceChildren();
@@ -1007,7 +1024,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     if (lastIndex < 0 || previous.messages.some((message, index) => index !== lastIndex && message !== state.messages[index])) return false;
     const message = state.messages[lastIndex];
     if (message.role !== "assistant" || message.delivery !== "pending") return false;
-    const article = messages.querySelectorAll<HTMLElement>("[data-message-role]").item(lastIndex);
+    const article = messages.querySelectorAll<HTMLElement>(":scope > article[data-message-role]").item(lastIndex);
     const content = article?.querySelector<HTMLElement>(".message-content");
     if (!content) return false;
     const followBottom = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 48;
@@ -1036,7 +1053,7 @@ export function mountChat(root: HTMLElement, store: ChatStore): () => void {
     else window.clearTimeout(id);
   };
   const mountInlineAgents = () => {
-    const articles = messages.querySelectorAll<HTMLElement>('[data-message-role="assistant"]');
+    const articles = messages.querySelectorAll<HTMLElement>(':scope > article[data-message-role="assistant"]');
     const article = articles.item(articles.length - 1);
     if (article && agentRuns.element.parentElement !== article) article.append(agentRuns.element);
     else if (!article) agentRuns.element.remove();

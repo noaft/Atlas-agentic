@@ -2394,6 +2394,8 @@ test("complete Wakeup process result uses readable process formatting", async ()
 
 
 test.each([
+  {format: "json", complete_result: true, text: '{"stdout":"missing truncation marker","stderr":""}'},
+  {format: "json", complete_result: true, truncated: null, text: '{"stdout":"null truncation marker","stderr":""}'},
   {format: "json", complete_result: false, truncated: false, text: '{"stdout":"partial","stderr":""}'},
   {format: "json", complete_result: true, truncated: true, text: '{"stdout":"cut","stderr":""}'},
   {format: "text", complete_result: true, truncated: false, text: '{"stdout":"ordinary log","stderr":""}'},
@@ -2418,4 +2420,73 @@ test("Wakeup does not interpret JSON file contents as process output", async () 
   }]}]});
   const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
   expect(root.querySelector("[data-activity] .tool-terminal-output")!.textContent).toBe(text);
+});
+
+test("open Activity survives toggling the sidebar", async () => {
+  const api = new ViewApi();
+  api.load = async () => ({...conversation(), activities: [{turnId:"review", assistantMessageIndex:1, records:[{
+    sequence:0,kind:"toolResult",tool:"read_file",arguments:'{"path":"a.txt"}',outcome:"succeeded",summary:"Read a.txt",details:"file contents",createdAt:metadata.updatedAt,
+  }]}]});
+  const {root,store} = setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const activity = root.querySelector<HTMLDetailsElement>("[data-activity]")!;
+  activity.open = true;
+  const output = activity.querySelector<HTMLPreElement>(".tool-terminal-output")!;
+  output.scrollTop = 25;
+  output.scrollLeft = 15;
+  output.focus();
+  // jsdom has no layout; model Chromium resetting nested offsets on disconnect.
+  const transcript = root.querySelector<HTMLElement>("[data-messages]")!;
+  const replaceChildren = transcript.replaceChildren.bind(transcript);
+  vi.spyOn(transcript, "replaceChildren").mockImplementation((...nodes) => {
+    replaceChildren(...nodes);
+    output.scrollTop = 0;
+    output.scrollLeft = 0;
+  });
+  root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+  expect(root.querySelector<HTMLDetailsElement>("[data-activity]")!.open).toBe(true);
+  expect(root.querySelector("[data-activity] .tool-terminal-output")).toBe(output);
+  expect(output.scrollTop).toBe(25);
+  expect(output.scrollLeft).toBe(15);
+  expect(document.activeElement).toBe(output);
+  activity.open = false;
+  root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+  expect(root.querySelector<HTMLDetailsElement>("[data-activity]")!.open).toBe(false);
+});
+
+
+test("Activity disclosure state is isolated even when chats share activity arrays", async () => {
+  const api=new ViewApi();
+  const records: ActivityRecord[]=[{sequence:0,kind:"toolResult",tool:"read_file",arguments:null,outcome:"succeeded",summary:"Read file",details:"shared-output",createdAt:metadata.updatedAt}];
+  const other={...metadata,id:"00000000-0000-4000-8000-000000000002",title:"Other chat"};
+  api.list=Promise.resolve([metadata,other]);
+  api.load=async id=>({...conversation(),metadata:id===metadata.id?metadata:other,activities:[{turnId:"shared",assistantMessageIndex:1,records}]});
+  const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const first=root.querySelector<HTMLDetailsElement>("[data-activity]")!; first.open=true;
+  await store.selectConversation(other.id);
+  const second=root.querySelector<HTMLDetailsElement>("[data-activity]")!;
+  expect(second.open).toBe(false); expect(second).not.toBe(first);
+});
+
+test("Markdown data attributes cannot redirect Activity to another turn", async () => {
+  const api=new ViewApi();
+  const records=(details:string): ActivityRecord[]=>[{sequence:0,kind:"toolResult",tool:"read_file",arguments:null,outcome:"succeeded",summary:"Read file",details,createdAt:metadata.updatedAt}];
+  api.load=async()=>({...conversation(),messages:[
+    {role:"user",content:"one",createdAt:metadata.createdAt},
+    {role:"assistant",content:'<p data-message-role="assistant">tagged one</p><p data-message-role="assistant">tagged two</p>',createdAt:metadata.updatedAt},
+    {role:"user",content:"two",createdAt:metadata.updatedAt},
+    {role:"assistant",content:"second reply",createdAt:metadata.updatedAt},
+    {role:"user",content:"three",createdAt:metadata.updatedAt},
+    {role:"assistant",content:"third reply",createdAt:metadata.updatedAt},
+  ],activities:[
+    {turnId:"first",assistantMessageIndex:1,records:records("first-output")},
+    {turnId:"second",assistantMessageIndex:3,records:records("second-output")},
+    {turnId:"third",assistantMessageIndex:5,records:records("third-output")},
+  ]});
+  const {root,store}=setup(api); await store.initialize(); await store.selectConversation(metadata.id);
+  const activities=[...root.querySelectorAll<HTMLDetailsElement>("[data-activity]")];
+  activities[1].open=true; activities[2].open=true;
+  root.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+  const after=[...root.querySelectorAll<HTMLDetailsElement>("[data-activity]")];
+  expect(after.map(activity=>activity.querySelector(".tool-terminal-output")?.textContent)).toEqual(["first-output","second-output","third-output"]);
+  expect(after[1].open).toBe(true); expect(after[2].open).toBe(true);
 });
