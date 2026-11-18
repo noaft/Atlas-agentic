@@ -18,6 +18,11 @@ Do not duplicate live activity in notices or render a growing live timeline. Kee
 all session activity and saved records intact; the final answer replaces the live
 row and retains the complete collapsed Activity disclosure.
 
+If a request fails after tools have run, retain captured Activity on its failed
+assistant message in the owning in-memory session. Keep unfinished outcomes
+unconfirmed; do not infer success or failure from provider failure. This local
+view is removed with the failed messages on retry and is not persisted as history.
+
 ## Built-in tasks
 
 `src/tasks/mod.rs` is the authoritative built-in task registry, initially

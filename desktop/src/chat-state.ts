@@ -5,6 +5,7 @@ import { taskUnavailableReason } from "./slash-commands";
 import type { AtlasApi } from "./atlas-api";
 import type { SkillScope, SkillSource, SkillWorkspaceContext, SkillDraftInput } from "./skills-types";
 import type {
+  ActivityRecord,
   TaskDescriptor,
   TaskResult,
   ChatState,
@@ -670,11 +671,28 @@ export class ChatStore {
       if (generation !== chat.generation) return;
       const inFlight = chat.turn?.inFlight;
       if (inFlight && !chat.turn?.stopped && !chat.state.messages.some(message => message.inputId === inFlight.id && message.inputStatus === "received")) this.enqueue(owner, inFlight);
+      // Failed requests are not persisted, but their captured tool evidence remains
+      // inspectable on this session's failed assistant message until retry/removal.
+      const capturedAt = new Date().toISOString();
+      const failedActivity: ActivityRecord[] = chat.state.toolActivity.map(activity => {
+        const outcome = activity.status === "succeeded" || activity.status === "failed" || activity.status === "denied"
+          ? activity.status : null;
+        return {
+          sequence: activity.sequence ?? 0,
+          kind: activity.kind === "status" ? "status" : outcome ? "toolResult" : "toolCall",
+          tool: activity.tool, arguments: activity.arguments, details: activity.details,
+          outcome,
+          summary: activity.kind === "tool" && !outcome ? `Outcome unconfirmed: ${activity.tool}` : activity.summary,
+          createdAt: capturedAt,
+        };
+      });
       this.updateSession(owner, {
         compactionFailure: chat.state.compactionProgress ? {message: errorMessage(error), task: null} : null,
         contextUsage: null, compactionProgress: null,
-        messages: chat.state.messages.map((message) => ({
+        messages: chat.state.messages.map((message, index) => ({
           ...message,
+          activity: index === chat.turn?.assistantIndex && message.role === "assistant"
+            ? failedActivity : message.activity,
           delivery: message.delivery === "pending" ? "failed" : message.delivery,
           progressPreview: undefined,
           failureReason: message.delivery === "pending" && message.role === "assistant"

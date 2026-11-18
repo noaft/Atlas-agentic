@@ -2343,3 +2343,34 @@ test("model discovery updates capacity fields without remounting Settings inputs
   expect(root.querySelector('[data-settings-field="Model context limit (tokens)"]')).toBe(context);
   expect(context.value).toBe("512000"); expect(document.activeElement).toBe(key);
 });
+
+test("failed model request keeps preceding tool output inspectable", async () => {
+  const api=new ViewApi(); const pending=deferred<ConversationAskResult>(); api.askImpl=()=>pending.promise;
+  const {root,store}=setup(api); await store.initialize(); store.setDraft("inspect a file"); const sending=store.send(); await flush();
+  api.eventSink!({event:"toolRequested",data:{sequence:0,tool:"read_execution",arguments:'{"execution_id":"owned"}'}});
+  api.eventSink!({event:"toolStarted",data:{sequence:0,tool:"read_execution"}});
+  api.eventSink!({event:"toolFinished",data:{sequence:0,tool:"read_execution",success:true,summary:"Read file content",details:"review-evidence-output"}});
+  pending.reject(new Error("Provider connection lost")); await sending;
+  expect(store.getState().toolActivity.some(call=>call.details==="review-evidence-output")).toBe(true);
+  expect(root.textContent).toContain("review-evidence-output");
+});
+
+test("failed turn Activity stays with its chat and unfinished calls keep an unknown outcome", async () => {
+  const api=new ViewApi(); const pending=deferred<ConversationAskResult>(); api.askImpl=()=>pending.promise;
+  const {root,store}=setup(api); await store.initialize(); store.setDraft("run a command");
+  const owner=store.getState().activeSessionId; const sending=store.send(); await flush();
+  api.eventSink!({event:"toolRequested",data:{sequence:0,tool:"exec_command",arguments:'{"command":"echo hello"}'}});
+  api.eventSink!({event:"toolStarted",data:{sequence:0,tool:"exec_command"}});
+  pending.reject(new Error("Provider connection lost")); await sending;
+  const assistant=store.getState().messages.find(message=>message.role==="assistant")!;
+  expect(assistant.activity?.find(record=>record.tool==="exec_command")?.outcome).toBeNull();
+  expect(root.querySelector("[data-activity]")?.textContent).toContain("exec_command");
+  await store.newChat();
+  expect(root.querySelector("[data-activity]")).toBeNull();
+  await store.selectSession(owner);
+  expect(root.querySelector("[data-activity]")?.textContent).toContain("exec_command");
+  const retry=deferred<ConversationAskResult>(); api.askImpl=()=>retry.promise;
+  store.setDraft("retry"); const resending=store.send(); await flush();
+  expect(root.querySelector("[data-activity]")).toBeNull();
+  retry.resolve({answer:"done",metadata,created:true,activities:[]}); await resending;
+});
