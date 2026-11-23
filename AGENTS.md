@@ -106,6 +106,11 @@ native Windows/macOS behavior. Review documentation links after moving content.
 
 ## Documentation and commits
 
+- Every change must include an update to the relevant documentation in the same
+  commit. Keep documentation aligned with code, configuration, tests, and agent
+  instructions; do not leave documentation updates for a later task. Update the
+  owning reference, or add one and link it from the documentation index when none
+  exists. For documentation-only changes, the changed document satisfies this rule.
 - Keep `README.md` for quick start, `RULE.md` for coding rules, and `VISION.md` for
   direction. Put detailed contracts in `docs/` and link them from this guide and
   [the documentation index](docs/README.md). Update the owning reference when
