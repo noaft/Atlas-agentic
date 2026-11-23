@@ -667,13 +667,21 @@ fn title_storage_failure_is_explicit_and_preserves_successful_turn() {
         Err("title unavailable"),
     );
 
-    let error = ConversationService::new(&runtime, &store, 40)
+    let result = ConversationService::new(&runtime, &store, 40)
         .ask("first input", None, &mut |_| {})
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error.contains("injected publication failure"), "{error}");
+    let warning = result
+        .persistence_warning
+        .as_deref()
+        .expect("post-commit failure must be visible");
+    assert!(
+        warning.contains("injected publication failure"),
+        "{warning}"
+    );
     let saved = store.list().unwrap();
     assert_eq!(saved.len(), 1);
+    assert_eq!(result.metadata.id, saved[0].id);
     assert_eq!(
         store.load(&saved[0].id).unwrap().messages[1].content,
         "first answer"

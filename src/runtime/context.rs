@@ -34,6 +34,10 @@ pub trait RuntimeContext {
         Ok(())
     }
 
+    fn record_step(&self, _kind: &str, _data: serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+
     fn prepare_with_control(
         &mut self,
         agent: &dyn Agent,
@@ -72,6 +76,9 @@ impl RuntimeContext for CancellableContext<'_> {
             return Err("Request cancelled".into());
         }
         self.inner.check_cancelled()
+    }
+    fn record_step(&self, kind: &str, data: serde_json::Value) -> Result<(), String> {
+        self.inner.record_step(kind, data)
     }
     fn prepare_with_control(
         &mut self,

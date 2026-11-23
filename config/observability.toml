@@ -1,0 +1,16 @@
+# Paths are relative to ATLAS_DATA_DIR (or the platform data root).
+[session]
+directory = "sessions"
+timezone = "local"
+sync_each_event = true
+max_index_bytes = 8388608
+max_event_bytes = 1048576
+max_text_chars = 32768
+
+[diagnostics]
+level = "DEBUG"
+max_file_bytes = 5242880
+max_field_chars = 2048
+backup_count = 3
+lock_timeout_ms = 50
+lock_poll_ms = 1

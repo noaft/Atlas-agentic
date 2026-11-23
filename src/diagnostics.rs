@@ -14,23 +14,54 @@ use std::{
 use fs2::FileExt;
 use serde_json::{json, Value};
 
-const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
-const BACKUP_COUNT: usize = 3;
 static LOGGER: OnceLock<BackendLog> = OnceLock::new();
 static ARTIFACT_SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WRITE_WARNING: AtomicBool = AtomicBool::new(false);
-thread_local! { static REQUEST_ID: RefCell<Option<String>> = const { RefCell::new(None) }; }
+thread_local! {
+    static REQUEST_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SESSION_TRACE: RefCell<Option<(String,String)>> = const { RefCell::new(None) };
+}
+
+pub struct SessionTraceGuard {
+    previous: Option<(String, String)>,
+}
+pub fn session_trace(session_id: &str, turn_id: &str) -> SessionTraceGuard {
+    SessionTraceGuard {
+        previous: SESSION_TRACE
+            .with(|trace| trace.replace(Some((session_id.into(), turn_id.into())))),
+    }
+}
+impl Drop for SessionTraceGuard {
+    fn drop(&mut self) {
+        SESSION_TRACE.with(|trace| trace.replace(self.previous.take()));
+    }
+}
 
 struct BackendLog {
     directory: PathBuf,
     component: &'static str,
     secrets: Mutex<Vec<String>>,
     max_bytes: u64,
+    policy: crate::observability::DiagnosticsConfig,
     stderr: bool,
 }
 
 impl BackendLog {
+    #[cfg(test)]
     fn new(directory: PathBuf, component: &'static str, stderr: bool) -> io::Result<Self> {
+        Self::with_policy(
+            directory,
+            component,
+            stderr,
+            crate::observability::ObservabilityConfig::default().diagnostics,
+        )
+    }
+    fn with_policy(
+        directory: PathBuf,
+        component: &'static str,
+        stderr: bool,
+        policy: crate::observability::DiagnosticsConfig,
+    ) -> io::Result<Self> {
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -48,7 +79,8 @@ impl BackendLog {
             directory,
             component,
             secrets: Mutex::new(Vec::new()),
-            max_bytes: MAX_FILE_BYTES,
+            max_bytes: policy.max_file_bytes,
+            policy,
             stderr,
         })
     }
@@ -71,13 +103,19 @@ impl BackendLog {
         request_id: Option<&str>,
         mut fields: Value,
     ) -> io::Result<()> {
+        if level_rank(level) < level_rank(&self.policy.level) {
+            return Ok(());
+        }
         let secrets = self
             .secrets
             .lock()
             .map_err(|_| io::Error::other("diagnostic redaction lock poisoned"))?;
-        sanitize_fields(&mut fields, &secrets);
+        sanitize_fields(&mut fields, &secrets, self.policy.max_field_chars);
         drop(secrets);
+        let trace = SESSION_TRACE.with(|trace| trace.borrow().clone());
         let record = json!({
+            "sessionId":trace.as_ref().map(|(session,_)|session),
+            "turnId":trace.as_ref().map(|(_,turn)|turn),
             "timestamp": chrono::Utc::now().to_rfc3339(),
             "level": level, "event": event, "component": self.component,
             "pid": std::process::id(), "requestId": request_id, "fields": fields,
@@ -90,7 +128,11 @@ impl BackendLog {
             .create(true)
             .truncate(false)
             .open(self.directory.join("atlas.lock"))?;
-        acquire_log_lock(&lock)?;
+        acquire_log_lock(
+            &lock,
+            Duration::from_millis(self.policy.lock_timeout_ms),
+            Duration::from_millis(self.policy.lock_poll_ms),
+        )?;
         let path = self.directory.join("atlas.jsonl");
         let length = match fs::metadata(&path) {
             Ok(metadata) => metadata.len(),
@@ -112,11 +154,12 @@ impl BackendLog {
     }
 
     fn rotate(&self) -> io::Result<()> {
-        let oldest = self.directory.join(format!("atlas.{BACKUP_COUNT}.jsonl"));
+        let backup_count = self.policy.backup_count;
+        let oldest = self.directory.join(format!("atlas.{backup_count}.jsonl"));
         if oldest.exists() {
             fs::remove_file(oldest)?;
         }
-        for index in (1..BACKUP_COUNT).rev() {
+        for index in (1..backup_count).rev() {
             let source = self.directory.join(format!("atlas.{index}.jsonl"));
             if source.exists() {
                 fs::rename(
@@ -132,7 +175,16 @@ impl BackendLog {
     }
 }
 
-fn acquire_log_lock(file: &fs::File) -> io::Result<()> {
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "DEBUG" => 0,
+        "INFO" => 1,
+        "WARN" => 2,
+        _ => 3,
+    }
+}
+
+fn acquire_log_lock(file: &fs::File, timeout: Duration, poll: Duration) -> io::Result<()> {
     let started = Instant::now();
     loop {
         match file.try_lock_exclusive() {
@@ -141,10 +193,10 @@ fn acquire_log_lock(file: &fs::File) -> io::Result<()> {
                 if error.kind() == io::ErrorKind::WouldBlock
                     || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
             {
-                if started.elapsed() >= Duration::from_millis(50) {
+                if started.elapsed() >= timeout {
                     return Err(error);
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(poll);
             }
             Err(error) => return Err(error),
         }
@@ -205,7 +257,7 @@ fn protocol_reason(detail: &str) -> String {
     }
 }
 
-fn sanitize_fields(value: &mut Value, secrets: &[String]) {
+fn sanitize_fields(value: &mut Value, secrets: &[String], max_chars: usize) {
     match value {
         Value::String(text) => {
             for secret in secrets {
@@ -223,8 +275,8 @@ fn sanitize_fields(value: &mut Value, secrets: &[String]) {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            if text.chars().count() > 2048 {
-                *text = text.chars().take(2048).collect::<String>() + "…";
+            if text.chars().count() > max_chars {
+                *text = text.chars().take(max_chars).collect::<String>() + "…";
             }
         }
         Value::Object(fields) => {
@@ -263,13 +315,13 @@ fn sanitize_fields(value: &mut Value, secrets: &[String]) {
                             }
                         }
                     }
-                    sanitize_fields(value, secrets);
+                    sanitize_fields(value, secrets, max_chars);
                 }
             }
         }
         Value::Array(values) => {
             for value in values {
-                sanitize_fields(value, secrets);
+                sanitize_fields(value, secrets, max_chars);
             }
         }
         _ => {}
@@ -293,10 +345,11 @@ fn log_directory() -> Result<PathBuf, String> {
 /// Initialize once at process startup. Logging errors never prevent Atlas from running.
 pub fn init(component: &'static str) {
     let result = log_directory().and_then(|directory| {
-        BackendLog::new(
+        BackendLog::with_policy(
             directory,
             component,
             std::env::var_os("ATLAS_LOG_STDERR").is_some_and(|v| v == "1"),
+            crate::observability::ObservabilityConfig::load()?.diagnostics,
         )
         .map_err(|error| error.to_string())
     });
@@ -458,6 +511,36 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn configured_log_level_rotation_and_session_correlation_are_applied() {
+        let root = tempfile::tempdir().unwrap();
+        let mut policy = crate::observability::ObservabilityConfig::default().diagnostics;
+        policy.level = "INFO".into();
+        policy.backup_count = 1;
+        policy.max_file_bytes = 500;
+        let log = BackendLog::with_policy(root.path().to_owned(), "test", false, policy).unwrap();
+        let _trace = session_trace("session-1", "turn-1");
+        log.write("DEBUG", "hidden", None, json!({})).unwrap();
+        assert!(fs::read_to_string(root.path().join("atlas.jsonl"))
+            .unwrap()
+            .is_empty());
+        for _ in 0..10 {
+            log.write(
+                "INFO",
+                "step",
+                Some("request-1"),
+                json!({"callId":"call-1"}),
+            )
+            .unwrap();
+        }
+        let line = fs::read_to_string(root.path().join("atlas.jsonl")).unwrap();
+        let record: Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
+        assert_eq!(record["sessionId"], "session-1");
+        assert_eq!(record["turnId"], "turn-1");
+        assert!(root.path().join("atlas.1.jsonl").is_file());
+        assert!(!root.path().join("atlas.2.jsonl").exists());
+    }
+
+    #[test]
     fn artifact_redaction_preserves_utf8_offsets_and_line_breaks_without_logging() {
         let secret = "artifact-credential-ế";
         protect_secret(secret);
@@ -555,7 +638,13 @@ mod tests {
             let error =
                 crate::agent_output::AgentOutput::parse_tool_protocol(response).unwrap_err();
             let mut fields = json!({"error": error});
-            sanitize_fields(&mut fields, &[]);
+            sanitize_fields(
+                &mut fields,
+                &[],
+                crate::observability::ObservabilityConfig::default()
+                    .diagnostics
+                    .max_field_chars,
+            );
             let detail = fields["error"].as_str().unwrap();
             assert!(detail.contains(reason), "{response}: {detail}");
             assert!(!detail.contains("private response text"));

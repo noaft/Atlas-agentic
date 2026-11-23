@@ -43,6 +43,7 @@ export interface ConversationAskResult {
   additionalInputs?: TurnInput[];
   interrupted?: boolean;
   processWarning?: string | null;
+  persistenceWarning?: string | null;
   memory?: MemoryCheckpoint | null;
   answer: string;
   metadata: ConversationMetadata;

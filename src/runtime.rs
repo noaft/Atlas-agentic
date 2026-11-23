@@ -341,6 +341,13 @@ impl Runtime {
                 if wakeup_batch.is_none() {
                     wakeup_batch = self.execution_scope.claim()?;
                 }
+                if let Some(batch) = &wakeup_batch {
+                    context.record_step(
+                        "wakeup",
+                        serde_json::to_value(batch)
+                            .map_err(|_| "Could not encode session wakeup")?,
+                    )?;
+                }
                 for info in self.execution_scope.list()? {
                     if matches!(
                         info.status.as_str(),
@@ -441,9 +448,13 @@ impl Runtime {
                 protocol_repairs = 0;
                 continue;
             }
+            let call_id = uuid::Uuid::new_v4().to_string();
+            context.record_step("model_call_started",serde_json::json!({"callId":call_id,"model":agent.model_name(),"maxOutputTokens":prepared.max_output_tokens}))?;
             if self.turn_control.is_some() {
                 on_tool_event(&ToolEvent::ModelState { generating: true });
             }
+            context.check_cancelled()?;
+            self.check_turn()?;
             let response_result = agent.process_request_with_control(
                 &crate::agents::AgentRequest {
                     input: &input,
@@ -468,13 +479,15 @@ impl Runtime {
                     final_stream.preview_progress(on_tool_event);
                 },
                 &|| {
-                    self.check_turn().is_err()
+                    context.check_cancelled().is_err()
+                        || self.check_turn().is_err()
                         || self
                             .turn_control
                             .as_ref()
                             .is_some_and(|control| control.has_pending())
                 },
             );
+            context.record_step("model_call_finished",serde_json::json!({"callId":call_id,"model":agent.model_name(),"status":if response_result.is_ok(){"succeeded"}else{"failed"},"usage":response_result.as_ref().ok().and_then(|r|r.usage.as_ref())}))?;
             // A preview is never a committed progress record. Clear it on every exit,
             // including provider errors, repair limits, denied calls and validation errors.
             if self.turn_control.is_some() {

@@ -24,7 +24,8 @@ between chats or reuse it for changed activity records.
 If a request fails after tools have run, retain captured Activity on its failed
 assistant message in the owning in-memory session. Keep unfinished outcomes
 unconfirmed; do not infer success or failure from provider failure. This local
-view is removed with the failed messages on retry and is not persisted as history.
+view is removed with the failed messages on retry and is not persisted as ordinary
+history. The separate [session journal](sessions.md) retains the failed attempt.
 
 Wakeup-selected output is literal text unless the backend marks a complete,
 untruncated JSON result from a process tool. Format those process results with
@@ -59,7 +60,9 @@ argument support and typed outcome adapters as needed.
 
 The desktop UI calls Rust only through `desktop/src/atlas-api.ts`. Keep **New
 chat** as an unsaved frontend draft; only a successful or explicitly stopped first `ask` may create
-local conversation data or persist its validated starting folder. New chats use
+committed conversation history or persist its authoritative starting folder.
+The first submitted ask creates a separate dated session journal, including for
+failed requests; opening an empty draft creates none. New chats use
 an explicitly chosen draft folder, then a custom Settings default, then the
 automatic `Atlas` folder in the user's home directory. Saved continuations derive
 workspace authority from conversation metadata and must ignore a conflicting
@@ -73,9 +76,13 @@ errors, and approvals owned by their session, even when another chat or Settings
 is visible. Independent chats may run concurrently, but only one request may
 run per saved conversation in the desktop backend. Navigation must not cancel
 all pending approvals. First requests remain in-memory sidebar sessions until
-successful or explicitly stopped persistence supplies an ID; other failures stay retryable without writing
-conversation data. Session state and unfinished requests do not survive an app
-reload or restart. Running requests retain their starting settings and folder.
+successful or explicitly stopped persistence supplies an ID; other failures stay retryable without writing committed
+conversation history. Their native draft identity selects the same durable journal
+on retry. In-memory UI state and unfinished requests do not survive an app
+reload or restart. Journal files remain inspectable and never automatically restart
+work. A post-commit journal error returns saved metadata plus `persistenceWarning`;
+keep that conversation selected, display the warning, and do not mark its answer
+failed or automatically resend it. Running requests retain their starting settings and folder.
 Keep Settings inputs and user scroll position stable during background updates,
 and coalesce visible streaming renders to animation frames. Blocking native
 storage/settings operations run on background workers rather than the Tauri

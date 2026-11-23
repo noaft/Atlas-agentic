@@ -660,7 +660,7 @@ export class ChatStore {
         messages: orderedMessages,
         status: "idle", generating: false, directAgent: null,
         stopping: false, queuePaused: completed.interrupted || chat.turn?.stopped || chat.state.queuePaused,
-        errorMessage: completed.processWarning ?? null,
+        errorMessage: [completed.persistenceWarning, completed.processWarning].filter(Boolean).join("\n") || null,
         pendingApproval: null,
         toolActivity: [],
       });

@@ -610,3 +610,11 @@ Use `/name task` to address a saved agent directly for one turn without a parent
 Atlas model call. The next ordinary message goes to Atlas.
 See [the delegation reference](../architecture/delegated-agents.md) for storage,
 limits, CLI lifetime, cancellation semantics and report paging.
+
+## Session journals and debug policy
+
+Submitted chats create dated JSON session journals under the data root, separate
+from committed chat history and rotating technical logs. See the
+[session and log contract](../architecture/sessions.md) for layout, recovery,
+context cursors and privacy. Defaults live in `config/observability.toml`;
+`ATLAS_OBSERVABILITY_CONFIG` can select a complete replacement TOML policy.

@@ -26,7 +26,8 @@ Architecture contracts below document implemented behavior unless marked otherwi
 | [Skills](architecture/skills.md) | Storage, imports, request snapshots, runtime tools, and Settings |
 | [Delegated agents](architecture/delegated-agents.md) | Definitions, grants, runs, reports, and direct slash commands |
 | [Model providers](architecture/model-providers.md) | Adapters, profiles, discovery, source identity, capacity, and usage |
-| [Conversations](architecture/conversations.md) | Persistence, activity, memory, progress, repair, and diagnostics |
+| [Conversations](architecture/conversations.md) | Committed history, activity, memory, progress, and repair |
+| [Session journals and logs](architecture/sessions.md) | Dated JSON sessions, durable events, context cursors, debug policy and correlation |
 | [Desktop state](architecture/desktop-state.md) | Session/workspace ownership, built-in tasks, UI, and IME |
 | [Live chat input](architecture/live-chat-input.md) | Queuing, supplements, steering, interruptible inference, and Stop |
 | [Resource lifecycle rationale](architecture/tool-resource-lifecycle.md) | Original ownership decisions; execution/UI portions superseded as noted |

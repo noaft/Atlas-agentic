@@ -161,6 +161,9 @@ fn run_ask(prompt: &str, id: Option<&ConversationId>) -> Result<(), String> {
             _ => {}
         },
     )?;
+    if let Some(warning) = &result.persistence_warning {
+        eprintln!("Warning: {warning}");
+    }
     executions.bind_persistence_owner(&owner, &result.metadata.id.to_string())?;
     println!("\n{}", render_conversation_metadata(&result.metadata));
     Ok(())

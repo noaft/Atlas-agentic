@@ -2145,3 +2145,16 @@ test("a direct agent finishes in its owning chat after navigation and normal inp
   expect(api.askCalls.at(-1)?.prompt).toBe("ordinary follow-up");
   expect(store.getState().messages.at(-1)?.content).toBe("Atlas response");
 });
+
+test("journal warnings preserve committed conversation identity and successful delivery", async () => {
+  const api = new FakeApi();
+  api.asks.push(async () => ({ ...result(first, "saved answer", true), persistenceWarning: "Conversation saved; journal incomplete" }));
+  const store = new ChatStore(api);
+  await store.initialize();
+  store.setDraft("task");
+  await store.send();
+  expect(store.getState().activeConversationId).toBe(first.id);
+  expect(store.getState().status).toBe("idle");
+  expect(store.getState().errorMessage).toBe("Conversation saved; journal incomplete");
+  expect(store.getState().messages.at(-1)?.content).toBe("saved answer");
+});

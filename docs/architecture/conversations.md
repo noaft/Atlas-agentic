@@ -8,7 +8,9 @@ repair. For active-turn input and explicit Stop, also read [Live chat input](liv
 Backend diagnostics initialize at CLI/desktop startup and write JSON lines to
 `logs/atlas.jsonl` under the same data root (`ATLAS_DATA_DIR` applies).
 `ATLAS_LOG_DIR` overrides only the log directory; `ATLAS_LOG_STDERR=1` also emits
-entries to stderr. Keep files bounded at 5 MiB with three backups, private Unix
+entries to stderr. Defaults are 5 MiB with three backups; rotation, DEBUG threshold
+and lock bounds are configured through [session/log policy](sessions.md#configuration-and-debug-correlation).
+Preserve private Unix
 creation modes, and process-safe rotation. Logging failures must not block app
 use; bound log-lock acquisition and omit response-derived parser-error values.
 Correlate worker operations and nested model calls with a request ID; log
@@ -26,14 +28,16 @@ uses `$XDG_DATA_HOME/atlas` (normally `~/.local/share/atlas`), macOS uses
 `ATLAS_DATA_DIR` overrides the root for tests and development. The root contains
 `conversations.json`, `conversations.lock`, `conversations/<uuid>.jsonl`, optional
 `activities/<uuid>.jsonl` sidecars, and `trash/`. Delete moves history and any
-activity and memory sidecars to `trash/` and reports the history recovery location; recovery
+activity, memory and session-journal sidecars to `trash/` and reports the history recovery location; recovery
 is manual, with no CLI restore command.
 
 `ConversationService` coordinates the store and runtime. Successful ordinary
 history stores the original User, ordered applied supplemental Users, and final
 Assistant atomically. Explicit user Stop additionally saves the authoritative
 displayed partial answer with an interrupted Activity marker and skips title
-inference. Generic failure, channel loss, and scope teardown still save no turn.
+inference. Generic failure, channel loss, and scope teardown still save no committed turn.
+The separate [session journal](sessions.md) records live steps and failed attempts
+from the first submitted ask; it never makes failed output part of future context.
 See [Live chat input](live-chat-input.md).
 
 ## Progress messages
@@ -59,7 +63,9 @@ saved progress records. The CLI sends committed updates to stderr.
 ## Activity and compaction
 
 Save sanitized, bounded runtime status and tool activity from successful or
-explicitly stopped turns in the separate sidecar; other failed turns save neither. Never persist screenshot pixels, image data,
+explicitly stopped turns in the separate activity sidecar; other failed turns save
+neither ordinary history nor activity. Their durable session events remain in the
+separate journal. Never persist screenshot pixels, image data,
 or tool attachments. New activity batches also store elapsed runtime/model work
 duration; legacy batches without it remain valid. Raw activity details remain
 local, while later model turns receive only a separately capped summary from the

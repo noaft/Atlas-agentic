@@ -98,6 +98,7 @@ impl Runtime {
             sequence: 0,
             tool: "call_agent".into(),
         });
+        self.check_direct_cancelled(context)?;
         let started = delegation.start(
             request,
             &CallContext {

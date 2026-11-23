@@ -285,8 +285,14 @@ impl DesktopState {
             None => runtime,
         };
         let runtime = runtime.with_direct_agent_command(prompt)?;
-        let mut result = ConversationService::new(&runtime, &self.store, effective.history_limit)
-            .with_cancellation(&_request.cancelled)
+        let service = ConversationService::new(&runtime, &self.store, effective.history_limit)
+            .with_cancellation(&_request.cancelled);
+        let service = if let Some(scope) = &process_scope {
+            service.with_session_key(scope.id())
+        } else {
+            service
+        };
+        let mut result = service
             .ask_with_workspace_permission_authorizer_and_fallible_sink(
                 prompt,
                 conversation_id,
@@ -578,6 +584,8 @@ pub struct ConversationAskResultDto {
     pub interrupted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistence_warning: Option<String>,
     pub memory: Option<atlas_agentic::conversations::MemoryCheckpoint>,
     pub answer: String,
     pub metadata: ConversationMetadataDto,
@@ -593,6 +601,7 @@ impl From<ConversationAskResult> for ConversationAskResultDto {
             additional_inputs: result.additional_inputs,
             interrupted: result.interrupted,
             process_warning: None,
+            persistence_warning: result.persistence_warning,
             answer: result.answer,
             memory: result.memory,
             metadata: result.metadata.into(),
@@ -1825,6 +1834,7 @@ mod tests {
             activity_duration_ms: 72_000,
             usage: None,
             created: true,
+            persistence_warning: None,
         }
         .into();
         assert_eq!(completed.activity_duration_ms, 72_000);

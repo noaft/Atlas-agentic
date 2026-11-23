@@ -20,7 +20,7 @@ architecture. Read the relevant contracts below before editing that subsystem.
 | `src/agents/`, `src/agent_catalog.rs`, `src/agent_runs.rs`, `src/delegation.rs` | Agents, definitions, owned child runs |
 | `src/executions/`, `src/tools/`, `src/process_limits.rs` | Managed tools, processes, and quotas |
 | `src/models/`, `src/settings.rs` | Providers, budgets, profiles, and settings |
-| `src/conversations/`, `src/diagnostics.rs` | History, activity, memory, and private logs |
+| `src/conversations/`, `src/sessions/`, `src/diagnostics.rs` | Chat projections, dated session journals, memory, and private logs |
 | `src/skills/`, `src/mcp/`, `src/tasks/`, `src/workspace.rs` | Skills, MCP/OAuth, built-in tasks, starting folders |
 | `desktop/src/`, `desktop/src-tauri/` | Frontend and native bridge |
 | `tests/`, `examples/` | Behavior tests and no-key demos |
@@ -39,7 +39,8 @@ Read only the areas relevant to the change; cross-cutting work may need several.
 | Skill discovery, creation, imports, Settings | [Skill contracts](docs/architecture/skills.md) |
 | Child agents, grants, reports, slash dispatch | [Delegated agents](docs/architecture/delegated-agents.md) |
 | Providers, profiles, discovery, limits, usage | [Model provider contracts](docs/architecture/model-providers.md) |
-| History, memory, compaction, progress, repair, logs | [Conversation contracts](docs/architecture/conversations.md) |
+| History, memory, compaction, progress, repair | [Conversation contracts](docs/architecture/conversations.md) |
+| Session journals, event cursors, debug logs, observability policy | [Session and log contracts](docs/architecture/sessions.md) |
 | Desktop state, task dispatch, workspace, IME | [Desktop contracts](docs/architecture/desktop-state.md) |
 | Queuing, steering, interruptible inference, Stop | [Live chat input](docs/architecture/live-chat-input.md) |
 | Native Vietnamese input on WSLg | [UniKey reproduction and workaround](docs/platforms/wslg-unikey.md) |

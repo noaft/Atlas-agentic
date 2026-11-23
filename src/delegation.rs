@@ -326,74 +326,118 @@ impl Delegation {
         let mode = context.permission_mode;
         let task = request.task.clone();
         let allowed = request.tools.clone();
+        let session_trace = crate::sessions::trace::current()
+            .map(|trace| trace.freeze())
+            .transpose()?;
         let view = self.manager.start_with_parent(
             &self.owner,
             request,
             timeout,
             context.control.map(RunControl::run_id),
             move |control| {
-                control.check()?;
-                let local = local_definition(&definition, &settings);
-                let mut runtime =
-                    (child.factory)(&child.workspace, local, &settings, &child.store)?;
-                if let Some(scope) = &child.execution_scope {
-                    let execution_scope = scope.child(control.run_id());
-                    control.attach_execution_scope(execution_scope.clone())?;
-                    runtime = runtime.with_execution_scope(execution_scope);
+                let trace = session_trace
+                    .as_ref()
+                    .map(|trace| trace.child(control.run_id()));
+                let _trace_guard = trace.clone().map(crate::sessions::trace::enter);
+                if let Some(trace) = &trace {
+                    trace.record(
+                        "child_run_started",
+                        serde_json::json!({"agent":definition.name,"model":settings.model}),
+                    )?;
                 }
-                #[cfg(any(unix, windows))]
-                if let Some(scope) = &child.process_scope {
-                    runtime = if child.persistent {
-                        runtime.with_process_scope(&child.workspace, scope.clone())
-                    } else {
-                        runtime.with_request_process_scope(&child.workspace, scope.clone(), true)
+                let result = (|| {
+                    control.check()?;
+                    let local = local_definition(&definition, &settings);
+                    let mut runtime =
+                        (child.factory)(&child.workspace, local, &settings, &child.store)?;
+                    if let Some(scope) = &child.execution_scope {
+                        let execution_scope = scope.child(control.run_id());
+                        control.attach_execution_scope(execution_scope.clone())?;
+                        runtime = runtime.with_execution_scope(execution_scope);
+                    }
+                    #[cfg(any(unix, windows))]
+                    if let Some(scope) = &child.process_scope {
+                        runtime = if child.persistent {
+                            runtime.with_process_scope(&child.workspace, scope.clone())
+                        } else {
+                            runtime.with_request_process_scope(
+                                &child.workspace,
+                                scope.clone(),
+                                true,
+                            )
+                        };
+                    }
+                    // Register then restrict: scope registration must never restore an ungranted tool.
+                    let skills = crate::skills::SkillStore::for_settings(
+                        &child.store,
+                        child.workspace.clone(),
+                    )?;
+                    runtime = runtime.select_skills(&skills, &definition.skills)?;
+                    runtime = runtime
+                        .with_delegation(child.clone())
+                        .restrict_tools(&allowed);
+                    runtime.run_control = Some(control.clone());
+                    control.set_model(&settings.model);
+                    let authorizer = RunAuthorizer(control.clone());
+                    let mut last_progress: Option<String> = None;
+                    let mut events = |event: &ToolEvent| {
+                        if let Some(trace) = &trace {
+                            let _ = trace.event(event);
+                        }
+                        match event {
+                            ToolEvent::Progress { message } => {
+                                last_progress = Some(message.clone());
+                                control.update(last_progress.as_deref(), None);
+                            }
+                            ToolEvent::Usage { usage } => control.record_usage(usage.as_ref()),
+                            ToolEvent::Started { tool, .. } => {
+                                control.increment_tool_calls();
+                                control.update(last_progress.as_deref(), Some(tool));
+                            }
+                            ToolEvent::Finished {
+                                tool,
+                                success,
+                                summary,
+                                ..
+                            } => {
+                                control.record_tool(tool, Some(*success), summary);
+                                control.update(last_progress.as_deref(), None);
+                            }
+                            _ => {}
+                        }
                     };
+                    let mut child_context = crate::sessions::trace::WorkerContext {
+                        inner: &mut snapshot,
+                        trace: trace.as_ref(),
+                    };
+                    let output = runtime.ask_stream_with_managed_context(
+                        &task,
+                        &mut child_context,
+                        mode,
+                        RuntimeAskCallbacks {
+                            authorizer: &authorizer,
+                            on_delta: &mut |content| {
+                                if let Some(trace) = &trace {
+                                    let _ = trace.record(
+                                        "child_assistant_delta",
+                                        serde_json::json!({"content":content}),
+                                    );
+                                }
+                            },
+                            on_tool_event: &mut events,
+                        },
+                    );
+                    control.check()?;
+                    // Provider/transport errors are already sanitized at their boundary; no response body is retained.
+                    AgentResult::parse(&output?)
+                })();
+                if let Some(trace) = &trace {
+                    trace.record(
+                        "child_run_finished",
+                        serde_json::json!({"status":if result.is_ok(){"succeeded"}else{"failed"}}),
+                    )?;
                 }
-                // Register then restrict: scope registration must never restore an ungranted tool.
-                let skills =
-                    crate::skills::SkillStore::for_settings(&child.store, child.workspace.clone())?;
-                runtime = runtime.select_skills(&skills, &definition.skills)?;
-                runtime = runtime
-                    .with_delegation(child.clone())
-                    .restrict_tools(&allowed);
-                runtime.run_control = Some(control.clone());
-                control.set_model(&settings.model);
-                let authorizer = RunAuthorizer(control.clone());
-                let mut last_progress: Option<String> = None;
-                let mut events = |event: &ToolEvent| match event {
-                    ToolEvent::Progress { message } => {
-                        last_progress = Some(message.clone());
-                        control.update(last_progress.as_deref(), None);
-                    }
-                    ToolEvent::Usage { usage } => control.record_usage(usage.as_ref()),
-                    ToolEvent::Started { tool, .. } => {
-                        control.increment_tool_calls();
-                        control.update(last_progress.as_deref(), Some(tool));
-                    }
-                    ToolEvent::Finished {
-                        tool,
-                        success,
-                        summary,
-                        ..
-                    } => {
-                        control.record_tool(tool, Some(*success), summary);
-                        control.update(last_progress.as_deref(), None);
-                    }
-                    _ => {}
-                };
-                let output = runtime.ask_stream_with_managed_context(
-                    &task,
-                    &mut snapshot,
-                    mode,
-                    RuntimeAskCallbacks {
-                        authorizer: &authorizer,
-                        on_delta: &mut |_| {},
-                        on_tool_event: &mut events,
-                    },
-                );
-                control.check()?;
-                // Provider/transport errors are already sanitized at their boundary; no response body is retained.
-                AgentResult::parse(&output?)
+                result
             },
         )?;
         Ok((view, timeout))
@@ -551,7 +595,7 @@ impl RuntimeContext for FrozenContext {
         &mut self,
         agent: &dyn crate::agents::Agent,
         request: ContextPreparationRequest<'_>,
-        _: &mut dyn FnMut(&ToolEvent),
+        events: &mut dyn FnMut(&ToolEvent),
         interrupted: &dyn Fn() -> bool,
     ) -> Result<PreparedContext, String> {
         let limits = agent.model_limits()?;
@@ -578,6 +622,17 @@ impl RuntimeContext for FrozenContext {
             {
                 return Err("Fork/task context exceeds child model capacity; choose task_only with a smaller task or a larger model".into());
             }
+        }
+        if let Some(estimate) = estimate {
+            events(&ToolEvent::ContextStatus {
+                status: crate::runtime::context::ContextStatus {
+                    available: limits.is_some(),
+                    message: "Child context checked before inference".into(),
+                    estimated: estimate.estimated,
+                    input_tokens: Some(estimate.tokens),
+                    max_tokens: limits.map(|l| l.context_window),
+                },
+            });
         }
         Ok(PreparedContext {
             history: self.history.clone(),
@@ -1203,6 +1258,36 @@ mod integration_tests {
         let saved = store.load(&result.metadata.id).unwrap();
         assert_eq!(saved.messages[0].content, "/REVIEWER Inspect the workspace");
         assert_eq!(saved.messages[1].content, result.answer);
+        let journals = crate::sessions::SessionStore::new(
+            store.data_root(),
+            crate::observability::ObservabilityConfig::default().session,
+        )
+        .unwrap();
+        let journal = journals
+            .open(
+                Some(&result.metadata.id),
+                None,
+                chrono::Utc::now().fixed_offset(),
+            )
+            .unwrap();
+        let events = journal.events().unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.kind == "model_call_started" && e.data["agentRunId"] == runs[0].run_id));
+        assert!(events
+            .iter()
+            .any(|e| e.kind == "child_context_prepared" && e.data["agentRunId"] == runs[0].run_id));
+        assert!(events.iter().any(|e| e.kind == "child_run_finished"));
+        let cursor = journal.metadata().unwrap().context_cursor;
+        assert_eq!(
+            events
+                .iter()
+                .find(|e| Some(e.sequence) == cursor.prepared_event)
+                .unwrap()
+                .kind,
+            "context_prepared"
+        );
+        drop(journal);
         let runtime = runtime
             .with_direct_agent_command("ordinary request")
             .unwrap();

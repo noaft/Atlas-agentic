@@ -419,6 +419,7 @@ mod runtime_wakeup {
     struct CancelModel {
         called: Cell<bool>,
         cancelled: Arc<AtomicBool>,
+        cancelled_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     }
     impl ModelProvider for CancelModel {
         fn complete(&self, _: &ModelRequest) -> Result<String, String> {
@@ -428,6 +429,7 @@ mod runtime_wakeup {
                         .into(),
                 )
             } else {
+                *self.cancelled_at.lock().unwrap() = Some(std::time::Instant::now());
                 self.cancelled.store(true, Ordering::SeqCst);
                 Ok(r#"{"type":"final","content":"must not finish after stop"}"#.into())
             }
@@ -438,12 +440,14 @@ mod runtime_wakeup {
         use atlas_agentic::conversations::{ConversationService, ConversationStore};
         let cancelled = Arc::new(AtomicBool::new(false));
         let finish = Arc::new(AtomicBool::new(false));
+        let cancelled_at = Arc::new(std::sync::Mutex::new(None));
         let definition=LocalAgentDefinition::from_toml("name='atlas'\ndisplay_name='Atlas'\nmodel_provider='fake'\nmodel='fake'\nsystem_prompt='Test'\nconversation_title_prompt='Title'").unwrap();
         let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
             definition,
             Box::new(CancelModel {
                 called: Cell::new(false),
                 cancelled: cancelled.clone(),
+                cancelled_at: cancelled_at.clone(),
             }),
         ))]))
         .with_tools(ToolRegistry::new(vec![
@@ -454,7 +458,6 @@ mod runtime_wakeup {
         ]));
         let dir = tempfile::tempdir().unwrap();
         let store = ConversationStore::at(dir.path().to_owned());
-        let start = std::time::Instant::now();
         let result = ConversationService::new(&runtime, &store, 40)
             .with_cancellation(&cancelled)
             .ask_with_permission_authorizer(
@@ -471,7 +474,15 @@ mod runtime_wakeup {
             "Stop must cancel the request even without memory compaction"
         );
         assert!(result.unwrap_err().contains("cancelled"));
-        assert!(start.elapsed() < Duration::from_secs(1));
+        // Measure cancellation latency, excluding durable journal setup before the signal.
+        assert!(
+            cancelled_at
+                .lock()
+                .unwrap()
+                .expect("model must signal cancellation")
+                .elapsed()
+                < Duration::from_secs(1)
+        );
         assert!(store.list().unwrap().is_empty());
     }
     impl Tool for ImmediateTool {

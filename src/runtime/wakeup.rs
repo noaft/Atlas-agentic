@@ -43,6 +43,7 @@ impl Runtime {
         images: &mut Vec<ImageData>,
         context: &dyn context::RuntimeContext,
     ) -> Result<serde_json::Value, String> {
+        context.check_cancelled()?;
         let (permission_mode, sequence) = authorization;
         match action {
             ExecutionAction::Wait { ids, yield_ms: _ } => serde_json::to_value(
@@ -93,6 +94,7 @@ impl Runtime {
                     }
                 }
                 self.check_turn()?;
+                context.check_cancelled()?;
                 if self.turn_control.as_ref().is_some_and(|c| c.has_pending()) {
                     return Err("Execution cancellation superseded by user input".into());
                 }

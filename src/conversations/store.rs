@@ -28,6 +28,12 @@ const INDEX_VERSION: u32 = 1;
 const FALLBACK_TITLE: &str = "Untitled conversation";
 type IndexPublisher = dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync;
 
+#[derive(Default)]
+struct TurnCreation {
+    activity: Option<ActivityTurn>,
+    reserved: Option<(ConversationId, chrono::DateTime<Utc>)>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ConversationIndex {
     version: u32,
@@ -111,7 +117,14 @@ impl ConversationStore {
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
     ) -> Result<ConversationMetadata, String> {
-        self.create_turn_inner(user, &[], assistant, workspace, permission_mode, None)
+        self.create_turn_inner(
+            user,
+            &[],
+            assistant,
+            workspace,
+            permission_mode,
+            TurnCreation::default(),
+        )
     }
 
     pub fn create_turn_with_activity(
@@ -147,7 +160,35 @@ impl ConversationStore {
             assistant,
             workspace,
             permission_mode,
-            Some(activity),
+            TurnCreation {
+                activity: Some(activity),
+                reserved: None,
+            },
+        )
+    }
+
+    pub(crate) fn create_session_turn(
+        &self,
+        session: &crate::sessions::SessionMetadata,
+        user: &str,
+        additional_inputs: &[TurnInput],
+        assistant: &str,
+        authority: (Option<&Path>, PermissionMode),
+        activity: ActivityTurn,
+    ) -> Result<ConversationMetadata, String> {
+        self.create_turn_inner(
+            user,
+            additional_inputs,
+            assistant,
+            authority.0,
+            Some(authority.1),
+            TurnCreation {
+                activity: Some(activity),
+                reserved: Some((
+                    session.id.clone(),
+                    session.first_sent_at.with_timezone(&Utc),
+                )),
+            },
         )
     }
 
@@ -158,8 +199,9 @@ impl ConversationStore {
         assistant: &str,
         workspace: Option<&Path>,
         permission_mode: Option<PermissionMode>,
-        activity: Option<ActivityTurn>,
+        creation: TurnCreation,
     ) -> Result<ConversationMetadata, String> {
+        let TurnCreation { activity, reserved } = creation;
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let workspace_path = workspace.map(validate_workspace).transpose()?;
@@ -170,15 +212,25 @@ impl ConversationStore {
                 )
             })?;
 
-            let id = loop {
-                let candidate = ConversationId::new();
-                if !index
-                    .conversations
-                    .iter()
-                    .any(|metadata| metadata.id == candidate)
-                    && !self.history_path(&candidate).exists()
+            if let Some((id, _)) = &reserved {
+                if index.conversations.iter().any(|m| m.id == *id) || self.history_path(id).exists()
                 {
-                    break candidate;
+                    return Err("Reserved session conversation already exists".into());
+                }
+            }
+            let id = if let Some((id, _)) = &reserved {
+                id.clone()
+            } else {
+                loop {
+                    let candidate = ConversationId::new();
+                    if !index
+                        .conversations
+                        .iter()
+                        .any(|metadata| metadata.id == candidate)
+                        && !self.history_path(&candidate).exists()
+                    {
+                        break candidate;
+                    }
                 }
             };
             let now = Utc::now();
@@ -212,7 +264,7 @@ impl ConversationStore {
                 id,
                 title: FALLBACK_TITLE.to_string(),
                 title_attempted: false,
-                created_at: now,
+                created_at: reserved.as_ref().map_or(now, |(_, first)| *first),
                 updated_at: now,
                 message_count: messages.len(),
                 workspace_path,
@@ -453,6 +505,10 @@ impl ConversationStore {
 
     pub fn delete(&self, id: &ConversationId) -> Result<PathBuf, String> {
         let _lease = self.acquire_execution(id)?;
+        let session_store = crate::sessions::SessionStore::new(
+            &self.root,
+            crate::observability::ObservabilityConfig::load()?.session,
+        )?;
         self.with_exclusive_lock(|| {
             let mut index = self.read_index()?;
             let position = find_metadata_position(&index, id)?;
@@ -501,8 +557,18 @@ impl ConversationStore {
                     return Err(format!("Could not trash memory: {error}; rollback history={history_rollback:?}, activity={activity_rollback:?}"));
                 }
             }
+            let archived_session=match session_store.archive(id) {
+                Ok(archived)=>archived,
+                Err(error)=>{
+                    let memory_rollback=if moved_memory {fs::rename(&memory_trash_path,&memory_path)}else{Ok(())};
+                    let activity_rollback=if moved_activity {fs::rename(&activity_trash_path,&activity_path)}else{Ok(())};
+                    let history_rollback=fs::rename(&trash_path,&history_path);
+                    return Err(format!("Could not archive session: {error}; rollback history={history_rollback:?}, activity={activity_rollback:?}, memory={memory_rollback:?}"));
+                }
+            };
             index.conversations.remove(position);
             if let Err(publication_error) = self.write_index(&index) {
+                let session_rollback=archived_session.map_or(Ok(()),|archive|archive.restore());
                 let memory_rollback = if moved_memory { fs::rename(&memory_trash_path, &memory_path) } else { Ok(()) };
                 let activity_rollback = if moved_activity {
                     fs::rename(&activity_trash_path, &activity_path)
@@ -510,13 +576,13 @@ impl ConversationStore {
                     Ok(())
                 };
                 let history_rollback = fs::rename(&trash_path, &history_path);
-                return match (history_rollback, activity_rollback, memory_rollback) {
-                    (Ok(()), Ok(()), Ok(())) => Err(format!(
+                return match (history_rollback, activity_rollback, memory_rollback,session_rollback) {
+                    (Ok(()), Ok(()), Ok(()),Ok(())) => Err(format!(
                         "{publication_error}; deletion rolled back to {}",
                         history_path.display()
                     )),
-                    (history_result, activity_result, memory_result) => Err(format!(
-                        "{publication_error}; deletion rollback incomplete: history={history_result:?}, activity={activity_result:?}, memory={memory_result:?}; history remains recoverable at {}",
+                    (history_result, activity_result, memory_result,session_result) => Err(format!(
+                        "{publication_error}; deletion rollback incomplete: history={history_result:?}, activity={activity_result:?}, memory={memory_result:?}, session={session_result:?}; history remains recoverable at {}",
                         trash_path.display()
                     )),
                 };

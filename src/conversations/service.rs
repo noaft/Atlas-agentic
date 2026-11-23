@@ -21,6 +21,20 @@ pub struct ConversationAskResult {
     pub usage: Option<crate::models::ModelUsage>,
     pub memory: Option<super::MemoryCheckpoint>,
     pub created: bool,
+    pub persistence_warning: Option<String>,
+}
+
+impl ConversationAskResult {
+    fn warn_after_commit(&mut self, error: &str) {
+        if self.persistence_warning.is_none() {
+            self.persistence_warning=Some(format!("Conversation saved; some session details could not be written: {error}. Do not resend this turn automatically."));
+        }
+        crate::diagnostics::event(
+            "ERROR",
+            "session.persistence_incomplete",
+            serde_json::json!({"conversationId":self.metadata.id,"error":error}),
+        );
+    }
 }
 
 pub struct AskCallbacks<'a> {
@@ -34,6 +48,7 @@ pub struct ConversationService<'a> {
     store: &'a ConversationStore,
     history_limit: usize,
     cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+    session_key: Option<&'a str>,
 }
 
 impl<'a> ConversationService<'a> {
@@ -43,9 +58,14 @@ impl<'a> ConversationService<'a> {
             store,
             history_limit,
             cancelled: None,
+            session_key: None,
         }
     }
 
+    pub fn with_session_key(mut self, key: &'a str) -> Self {
+        self.session_key = Some(key);
+        self
+    }
     pub fn with_cancellation(mut self, cancelled: &'a std::sync::atomic::AtomicBool) -> Self {
         self.cancelled = Some(cancelled);
         self
@@ -225,6 +245,67 @@ impl<'a> ConversationService<'a> {
         callbacks: AskCallbacks<'_>,
     ) -> Result<ConversationAskResult, String> {
         let _lease = id.map(|id| self.store.acquire_execution(id)).transpose()?;
+        let config = crate::observability::ObservabilityConfig::load()?;
+        let first = id
+            .map(|id| {
+                self.store
+                    .load(id)
+                    .map(|c| config.session.at(c.metadata.created_at))
+            })
+            .transpose()?
+            .unwrap_or_else(|| config.session.now());
+        let sessions = crate::sessions::SessionStore::new(self.store.data_root(), config.session)?;
+        let journal = sessions.open(id, self.session_key, first)?;
+        let turn = journal.start_turn(prompt)?;
+        let _trace = crate::sessions::trace::enter(crate::sessions::trace::Trace::root(
+            journal.clone(),
+            &turn,
+        ));
+        let mut result = self.ask_recorded(
+            prompt,
+            id,
+            new_workspace,
+            requested_permission_mode,
+            callbacks,
+            &journal,
+            &turn,
+        );
+        let status = match &result {
+            Ok(result) if result.interrupted => "stopped",
+            Ok(_) => "succeeded",
+            Err(_) => "failed",
+        };
+        if let Err(error) = &result {
+            crate::diagnostics::event(
+                "ERROR",
+                "session.turn_failed",
+                serde_json::json!({"sessionId":journal.id(),"turnId":turn,"error":error}),
+            );
+        }
+        if let Err(error) = journal.finish_turn(&turn, status) {
+            match &mut result {
+                Ok(committed) => committed.warn_after_commit(&error),
+                Err(_) => {
+                    return Err(format!(
+                        "Session journal could not finish this turn: {error}"
+                    ))
+                }
+            }
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)] // A single native ask plus its owned journal/turn context.
+    fn ask_recorded(
+        &self,
+        prompt: &str,
+        id: Option<&ConversationId>,
+        new_workspace: Option<&Path>,
+        requested_permission_mode: PermissionMode,
+        callbacks: AskCallbacks<'_>,
+        journal: &crate::sessions::SessionJournal,
+        turn: &str,
+    ) -> Result<ConversationAskResult, String> {
         let agent = self.runtime.default_agent()?;
         let policy = agent
             .memory_policy()
@@ -269,11 +350,18 @@ impl<'a> ConversationService<'a> {
             }
             None => (Vec::new(), String::new(), requested_permission_mode),
         };
+        journal.record(turn,"turn_context",serde_json::json!({
+            "workspacePath":managed.conversation.as_ref().and_then(|c|c.metadata.workspace_path.as_deref()).or(new_workspace),
+            "permissionMode":permission_mode,"model":agent.model_name(),"agent":agent.name(),
+            "historyMode":if policy.is_some(){"managed"}else{"bounded"},
+            "applicationVersion":env!("CARGO_PKG_VERSION")
+        }))?;
         let mut sink_error = None;
         let mut collector = ActivityCollector::new();
         let mut latest_usage = None;
         let displayed_answer = std::cell::RefCell::new(String::new());
         let mut capture_event = |event: &ToolEvent| {
+            let _ = journal.record_runtime_event(turn, event);
             match event {
                 ToolEvent::Progress { message } => collector.progress(message),
                 ToolEvent::Usage { usage } => latest_usage = usage.clone(),
@@ -333,6 +421,13 @@ impl<'a> ConversationService<'a> {
             inner: context,
             cancelled: self.cancelled,
         };
+        let mut context = crate::sessions::context::SessionContext {
+            inner: &mut context,
+            journal,
+            turn,
+            store: self.store,
+            conversation_id: id,
+        };
         let answer = self.runtime.ask_stream_with_managed_context(
             prompt,
             &mut context,
@@ -343,6 +438,11 @@ impl<'a> ConversationService<'a> {
                     if sink_error.is_none() {
                         sink_error = (callbacks.on_delta)(delta).err();
                         if sink_error.is_none() {
+                            let _ = journal.record(
+                                turn,
+                                "assistant_delta",
+                                serde_json::json!({"content":delta}),
+                            );
                             self.runtime.record_displayed_delta(delta);
                             displayed_answer.borrow_mut().push_str(delta);
                         }
@@ -351,6 +451,7 @@ impl<'a> ConversationService<'a> {
                 on_tool_event: &mut capture_event,
             },
         );
+        journal.check()?;
         if let Some(error) = sink_error {
             return Err(error);
         }
@@ -374,6 +475,7 @@ impl<'a> ConversationService<'a> {
         activity_turn.usage = latest_usage.clone();
         let activities = activity_turn.records.clone();
 
+        let mut post_commit_error = None;
         let metadata = match id {
             Some(id) => self.store.append_turn_with_inputs_and_activity(
                 id,
@@ -385,29 +487,64 @@ impl<'a> ConversationService<'a> {
                 activity_turn,
             )?,
             None => {
-                let metadata = self.store.create_turn_with_inputs_and_activity(
+                let metadata = self.store.create_session_turn(
+                    &journal.metadata()?,
                     prompt,
                     &additional_inputs,
                     &answer,
-                    new_workspace,
-                    Some(permission_mode),
+                    (new_workspace, permission_mode),
                     activity_turn,
                 )?;
                 let title = if interrupted {
                     None
+                } else if journal
+                    .record(
+                        turn,
+                        "title_generation_started",
+                        serde_json::json!({"model":agent.model_name()}),
+                    )
+                    .is_ok()
+                {
+                    let response = self.runtime.generate_conversation_title(prompt);
+                    let _=journal.record(turn,"title_generation_finished",serde_json::json!({"status":if response.is_ok(){"succeeded"}else{"failed"}}));
+                    response.ok().and_then(|raw| sanitize_title(&raw))
                 } else {
-                    self.runtime
-                        .generate_conversation_title(prompt)
-                        .ok()
-                        .and_then(|raw| sanitize_title(&raw))
+                    None
                 };
-                self.store
-                    .record_title_attempt(&metadata.id, title.as_deref())?
+                match self
+                    .store
+                    .record_title_attempt(&metadata.id, title.as_deref())
+                {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        post_commit_error = Some(error);
+                        metadata
+                    }
+                }
             }
         };
 
-        Ok(ConversationAskResult {
-            memory: self.store.load_memory(&metadata.id)?,
+        let finalized = (|| {
+            journal.record(turn,"conversation_committed",serde_json::json!({"conversationId":metadata.id,"messageCount":metadata.message_count}))?;
+            journal.record(
+                turn,
+                "assistant_final",
+                serde_json::json!({"content":answer,"interrupted":interrupted}),
+            )?;
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = finalized {
+            post_commit_error = Some(error);
+        }
+        let memory = match self.store.load_memory(&metadata.id) {
+            Ok(memory) => memory,
+            Err(error) => {
+                post_commit_error = Some(error);
+                None
+            }
+        };
+        let mut result = ConversationAskResult {
+            memory,
             answer,
             additional_inputs,
             interrupted,
@@ -416,6 +553,11 @@ impl<'a> ConversationService<'a> {
             activity_duration_ms,
             usage: latest_usage,
             created: id.is_none(),
-        })
+            persistence_warning: None,
+        };
+        if let Some(error) = post_commit_error {
+            result.warn_after_commit(&error);
+        }
+        Ok(result)
     }
 }
