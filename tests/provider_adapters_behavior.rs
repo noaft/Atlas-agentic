@@ -38,6 +38,14 @@ fn fake_with_profile(provider: &str, response: &str, stream: bool, patch: Value)
     fake_sequence(provider, &[(response, stream)], patch)
 }
 fn fake_sequence(provider: &str, responses: &[(&str, bool)], patch: Value) -> FakeProvider {
+    fake_sequence_with_status(provider, responses, patch, 200)
+}
+fn fake_sequence_with_status(
+    provider: &str,
+    responses: &[(&str, bool)],
+    patch: Value,
+    status: u16,
+) -> FakeProvider {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let responses: Vec<(String, bool)> = responses
@@ -73,7 +81,7 @@ fn fake_sequence(provider: &str, responses: &[(&str, bool)], patch: Value) -> Fa
                 },
             ))
             .unwrap();
-            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", if stream {"text/event-stream"} else {"application/json"}, response.len(), response).unwrap();
+            write!(socket,"HTTP/1.1 {status} Test\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", if stream {"text/event-stream"} else {"application/json"}, response.len(), response).unwrap();
         }
     });
     let mut settings = serde_json::to_value(AtlasSettings::default()).unwrap();
@@ -81,6 +89,19 @@ fn fake_sequence(provider: &str, responses: &[(&str, bool)], patch: Value) -> Fa
     let mut profile = json!({"apiKey":"test-secret", "baseUrl":url,"model":"alias"});
     for (key, value) in patch.as_object().unwrap() {
         profile[key] = value.clone();
+    }
+    if let Some(limits) = profile
+        .get_mut("modelLimits")
+        .and_then(Value::as_object_mut)
+    {
+        let source = atlas_agentic::settings::providers::source_for(
+            atlas_agentic::settings::ProviderId::parse(provider).unwrap(),
+            &url,
+        )
+        .unwrap();
+        for entry in limits.values_mut() {
+            *entry = json!({"sourceId":source.source_id,"limits":entry.clone()});
+        }
     }
     settings["providers"] = json!({provider:profile});
     let settings: AtlasSettings = serde_json::from_value(settings).unwrap();
@@ -258,7 +279,7 @@ fn compatible_keyless_endpoints_omit_authorization_and_optional_flags_are_explic
 }
 
 #[test]
-fn images_use_native_payload_formats_without_writing_files_or_claiming_token_estimates() {
+fn images_use_native_payload_formats_and_provider_preflight_counts() {
     use atlas_agentic::media::{ImageData, ImageDetail};
     let images = [ImageData {
         mime_type: "image/png".into(),
@@ -285,15 +306,31 @@ fn images_use_native_payload_formats_without_writing_files_or_claiming_token_est
             r#"{"choices":[{"message":{"content":"answer"},"finish_reason":"stop"}]}"#,
         ),
     ] {
-        let (model, rx, server) = fake_with_profile(
+        let count = if provider == "gemini" {
+            r#"{"totalTokens":42}"#
+        } else {
+            r#"{"input_tokens":42}"#
+        };
+        let responses = if provider == "openai-compatible" {
+            vec![(response, false)]
+        } else {
+            vec![(count, false), (response, false)]
+        };
+        let (model, rx, server) = fake_sequence(
             provider,
-            response,
-            false,
+            &responses,
             json!({"capabilities":{"imageInput":true}}),
         );
         let mut input = request();
         input.images = &images;
-        assert!(model.estimate_request(&input).unwrap().is_none());
+        let count = model.estimate_request(&input).unwrap();
+        if provider == "openai-compatible" {
+            assert!(count.is_none());
+        } else {
+            assert_eq!(count.unwrap().tokens, 42);
+            let (_, counted) = rx.recv().unwrap();
+            assert!(counted.to_string().contains("AQID"));
+        }
         assert_eq!(model.complete(&input).unwrap(), "answer");
         let (_, body) = rx.recv().unwrap();
         match provider {
@@ -419,4 +456,276 @@ fn gemini_missing_output_usage_is_unknown_instead_of_zero() {
         .is_none());
     rx.recv().unwrap();
     server.join().unwrap();
+}
+
+#[test]
+fn native_preflight_counts_the_same_context_as_inference_and_caches_only_identical_input() {
+    use atlas_agentic::{
+        conversations::{ConversationMessage, MemoryBlock, MessageRole},
+        tools::ToolDefinition,
+    };
+    for (provider, count_response, answer, path) in [
+        (
+            "openai",
+            r#"{"input_tokens":321}"#,
+            r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}"#,
+            "/responses/input_tokens",
+        ),
+        (
+            "anthropic",
+            r#"{"input_tokens":321}"#,
+            r#"{"content":[{"type":"text","text":"answer"}],"stop_reason":"end_turn"}"#,
+            "/messages/count_tokens",
+        ),
+        (
+            "gemini",
+            r#"{"totalTokens":321}"#,
+            r#"{"candidates":[{"content":{"parts":[{"text":"answer"}]},"finishReason":"STOP"}]}"#,
+            "/models/alias:countTokens",
+        ),
+    ] {
+        let (model, rx, server) = fake_sequence(
+            provider,
+            &[
+                (count_response, false),
+                (answer, false),
+                (count_response, false),
+            ],
+            json!({}),
+        );
+        let history = [ConversationMessage {
+            role: MessageRole::User,
+            content: "prior question".into(),
+            created_at: chrono::Utc::now(),
+        }];
+        let memory = [MemoryBlock {
+            start_index: 0,
+            end_index_exclusive: 2,
+            content: "verified memory".into(),
+        }];
+        let tools = [ToolDefinition {
+            name: "sample_tool".into(),
+            description: "tool description".into(),
+            input_schema: json!({"type":"object"}),
+        }];
+        let mut input = request();
+        input.history = &history;
+        input.memory_blocks = &memory;
+        input.tools = &tools;
+        input.activity_context = Some("prior tool evidence");
+        input.user_prompt = r#"{"type":"tool_results","result":"current tool evidence"}"#;
+        let count = model.estimate_request(&input).unwrap().unwrap();
+        assert_eq!(count.tokens, 321);
+        assert_eq!(count.estimated, provider == "anthropic");
+        assert_eq!(model.estimate_request(&input).unwrap().unwrap().tokens, 321);
+        model.complete(&input).unwrap();
+        let (headers, counted) = rx.recv().unwrap();
+        let (_, generated) = rx.recv().unwrap();
+        assert!(headers.starts_with(&format!("POST {path} ")), "{headers}");
+        match provider {
+            "openai" => {
+                assert!(headers
+                    .to_lowercase()
+                    .contains("authorization: bearer test-secret"));
+                assert_eq!(
+                    counted,
+                    json!({"model":generated["model"],"instructions":generated["instructions"],"input":generated["input"]})
+                );
+            }
+            "anthropic" => {
+                assert!(headers.to_lowercase().contains("x-api-key: test-secret"));
+                assert!(headers.to_lowercase().contains("anthropic-version:"));
+                assert_eq!(
+                    counted,
+                    json!({"model":generated["model"],"system":generated["system"],"messages":generated["messages"]})
+                );
+            }
+            _ => {
+                assert!(headers
+                    .to_lowercase()
+                    .contains("x-goog-api-key: test-secret"));
+                assert_eq!(
+                    counted["generateContentRequest"]["contents"],
+                    generated["contents"]
+                );
+                assert_eq!(
+                    counted["generateContentRequest"]["systemInstruction"],
+                    generated["systemInstruction"]
+                );
+                assert_eq!(counted["generateContentRequest"]["model"], "models/alias");
+            }
+        }
+        let rendered = counted.to_string();
+        for text in [
+            "prior question",
+            "verified memory",
+            "sample_tool",
+            "prior tool evidence",
+            "current tool evidence",
+        ] {
+            assert!(rendered.contains(text), "{rendered}");
+        }
+        input.user_prompt = "new event";
+        model.estimate_request(&input).unwrap().unwrap();
+        let (_, changed) = rx.recv().unwrap();
+        assert_ne!(counted, changed);
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn native_preflight_rejects_invalid_counts_without_echoing_provider_data() {
+    for provider in ["openai", "anthropic", "gemini"] {
+        for body in [
+            r#"{"error":{"message":"test-secret"}}"#,
+            r#"{"input_tokens":-1,"totalTokens":-1}"#,
+            r#"{"input_tokens":"test-secret","totalTokens":"test-secret"}"#,
+            r#"[]"#,
+        ] {
+            let (model, rx, server) = fake(provider, body, false);
+            let error = model
+                .estimate_request(&request())
+                .expect_err("invalid count must fail");
+            assert!(!error.contains("test-secret"));
+            rx.recv().unwrap();
+            server.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn native_preflight_can_be_cancelled_before_headers_or_during_silent_body() {
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::{Duration, Instant},
+    };
+    for headers in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            assert!(socket.read(&mut bytes).unwrap() > 0);
+            if headers {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                socket.flush().unwrap();
+            }
+            flag.store(true, Ordering::SeqCst);
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            // Transport cancellation must drop the connection without a detached worker.
+            loop {
+                match socket.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) => panic!("count transport stayed open: {error}"),
+                }
+            }
+        });
+        let mut settings = serde_json::to_value(AtlasSettings::default()).unwrap();
+        settings["selectedProvider"] = json!("openai");
+        settings["providers"] =
+            json!({"openai":{"apiKey":"test-secret","baseUrl":url,"model":"alias"}});
+        let settings: AtlasSettings = serde_json::from_value(settings).unwrap();
+        let definition = LocalAgentDefinition::from_toml("name='test'\ndisplay_name='Test'\nmodel_provider='openai'\nmodel='alias'\nsystem_prompt='System'\nconversation_title_prompt='Title'").unwrap();
+        let model = provider_from_definition_with_settings(
+            &definition,
+            &settings.resolve_with(|_| None).unwrap(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert!(model
+            .estimate_request_with_control(&request(), &|| cancelled.load(Ordering::SeqCst))
+            .unwrap_err()
+            .contains("interrupted"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn gemini_preflight_uses_output_reserve_without_a_second_count_request() {
+    use atlas_agentic::{
+        agents::{AgentRegistry, LocalAgent},
+        conversations::{ConversationService, ConversationStore},
+        Runtime,
+    };
+    let stream="data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}]},\"finishReason\":\"STOP\"}]}\n\n";
+    let (model, rx, server) = fake_sequence(
+        "gemini",
+        &[
+            (r#"{"models":[]}"#, false),
+            (r#"{"totalTokens":10}"#, false),
+            (stream, true),
+        ],
+        json!({"modelLimits":{"alias":{"contextWindow":100000,"maxOutputTokens":4096}}}),
+    );
+    model.list_models().unwrap();
+    rx.recv().unwrap();
+    let definition=LocalAgentDefinition::from_toml("name='test'\ndisplay_name='Test'\nmodel_provider='gemini'\nmodel='alias'\nsystem_prompt='assistant'\nconversation_title_prompt='title'\nconversation_summary_prompt='summary'\n[memory]\nenabled=true\noutput_reserve_tokens=123").unwrap();
+    let runtime = Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(
+        definition, model,
+    ))]));
+    let data = tempfile::tempdir().unwrap();
+    let store = ConversationStore::at(data.path().into());
+    let meta = store.create_turn("old", "answer").unwrap();
+    ConversationService::new(&runtime, &store, 40)
+        .ask("hello", Some(&meta.id), &mut |_| {})
+        .unwrap();
+    let (headers, counted) = rx.recv().unwrap();
+    assert!(headers.contains(":countTokens "));
+    let (headers, sent) = rx.recv().unwrap();
+    assert!(headers.contains(":streamGenerateContent?alt=sse "));
+    assert_eq!(
+        counted["generateContentRequest"]["generationConfig"]["maxOutputTokens"],
+        123
+    );
+    assert_eq!(sent["generationConfig"]["maxOutputTokens"], 123);
+    server.join().unwrap();
+}
+
+#[test]
+fn native_preflight_http_errors_are_sanitized_and_never_fall_back() {
+    for status in [404, 429, 500] {
+        let (model, rx, server) = fake_sequence_with_status(
+            "openai",
+            &[(r#"{"error":{"message":"test-secret"}}"#, false)],
+            json!({}),
+            status,
+        );
+        let error = model.estimate_request(&request()).unwrap_err();
+        assert!(error.contains(&format!("HTTP {status}")), "{error}");
+        assert!(!error.contains("test-secret"));
+        rx.recv().unwrap();
+        server.join().unwrap();
+    }
+}
+#[test]
+fn native_preflight_bounds_response_bytes_and_does_not_cache_failures() {
+    let oversized = " ".repeat(65537);
+    for invalid in ["not JSON", oversized.as_str()] {
+        let (model, rx, server) = fake_sequence(
+            "openai",
+            &[(invalid, false), (r#"{"input_tokens":42}"#, false)],
+            json!({}),
+        );
+        assert!(model.estimate_request(&request()).is_err());
+        assert_eq!(
+            model.estimate_request(&request()).unwrap().unwrap().tokens,
+            42
+        );
+        rx.recv().unwrap();
+        rx.recv().unwrap();
+        server.join().unwrap();
+    }
 }

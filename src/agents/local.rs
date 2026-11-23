@@ -67,22 +67,40 @@ impl Agent for LocalAgent {
     ) -> Result<Option<crate::models::TokenEstimate>, String> {
         self.model.estimate_request(&self.model_request(request))
     }
+    fn estimate_request_with_control(
+        &self,
+        request: &super::AgentRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        self.model
+            .estimate_request_with_control(&self.model_request(request), interrupted)
+    }
     fn estimate_summary(
         &self,
         request: &crate::models::SummaryRequest,
     ) -> Result<Option<crate::models::TokenEstimate>, String> {
-        self.model.estimate_request(&ModelRequest {
-            memory_blocks: &[],
-            max_output_tokens: Some(request.max_output_tokens),
-            system_prompt: request.system_prompt,
-            user_prompt: request.content,
-            history: &[],
-            activity_context: None,
-            tools: &[],
-            images: &[],
-            temperature: None,
-            top_p: None,
-        })
+        self.estimate_summary_with_control(request, &|| false)
+    }
+    fn estimate_summary_with_control(
+        &self,
+        request: &crate::models::SummaryRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        self.model.estimate_request_with_control(
+            &ModelRequest {
+                memory_blocks: &[],
+                max_output_tokens: Some(request.max_output_tokens),
+                system_prompt: request.system_prompt,
+                user_prompt: request.content,
+                history: &[],
+                activity_context: None,
+                tools: &[],
+                images: &[],
+                temperature: None,
+                top_p: None,
+            },
+            interrupted,
+        )
     }
     fn summarize(
         &self,

@@ -545,25 +545,39 @@ impl RuntimeContext for FrozenContext {
         request: ContextPreparationRequest<'_>,
         _: &mut dyn FnMut(&ToolEvent),
     ) -> Result<PreparedContext, String> {
-        let mut max_output_tokens = None;
-        if let Some(limits) = agent.model_limits()? {
+        self.prepare_with_control(agent, request, &mut |_| {}, &|| false)
+    }
+    fn prepare_with_control(
+        &mut self,
+        agent: &dyn crate::agents::Agent,
+        request: ContextPreparationRequest<'_>,
+        _: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<PreparedContext, String> {
+        let limits = agent.model_limits()?;
+        if let Some(limits) = limits {
             limits.validate()?;
-            let reserve = limits.max_output_tokens.min(self.output_limit);
-            let input = crate::agents::AgentRequest {
-                input: request.input,
-                history: &self.history,
-                memory_blocks: &self.memory_blocks,
-                tools: request.tools,
-                activity_context: Some(&self.activity_context),
-                images: request.images,
-                max_output_tokens: Some(reserve),
-            };
-            if let Some(estimate) = agent.estimate_request(&input)? {
-                if estimate.tokens.saturating_add(reserve) >= limits.context_window {
-                    return Err("Fork/task context exceeds child model capacity; choose task_only with a smaller task or a larger model".into());
-                }
+        }
+        let max_output_tokens =
+            limits.map(|limits| limits.max_output_tokens.min(self.output_limit));
+        let input = crate::agents::AgentRequest {
+            input: request.input,
+            history: &self.history,
+            memory_blocks: &self.memory_blocks,
+            tools: request.tools,
+            activity_context: Some(&self.activity_context),
+            images: request.images,
+            max_output_tokens,
+        };
+        let estimate = agent.estimate_request_with_control(&input, interrupted)?;
+        if let (Some(limits), Some(estimate)) = (limits, estimate) {
+            if estimate
+                .tokens
+                .saturating_add(max_output_tokens.unwrap_or_default())
+                >= limits.context_window
+            {
+                return Err("Fork/task context exceeds child model capacity; choose task_only with a smaller task or a larger model".into());
             }
-            max_output_tokens = Some(reserve);
         }
         Ok(PreparedContext {
             history: self.history.clone(),

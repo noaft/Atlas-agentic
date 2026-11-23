@@ -16,6 +16,7 @@ pub(crate) struct NativeProvider {
     pub config: EffectiveSettings,
     client: Client,
     metadata: OnceLock<Option<ModelInfo>>,
+    counts: super::token_counting::CountCache,
 }
 pub(crate) struct WireResponse {
     pub text: String,
@@ -51,6 +52,7 @@ impl NativeProvider {
             config,
             client: client(),
             metadata: OnceLock::new(),
+            counts: Default::default(),
         })
     }
     fn selected_metadata(&self, models: &[ModelInfo]) -> Option<ModelInfo> {
@@ -205,6 +207,25 @@ impl ModelProvider for NativeProvider {
         }))
     }
     fn estimate_request(&self, request: &ModelRequest) -> Result<Option<TokenEstimate>, String> {
+        self.estimate_request_with_control(request, &|| false)
+    }
+    fn estimate_request_with_control(
+        &self,
+        request: &ModelRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<TokenEstimate>, String> {
+        if interrupted() {
+            return Err("Token counting interrupted".into());
+        }
+        if matches!(
+            self.config.provider,
+            ProviderId::Openai | ProviderId::Anthropic | ProviderId::Gemini
+        ) {
+            return self
+                .counts
+                .count(&self.config, self.payload(request, false)?, interrupted)
+                .map(Some);
+        }
         if !request.images.is_empty() {
             return Ok(None);
         }

@@ -26,6 +26,7 @@ pub(crate) struct SummaryJob<'a> {
     pub requests: usize,
     pub cancelled: Option<&'a std::sync::atomic::AtomicBool>,
     pub usage: Vec<crate::models::ModelUsage>,
+    pub interrupted: &'a dyn Fn() -> bool,
 }
 impl SummaryJob<'_> {
     fn fits(&self, content: &str, output: u64) -> Result<bool, String> {
@@ -39,7 +40,12 @@ impl SummaryJob<'_> {
         };
         Ok(self
             .agent
-            .estimate_summary(&request)?
+            .estimate_summary_with_control(&request, &|| {
+                (self.interrupted)()
+                    || self
+                        .cancelled
+                        .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            })?
             .ok_or("Summary token budget is unavailable")?
             .tokens
             .saturating_add(output)
@@ -173,6 +179,7 @@ pub(crate) struct CompactionInput<'a> {
     pub estimated: bool,
     pub limits: ModelLimits,
     pub output_budget: u64,
+    pub interrupted: &'a dyn Fn() -> bool,
     pub cancelled: Option<&'a std::sync::atomic::AtomicBool>,
 }
 fn source_units(conversation: &Conversation, boundary: usize) -> Result<Vec<MemoryBlock>, String> {
@@ -287,6 +294,7 @@ pub(crate) fn compact(
         limits,
         output_budget,
         cancelled,
+        interrupted,
     } = input;
     let boundary = retained_start(&conversation.messages, policy.keep_recent_messages);
     let wanted = choose_block_count(trigger, occupancy);
@@ -314,6 +322,7 @@ pub(crate) fn compact(
         requests: 0,
         cancelled,
         usage: vec![],
+        interrupted,
     };
     let mut blocks = Vec::new();
     on_progress(CompactionProgress {

@@ -90,9 +90,12 @@ trash memory with history, and hold per-conversation execution leases for
 ask/compact/delete. Do not hold the global index lock during model calls.
 
 Prepare and budget-check context before every runtime model call, including tool
-continuations and repair calls; never replay tools during compaction. DeepSeek
-currently uses a conservative byte estimate, not an exact tokenizer; distinguish
-that from actual usage. Unknown model capacity or unsupported image accounting
+continuations and repair calls; never replay tools during compaction. Native
+OpenAI, Anthropic and Gemini use provider token-count APIs before inference;
+see [preflight token counting](model-providers.md#preflight-token-counting).
+DeepSeek and compatible endpoints use conservative byte estimates, not exact
+tokenizers; distinguish preflight counts/estimates from actual usage. Unknown
+model capacity or unsupported image accounting
 makes auto-compaction explicitly unavailable. Optional per-model context/output
 limits live in `conversation.modelLimits`; never infer capacities from model
 names. Known oversized requests fail without discarding the protected tail.

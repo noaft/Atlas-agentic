@@ -34,6 +34,19 @@ pub trait RuntimeContext {
         Ok(())
     }
 
+    fn prepare_with_control(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        events: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<PreparedContext, String> {
+        if interrupted() {
+            return Err("Context preparation interrupted".into());
+        }
+        self.prepare(agent, request, events)
+    }
+
     fn prepare(
         &mut self,
         agent: &dyn Agent,
@@ -60,6 +73,24 @@ impl RuntimeContext for CancellableContext<'_> {
         }
         self.inner.check_cancelled()
     }
+    fn prepare_with_control(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        events: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<PreparedContext, String> {
+        self.check_cancelled()?;
+        let cancelled = self.cancelled;
+        let prepared = self
+            .inner
+            .prepare_with_control(agent, request, events, &|| {
+                interrupted()
+                    || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            })?;
+        self.check_cancelled()?;
+        Ok(prepared)
+    }
     fn prepare(
         &mut self,
         agent: &dyn Agent,
@@ -73,6 +104,16 @@ impl RuntimeContext for CancellableContext<'_> {
     }
 }
 impl RuntimeContext for StaticContext<'_> {
+    fn prepare_with_control(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        events: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<PreparedContext, String> {
+        let prepared = self.prepare(agent, ContextPreparationRequest { ..request }, events)?;
+        preflight_snapshot(agent, &request, prepared, events, interrupted)
+    }
     fn prepare(
         &mut self,
         _: &dyn Agent,
@@ -87,6 +128,52 @@ impl RuntimeContext for StaticContext<'_> {
         })
     }
 }
+fn preflight_snapshot(
+    agent: &dyn Agent,
+    request: &ContextPreparationRequest<'_>,
+    mut prepared: PreparedContext,
+    events: &mut dyn FnMut(&ToolEvent),
+    interrupted: &dyn Fn() -> bool,
+) -> Result<PreparedContext, String> {
+    let limits = agent.model_limits()?;
+    if let Some(limits) = limits {
+        limits.validate()?;
+        prepared.max_output_tokens = Some(
+            agent
+                .memory_policy()
+                .cloned()
+                .unwrap_or_default()
+                .output_reserve_tokens
+                .min(limits.max_output_tokens),
+        );
+    }
+    let estimate =
+        agent.estimate_request_with_control(&agent_request(&prepared, request), interrupted)?;
+    if let Some(limits) = limits {
+        let reserve = prepared.max_output_tokens.unwrap_or_default();
+        if estimate.is_some_and(|e| e.tokens.saturating_add(reserve) >= limits.context_window) {
+            return Err(
+                "Request exceeds model context; reduce the input or choose a larger model".into(),
+            );
+        }
+    }
+    if estimate.is_some() {
+        let status = ContextStatus {
+            available: limits.is_some(),
+            message: if limits.is_some() {
+                "Context checked before inference; automatic compaction unavailable in bounded history mode"
+            } else {
+                "Model capacity unknown; configure model limits to check context fit"
+            }.into(),
+            estimated: estimate.is_some_and(|e| e.estimated),
+            input_tokens: estimate.map(|e| e.tokens),
+            max_tokens: limits.map(|l| l.context_window),
+        };
+        events(&ToolEvent::ContextStatus { status });
+    }
+    Ok(prepared)
+}
+
 pub(crate) struct SnapshotContext(pub PreparedContext);
 impl RuntimeContext for SnapshotContext {
     fn prepare(
@@ -142,6 +229,21 @@ impl ConversationContext<'_> {
         trigger: CompactionTrigger,
         events: &mut dyn FnMut(&ToolEvent),
     ) -> Result<CompactionResult, String> {
+        self.compact_with_control(agent, request, trigger, events, &|| false)
+    }
+    fn compact_with_control(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        trigger: CompactionTrigger,
+        events: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<CompactionResult, String> {
+        self.check_cancelled()?;
+        let cancelled = self.cancelled;
+        let interrupted = &|| {
+            interrupted() || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        };
         if let Some(conversation) = &self.conversation {
             let boundary = retained_start(&conversation.messages, self.policy.keep_recent_messages);
             let covered = conversation
@@ -161,7 +263,7 @@ impl ConversationContext<'_> {
         limits.validate()?;
         let prepared = self.prepared();
         let estimate = agent
-            .estimate_request(&agent_request(&prepared, &request))?
+            .estimate_request_with_control(&agent_request(&prepared, &request), interrupted)?
             .ok_or(
                 "Token budgeting unavailable for this input; compaction cannot be checked safely",
             )?;
@@ -200,7 +302,7 @@ impl ConversationContext<'_> {
             })
             .collect();
         let protected_tokens = agent
-            .estimate_request(&agent_request(&protected, &request))?
+            .estimate_request_with_control(&agent_request(&protected, &request), interrupted)?
             .ok_or("Protected context token budget unavailable")?
             .tokens;
         let reserve = self
@@ -227,6 +329,7 @@ impl ConversationContext<'_> {
                 agent,
                 policy: &self.policy,
                 cancelled: self.cancelled,
+                interrupted,
                 trigger,
                 occupancy: estimate.tokens as f64 / limits.context_window as f64 * 100.0,
                 estimated: estimate.estimated,
@@ -245,7 +348,7 @@ impl ConversationContext<'_> {
         candidate.memory = Some(memory.clone());
         let previous = self.conversation.replace(candidate);
         let next = self.prepared();
-        let fit = agent.estimate_request(&agent_request(&next, &request));
+        let fit = agent.estimate_request_with_control(&agent_request(&next, &request), interrupted);
         let reserved = self
             .policy
             .output_reserve_tokens
@@ -302,13 +405,37 @@ impl RuntimeContext for ConversationContext<'_> {
         request: ContextPreparationRequest<'_>,
         events: &mut dyn FnMut(&ToolEvent),
     ) -> Result<PreparedContext, String> {
-        let Some(limits) = agent.model_limits()? else {
-            events(&ToolEvent::ContextStatus { status:ContextStatus{available:false,message:"Automatic compaction unavailable: configure this model's context and output limits".into(),estimated:false,input_tokens:None,max_tokens:None} });
-            return Ok(self.prepared());
+        self.prepare_with_control(agent, request, events, &|| false)
+    }
+    fn prepare_with_control(
+        &mut self,
+        agent: &dyn Agent,
+        request: ContextPreparationRequest<'_>,
+        events: &mut dyn FnMut(&ToolEvent),
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<PreparedContext, String> {
+        let cancelled = self.cancelled;
+        let interrupted = &|| {
+            interrupted() || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let limits = agent.model_limits()?;
+        let mut prepared = self.prepared();
+        if let Some(limits) = limits {
+            limits.validate()?;
+            prepared.max_output_tokens = Some(
+                self.policy
+                    .output_reserve_tokens
+                    .min(limits.max_output_tokens),
+            );
+        }
+        let estimate = agent
+            .estimate_request_with_control(&agent_request(&prepared, &request), interrupted)?;
+        let Some(limits) = limits else {
+            events(&ToolEvent::ContextStatus { status:ContextStatus{available:false,message:"Automatic compaction unavailable: configure this model's context and output limits".into(),estimated:estimate.as_ref().is_some_and(|e|e.estimated),input_tokens:estimate.as_ref().map(|e|e.tokens),max_tokens:None} });
+            return Ok(prepared);
         };
         limits.validate()?;
-        let mut prepared = self.prepared();
-        let Some(estimate) = agent.estimate_request(&agent_request(&prepared, &request))? else {
+        let Some(estimate) = estimate else {
             events(&ToolEvent::ContextStatus { status:ContextStatus{available:false,message:"Automatic compaction unavailable: token accounting unsupported for this input".into(),estimated:false,input_tokens:None,max_tokens:Some(limits.context_window)} });
             return Ok(prepared);
         };
@@ -337,7 +464,7 @@ impl RuntimeContext for ConversationContext<'_> {
                 })
                 .is_some_and(|u| u.model == agent.model_name() && u.total_tokens >= threshold);
         if should_compact && self.conversation.is_some() {
-            self.compact(
+            self.compact_with_control(
                 agent,
                 ContextPreparationRequest {
                     input: request.input,
@@ -347,12 +474,13 @@ impl RuntimeContext for ConversationContext<'_> {
                 },
                 CompactionTrigger::Automatic,
                 events,
+                interrupted,
             )?;
             prepared = self.prepared();
         }
         prepared.max_output_tokens = Some(reserve);
         let next = agent
-            .estimate_request(&agent_request(&prepared, &request))?
+            .estimate_request_with_control(&agent_request(&prepared, &request), interrupted)?
             .ok_or("Token accounting became unavailable")?;
         if next.tokens.saturating_add(reserve) >= limits.context_window {
             return Err("Request exceeds model context; the latest messages and current input were preserved. Reduce the input or choose a larger model.".into());

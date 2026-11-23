@@ -43,6 +43,26 @@ pub trait Agent {
     ) -> Result<Option<crate::models::TokenEstimate>, String> {
         Ok(None)
     }
+    fn estimate_request_with_control(
+        &self,
+        request: &AgentRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        if interrupted() {
+            return Err("Token counting interrupted".into());
+        }
+        self.estimate_request(request)
+    }
+    fn estimate_summary_with_control(
+        &self,
+        request: &crate::models::SummaryRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<crate::models::TokenEstimate>, String> {
+        if interrupted() {
+            return Err("Token counting interrupted".into());
+        }
+        self.estimate_summary(request)
+    }
     fn summarize(
         &self,
         _request: &crate::models::SummaryRequest,

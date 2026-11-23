@@ -50,6 +50,42 @@ Legacy source-less readings remain readable but are not shown as attributed usag
 Input-only limits are separate from combined context limits; never add independent
 input/output maxima to invent combined capacity. Keep unknown capacities unknown.
 
+## Preflight token counting
+
+Before each chat inference, including tool/wakeup continuations and protocol repair,
+context preparation counts the current provider payload. Native OpenAI uses
+`POST /responses/input_tokens`, Anthropic uses `POST /messages/count_tokens`, and
+Gemini uses `POST /models/{model}:countTokens` with `generateContentRequest`.
+Count projections reuse inference payload builders: memory, selected history,
+system instructions, Atlas tool catalog, activity, current continuation/steering
+and images are included. Atlas tools remain runtime-protocol text, not native
+provider tools. OpenAI text-format configuration is forwarded when present.
+Anthropic counts remain marked estimated; count results are not billed chat usage.
+
+These count requests use the configured provider endpoint and credentials; no new
+service or tokenizer dependency is required. A single-entry in-memory cache stores
+only a SHA-256 payload digest and numeric result, never raw prompts or images.
+Changed input invalidates the cache. Count HTTP errors, malformed/missing counts,
+and oversized responses fail visibly before inference; there is no silent fallback
+for native providers. Requests have a 120-second timeout, a 64 KiB response bound,
+no redirects or automatic retries, and cooperative cancellation during send/body
+reads. Stop and steering interrupt preflight; steering recounts the updated input
+before starting inference without replaying tools.
+
+DeepSeek and custom OpenAI-compatible endpoints retain their explicitly estimated
+byte budgets; image accounting there remains unsupported. No count API is assumed
+for an arbitrary compatible endpoint. Counting still runs when model capacity is
+unknown, but cannot establish that the request fits until limits are configured.
+Known combined capacity reserves output before inference; counts cannot predict
+future generated output. Raw tool results retain existing bounded reads and are
+counted when included in the next request, not predicted before executing a tool.
+Provider count APIs are also used by existing summary-budget probes.
+
+Official API references: [OpenAI](https://developers.openai.com/api/docs/guides/token-counting),
+[Anthropic](https://platform.claude.com/docs/en/build-with-claude/token-counting),
+[Gemini](https://aistudio.google.com/api-reference/tokens/count-tokens),
+[DeepSeek offline counting](https://api-docs.deepseek.com/quick_start/token_usage/).
+
 ## Usage display
 
 Model discovery preserves optional provider-reported `contextWindow` and

@@ -48,6 +48,51 @@ pub(super) fn read_response(
         }
     })
 }
+/// Small JSON control requests share the inference cancellation contract.
+pub(super) fn read_json_response(
+    build: impl FnOnce(reqwest::Client) -> reqwest::RequestBuilder,
+    provider: &str,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<serde_json::Value, String> {
+    if interrupted() {
+        return Err("Token counting interrupted".into());
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "Could not initialize token counting transport")?;
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(120))
+            .build().map_err(|_| "Could not initialize token counting client")?;
+        let response = tokio::select! {
+            biased;
+            _ = cancelled(interrupted) => return Err("Token counting interrupted".into()),
+            result = build(client).send() => result.map_err(|_| format!("{provider} token count failed; check connection and endpoint"))?,
+        };
+        if !response.status().is_success() {
+            return Err(format!("{provider} token count returned HTTP {}", response.status()));
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = cancelled(interrupted) => return Err("Token counting interrupted".into()),
+                result = response.chunk() => result.map_err(|_| format!("{provider} token count could not be read"))?,
+            };
+            let Some(chunk) = chunk else { break };
+            if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
+                return Err(format!("{provider} token count response exceeds the size limit"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| format!("{provider} token count response was invalid"))
+    })
+}
+
 async fn cancelled(interrupted: &dyn Fn() -> bool) {
     while !interrupted() {
         tokio::time::sleep(Duration::from_millis(25)).await;

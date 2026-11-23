@@ -404,7 +404,7 @@ impl Runtime {
             });
             first_model_request = false;
             let mut final_stream = FinalContentStream::new(allow_plain_final);
-            let prepared = context.prepare(
+            let prepared = context.prepare_with_control(
                 agent,
                 context::ContextPreparationRequest {
                     input: &input,
@@ -413,7 +413,25 @@ impl Runtime {
                     latest_usage: latest_usage.as_ref(),
                 },
                 on_tool_event,
-            )?;
+                &|| {
+                    self.check_turn().is_err()
+                        || self
+                            .run_control
+                            .as_ref()
+                            .is_some_and(|control| control.check().is_err())
+                        || self
+                            .turn_control
+                            .as_ref()
+                            .is_some_and(|control| control.has_pending())
+                },
+            );
+            self.check_turn()?;
+            context.check_cancelled()?;
+            if self.drain_user_inputs(on_tool_event) {
+                protocol_repairs = 0;
+                continue;
+            }
+            let prepared = prepared?;
             if let Some(control) = &self.run_control {
                 control.check()?;
             }

@@ -8,6 +8,7 @@ mod openai;
 pub(crate) mod prompt;
 pub mod sse;
 mod streaming;
+mod token_counting;
 pub(crate) mod usage;
 pub use budget::{ModelLimits, TokenEstimate};
 pub mod deepseek;
@@ -73,6 +74,16 @@ pub trait ModelProvider {
     }
     fn estimate_request(&self, _request: &ModelRequest) -> Result<Option<TokenEstimate>, String> {
         Ok(None)
+    }
+    fn estimate_request_with_control(
+        &self,
+        request: &ModelRequest,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<Option<TokenEstimate>, String> {
+        if interrupted() {
+            return Err("Token counting interrupted".into());
+        }
+        self.estimate_request(request)
     }
     fn summarize(&self, _request: &SummaryRequest) -> Result<SummaryResponse, String> {
         Err("Model provider does not support compaction".into())
