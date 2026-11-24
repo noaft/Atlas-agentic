@@ -1,81 +1,139 @@
-use super::{io, ContextCursor, SessionEvent, SessionMetadata};
+use super::{
+    io, ContextCursor, SessionDocument, SessionDocumentRef, SessionEvent, SessionMetadata,
+};
 use crate::{conversations::ConversationId, observability::SessionConfig};
 use chrono::{DateTime, FixedOffset};
-use fs2::FileExt;
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File},
+    fs::File,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 struct State {
     metadata: SessionMetadata,
+    events: Vec<SessionEvent>,
     error: Option<String>,
 }
 #[derive(Clone)]
 pub struct SessionJournal {
-    directory: PathBuf,
+    path: PathBuf,
+    root: PathBuf,
     config: SessionConfig,
     state: Arc<Mutex<State>>,
     _lease: Arc<File>,
 }
 impl SessionJournal {
     pub(super) fn open(
-        directory: PathBuf,
+        root: PathBuf,
+        path: PathBuf,
         id: &ConversationId,
         first: DateTime<FixedOffset>,
         config: SessionConfig,
     ) -> Result<Self, String> {
-        let lease = io::options()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(directory.join("session.lock"))
-            .map_err(|_| "Could not open session lease")?;
-        lease
-            .try_lock_exclusive()
-            .map_err(|_| "Session is already running")?;
-        io::directory(&directory, Path::new("events"))?;
-        let path = directory.join("session.json");
-        let mut metadata: SessionMetadata = if path.exists() {
-            io::read(&path, config.max_event_bytes)?
+        let lease = super::store::session_lease(&root, id)?;
+        let legacy_path = path.with_extension("");
+        let legacy_lease = super::legacy::lease(&root, &legacy_path)?;
+        let legacy_document = legacy_lease
+            .as_ref()
+            .map(|_| {
+                let document = super::legacy::read(&legacy_path, &config, id, first)?;
+                validate(&document, &config, id, first)?;
+                Ok::<_, String>(document)
+            })
+            .transpose()?;
+        let document = if path
+            .try_exists()
+            .map_err(|_| "Could not inspect session JSON")?
+        {
+            io::read::<SessionDocument>(&path, config.max_session_bytes)?
+        } else if let Some(document) = legacy_document.as_ref() {
+            SessionDocument {
+                version: 2,
+                metadata: document.metadata.clone(),
+                events: document.events.clone(),
+            }
         } else {
-            SessionMetadata {
-                version: 1,
-                id: id.clone(),
-                first_sent_at: first,
-                last_sequence: 0,
-                active_turn: None,
-                last_finished_turn: None,
-                context_cursor: Default::default(),
+            SessionDocument {
+                version: 2,
+                metadata: SessionMetadata {
+                    version: 1,
+                    id: id.clone(),
+                    first_sent_at: first,
+                    last_sequence: 0,
+                    active_turn: None,
+                    last_finished_turn: None,
+                    context_cursor: Default::default(),
+                },
+                events: Vec::new(),
             }
         };
-        if metadata.version != 1 || metadata.id != *id || metadata.first_sent_at != first {
-            return Err("Session metadata does not match its identity".into());
+        if let Some(legacy) = legacy_document {
+            if !document.events.starts_with(&legacy.events) {
+                return Err(
+                    "Legacy session differs from its converted JSON; both copies retained".into(),
+                );
+            }
         }
-        let events = read_events(&directory, &config, id)?;
-        metadata.last_sequence = 0;
-        metadata.active_turn = None;
-        metadata.last_finished_turn = None;
-        metadata.context_cursor = Default::default();
-        for event in &events {
-            apply(&mut metadata, event)?;
-        }
-        io::write(&path, &metadata, config.sync_each_event)?;
+        let metadata = validate(&document, &config, id, first)?;
         let journal = Self {
-            directory,
+            path,
+            root,
             config,
             state: Arc::new(Mutex::new(State {
                 metadata,
+                events: document.events,
                 error: None,
             })),
             _lease: Arc::new(lease),
         };
+        {
+            let state = journal
+                .state
+                .lock()
+                .map_err(|_| "Session state unavailable")?;
+            journal.publish(&state.metadata, &state.events)?;
+        }
+        if legacy_lease.is_some() {
+            // Stage the old directory atomically so interruption during recursive
+            // cleanup cannot leave a half-deleted source blocking the new file.
+            let staging = io::directory(&journal.root, Path::new(".legacy"))?
+                .join(format!("{id}.{}.session", uuid::Uuid::new_v4()));
+            std::fs::rename(&legacy_path, &staging)
+                .map_err(|_| "Could not stage converted session journal")?;
+            drop(legacy_lease);
+            if std::fs::remove_dir_all(staging).is_err() {
+                crate::diagnostics::event(
+                    "WARN",
+                    "session.legacy_cleanup_failed",
+                    json!({"sessionId":id}),
+                );
+            }
+        }
         if let Some(turn) = journal.metadata()?.active_turn {
             journal.record(&turn,"turn_recovered",json!({"status":"interrupted","reason":"Previous writer exited before completing this turn"}))?;
         }
         Ok(journal)
+    }
+    fn publish(&self, metadata: &SessionMetadata, events: &[SessionEvent]) -> Result<(), String> {
+        let parent = self.path.parent().ok_or("Missing session directory")?;
+        let relative = parent
+            .strip_prefix(&self.root)
+            .map_err(|_| "Invalid session storage path")?;
+        io::directory(&self.root, relative)?;
+        let document = SessionDocumentRef {
+            version: 2,
+            metadata,
+            events,
+        };
+        if serde_json::to_vec_pretty(&document)
+            .map_err(|_| "Could not encode session JSON")?
+            .len()
+            .saturating_add(1)
+            > self.config.max_session_bytes
+        {
+            return Err("Session JSON exceeds configured size limit".into());
+        }
+        io::write(&self.path, &document, self.config.sync_each_event)
     }
     pub fn id(&self) -> ConversationId {
         self.state
@@ -85,8 +143,8 @@ impl SessionJournal {
             .id
             .clone()
     }
-    pub fn directory(&self) -> &Path {
-        &self.directory
+    pub fn path(&self) -> &Path {
+        &self.path
     }
     pub fn metadata(&self) -> Result<SessionMetadata, String> {
         Ok(self
@@ -142,7 +200,6 @@ impl SessionJournal {
             return Err(error.clone());
         }
         let result: Result<u64, String> = (|| {
-            io::directory(&self.directory, Path::new("events"))?;
             crate::diagnostics::redact_artifact(&mut data);
             redact_embedded(&mut data, 0);
             let truncated = bound(&mut data, self.config.max_text_chars);
@@ -166,21 +223,13 @@ impl SessionJournal {
             if bytes.len().saturating_add(1) > self.config.max_event_bytes {
                 return Err("Session event exceeds configured byte limit".into());
             }
-            let path = self
-                .directory
-                .join("events")
-                .join(format!("{sequence:020}.json"));
-            if path.exists() {
-                return Err("Session event sequence already exists".into());
-            }
             let mut candidate = state.metadata.clone();
             apply(&mut candidate, &event)?;
-            io::write(&path, &event, self.config.sync_each_event)?;
-            io::write(
-                &self.directory.join("session.json"),
-                &candidate,
-                self.config.sync_each_event,
-            )?;
+            state.events.push(event.clone());
+            if let Err(error) = self.publish(&candidate, &state.events) {
+                state.events.pop();
+                return Err(error);
+            }
             state.metadata = candidate;
             let _trace = crate::diagnostics::session_trace(&event.session_id.to_string(), turn);
             crate::diagnostics::event(
@@ -196,7 +245,15 @@ impl SessionJournal {
         result
     }
     pub fn events(&self) -> Result<Vec<SessionEvent>, String> {
-        read_events(&self.directory, &self.config, &self.id())
+        let metadata = self.metadata()?;
+        let document: SessionDocument = io::read(&self.path, self.config.max_session_bytes)?;
+        validate(
+            &document,
+            &self.config,
+            &metadata.id,
+            metadata.first_sent_at,
+        )?;
+        Ok(document.events)
     }
 }
 fn apply(metadata: &mut SessionMetadata, event: &SessionEvent) -> Result<(), String> {
@@ -240,32 +297,36 @@ fn apply(metadata: &mut SessionMetadata, event: &SessionEvent) -> Result<(), Str
     metadata.last_sequence = event.sequence;
     Ok(())
 }
-fn read_events(
-    directory: &Path,
+fn validate(
+    document: &SessionDocument,
     config: &SessionConfig,
     id: &ConversationId,
-) -> Result<Vec<SessionEvent>, String> {
-    let events_dir = io::directory(directory, Path::new("events"))?;
-    let mut paths = fs::read_dir(events_dir)
-        .map_err(|_| "Could not list session events")?
-        .map(|e| e.map(|e| e.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "Could not list session events")?;
-    paths.retain(|p| p.extension().is_some_and(|e| e == "json"));
-    paths.sort();
-    let mut events = Vec::new();
-    for (index, path) in paths.into_iter().enumerate() {
-        let sequence = index as u64 + 1;
-        if path.file_stem().and_then(|p| p.to_str()) != Some(&format!("{sequence:020}")) {
-            return Err("Session event files have missing or invalid sequences".into());
-        }
-        let event: SessionEvent = io::read(&path, config.max_event_bytes)?;
-        if event.version != 1 || event.session_id != *id || event.sequence != sequence {
-            return Err("Session event identity is invalid".into());
-        }
-        events.push(event);
+    first: DateTime<FixedOffset>,
+) -> Result<SessionMetadata, String> {
+    let mut metadata = document.metadata.clone();
+    if document.version != 2
+        || metadata.version != 1
+        || metadata.id != *id
+        || metadata.first_sent_at != first
+    {
+        return Err("Session metadata does not match its identity".into());
     }
-    Ok(events)
+    metadata.last_sequence = 0;
+    metadata.active_turn = None;
+    metadata.last_finished_turn = None;
+    metadata.context_cursor = Default::default();
+    for event in &document.events {
+        if serde_json::to_vec_pretty(event)
+            .map_err(|_| "Could not encode session event")?
+            .len()
+            .saturating_add(1)
+            > config.max_event_bytes
+        {
+            return Err("Session event exceeds configured byte limit".into());
+        }
+        apply(&mut metadata, event)?;
+    }
+    Ok(metadata)
 }
 fn bound(value: &mut Value, limit: usize) -> bool {
     match value {

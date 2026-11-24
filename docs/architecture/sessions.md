@@ -4,6 +4,8 @@ Implemented session tracing is separate from committed conversation history.
 `src/sessions/` owns journal storage, event recording and context provenance;
 `src/diagnostics.rs` owns technical logs. Neither layer executes or replays tools.
 
+The single-file layout below was approved on 2026-11-24 and is implemented.
+
 ## Identity and chronological storage
 
 The first submitted ask reaching `ConversationService` creates a durable session
@@ -21,13 +23,9 @@ Relative to the platform data root (`ATLAS_DATA_DIR` overrides it), defaults are
 sessions/
   index.json
   index.lock
+  .locks/<session-uuid>.lock
   YYYY/MM/DD/
-    HHMMSSffffff_<session-uuid>/
-      session.json
-      session.lock
-      events/
-        00000000000000000001.json
-        00000000000000000002.json
+    HHMMSSffffff_<session-uuid>.json
 logs/
   atlas.jsonl
 ```
@@ -37,9 +35,26 @@ latest continuation. Zero-padded time prefixes sort sessions chronologically;
 UUIDs disambiguate equal timestamps. The default clock is the operating system's
 local timezone; `utc` is configurable. The original timestamp and offset are
 persisted and never recalculated when opening the session on another day or after
-a timezone/configuration change. Each event is an independent JSON document,
-not an append to a JSON array. The versioned index locates existing sessions
-without searching the directory tree.
+a timezone/configuration change. Each session is one ordinary JSON document
+with a top-level `version: 2`, `metadata` object and ordered `events` array.
+The date directory contains session JSON files directly, with no per-session
+subdirectory or per-event files. The versioned index locates existing sessions
+without searching the directory tree. `SessionJournal::path()` returns the JSON
+file; `SessionStore::find()` returns that file, or an existing legacy journal
+folder until conversion.
+
+### Compatibility with earlier journals
+
+Explicitly opening an earlier `HHMMSSffffff_<session-uuid>/` journal validates
+its metadata and every numbered event under both its old lease and the new stable
+lease. Atlas publishes the complete JSON replacement before touching the source.
+It then atomically moves the old folder into root-level `.legacy/` staging and
+removes it. Interrupted or failed staging leaves both copies; on the next open,
+legacy events must be an exact prefix of the published JSON before cleanup can
+continue. Divergence or corruption fails visibly and retains both sources.
+Interrupted recursive cleanup can leave a private staging folder; it does not
+block subsequent opens or become a new journal. No inference or tools are replayed.
+Do not run old and new Atlas versions against the same data root concurrently.
 
 ## Durable steps and recovery
 
@@ -59,10 +74,14 @@ permissions. Child context selections use `child_context_prepared` and the froze
 originating cursor, so parallel child activity cannot move the session's root
 context cursor or accidentally reference a later root preparation.
 
-Write each event immediately, under an exclusive session lease, through a private
-temporary file and atomic publication. By default sync each event and metadata to
-disk. An unfinished temporary file is never an event. Opening a journal validates
-contiguous event filenames, record identities and schema, rebuilds sequence/cursor
+Write each event immediately by atomically replacing the complete JSON document
+through a private temporary file, updating metadata and events together. By default
+sync the file (and parent directory on Unix) to disk. This rewrites accumulated
+session data on each event; it trades write cost for one directly readable JSON.
+An unfinished temporary file is never a published session update. Stable exclusive
+leases under `.locks/` remain held across file replacements and archive rollback;
+cloned journal handles serialize updates through shared state. Opening validates
+contiguous event sequences, record identities and schema, rebuilds sequence/cursor
 from published events, and closes an unsealed prior writer with `turn_recovered`.
 This records an interrupted writer, not proof that a side effect failed. A child
 completion may be appended during cooperative cleanup after a failed parent turn;
@@ -79,9 +98,13 @@ journal may remain incomplete and is explicitly unconfirmed on later inspection.
 The journal is a trace, not the ordinary chat projection. Failed turns remain in
 the journal but do not enter User/Assistant history or future model instructions.
 Successful/stopped turns retain existing history/activity persistence semantics.
-Deleting a saved conversation moves its entire journal to `trash/<uuid>.session`
+Deleting a saved conversation moves its JSON file to `trash/<uuid>.session`
 alongside existing history/activity/memory recovery files, removes index aliases,
-and restores those files if index publication fails. No automatic restore exists.
+and restores those files if index publication fails. An unopened legacy journal
+is archived as its original folder. If both formats remain after interrupted
+conversion, deletion fails visibly until an explicit session open validates and
+finishes conversion, so neither trace is silently left behind. No automatic
+restore exists.
 Failed drafts remain inspectable in the journal even after their in-memory UI ends.
 
 ## Context provenance and cursor
@@ -93,7 +116,8 @@ conversation ID, original-message start, selected history length/fingerprint,
 memory checkpoint/ranges, bounded current input and its full SHA-256 digest,
 tool catalog names/digest, image count, model and output reserve.
 
-`session.json` stores a logical context cursor: `historyMessageStart`,
+The session document's `metadata.contextCursor` stores a logical context cursor:
+`historyMessageStart`,
 `checkpointId`, and `preparedEvent` identifying the latest published context
 selection. It is rebuilt from events, not an unchecked byte offset. This records
 which original history was selected, including bounded-history mode. Compaction
@@ -106,8 +130,13 @@ conversation metadata remains authoritative for workspace and permissions.
 Defaults live in `config/observability.toml`. `ATLAS_OBSERVABILITY_CONFIG` selects
 a complete replacement TOML file; reject invalid values and unknown fields.
 Session policy controls the relative directory, `local`/`utc` timezone, per-event
-sync, maximum index/event bytes, and per-field text bound. Reject an oversized
-index before publication, retaining the previous readable index. Text truncation
+sync, maximum index/event/whole-session bytes, and per-field text bound.
+`max_session_bytes` defaults to 64 MiB and must be at least `max_event_bytes`;
+complete replacement policy files must include this field. Reject oversized
+sessions and indexes before publication, retaining their previous readable files.
+A rejected session update latches the journal failure and blocks subsequent work;
+raising the limit allows a later explicit open, without replaying actions.
+Text truncation
 is explicit; registered credentials and sensitive structured/embedded JSON fields
 are redacted. Journal content remains private local session data.
 

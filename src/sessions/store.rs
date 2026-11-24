@@ -61,10 +61,15 @@ impl SessionStore {
             .sessions
             .get(&id.to_string())
             .unwrap_or(&first_sent_at);
-        let relative = PathBuf::from(first.format("%Y/%m/%d").to_string())
-            .join(format!("{}_{id}", first.format("%H%M%S%6f")));
-        let directory = io::directory(&root, &relative)?;
-        let journal = SessionJournal::open(directory, &id, first, self.config.clone())?;
+        let relative = relative_path(first, &id);
+        io::directory(&root, relative.parent().ok_or("Missing session directory")?)?;
+        let journal = SessionJournal::open(
+            root.clone(),
+            root.join(relative),
+            &id,
+            first,
+            self.config.clone(),
+        )?;
         index.sessions.insert(id.to_string(), first);
         if let Some(draft) = draft {
             index.drafts.insert(draft, id.to_string());
@@ -95,10 +100,20 @@ impl SessionStore {
         if index.version != 1 {
             return Err("Unsupported session index version".into());
         }
-        Ok(index.sessions.get(&id.to_string()).map(|first| {
-            root.join(first.format("%Y/%m/%d").to_string())
-                .join(format!("{}_{id}", first.format("%H%M%S%6f")))
-        }))
+        index
+            .sessions
+            .get(&id.to_string())
+            .map(|first| {
+                let path = root.join(relative_path(*first, id));
+                match std::fs::symlink_metadata(&path) {
+                    Ok(_) => Ok(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Ok(path.with_extension(""))
+                    }
+                    Err(_) => Err("Could not inspect session JSON".into()),
+                }
+            })
+            .transpose()
     }
 }
 
@@ -109,6 +124,7 @@ pub struct ArchivedSession {
     drafts: Vec<String>,
     original: PathBuf,
     archived: PathBuf,
+    _lease: std::fs::File,
 }
 impl ArchivedSession {
     pub fn restore(self) -> Result<(), String> {
@@ -151,17 +167,29 @@ impl SessionStore {
         let Some(first) = index.sessions.get(&id.to_string()).copied() else {
             return Ok(None);
         };
-        let relative = PathBuf::from(first.format("%Y/%m/%d").to_string())
-            .join(format!("{}_{id}", first.format("%H%M%S%6f")));
-        let original = io::directory(&root, &relative)?;
-        let lease = io::options()
-            .read(true)
-            .write(true)
-            .open(original.join("session.lock"))
-            .map_err(|_| "Could not open session archive lease")?;
-        lease
-            .try_lock_exclusive()
-            .map_err(|_| "Session is already running")?;
+        let _lease = session_lease(&root, id)?;
+        let file = root.join(relative_path(first, id));
+        io::directory(
+            &root,
+            relative_path(first, id)
+                .parent()
+                .ok_or("Missing session directory")?,
+        )?;
+        let original = match std::fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => file.clone(),
+            Ok(_) => return Err("Unsafe session JSON file".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => file.with_extension(""),
+            Err(_) => return Err("Could not inspect session JSON".into()),
+        };
+        let legacy_lease = super::legacy::lease(&root, &file.with_extension(""))?;
+        if original == file && legacy_lease.is_some() {
+            return Err(
+                "Session conversion cleanup is pending; open the session before archiving".into(),
+            );
+        }
+        if original.is_dir() && legacy_lease.is_none() {
+            return Err("Missing legacy session lease".into());
+        }
         let trash = io::directory(&self.root, Path::new("trash"))?;
         let archived = trash.join(format!("{id}.session"));
         if archived.exists() {
@@ -173,8 +201,8 @@ impl SessionStore {
             .filter(|(_, value)| **value == id.to_string())
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
-        drop(lease);
         std::fs::rename(&original, &archived).map_err(|_| "Could not archive session")?;
+        drop(legacy_lease);
         index.sessions.remove(&id.to_string());
         for key in &drafts {
             index.drafts.remove(key);
@@ -190,6 +218,7 @@ impl SessionStore {
             drafts,
             original,
             archived,
+            _lease,
         }))
     }
 }
@@ -204,4 +233,24 @@ fn index_lock(root: &Path) -> Result<std::fs::File, String> {
     lock.lock_exclusive()
         .map_err(|_| "Could not lock session index")?;
     Ok(lock)
+}
+
+fn relative_path(first: DateTime<FixedOffset>, id: &ConversationId) -> PathBuf {
+    PathBuf::from(first.format("%Y/%m/%d").to_string())
+        .join(format!("{}_{id}.json", first.format("%H%M%S%6f")))
+}
+
+pub(super) fn session_lease(root: &Path, id: &ConversationId) -> Result<std::fs::File, String> {
+    let locks = io::directory(root, Path::new(".locks"))?;
+    let lease = io::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(locks.join(format!("{id}.lock")))
+        .map_err(|_| "Could not open session lease")?;
+    lease
+        .try_lock_exclusive()
+        .map_err(|_| "Session is already running")?;
+    Ok(lease)
 }

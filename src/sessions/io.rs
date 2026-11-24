@@ -15,6 +15,11 @@ pub(super) fn options() -> OpenOptions {
 }
 pub(super) fn directory(root: &Path, relative: &Path) -> Result<std::path::PathBuf, String> {
     fs::create_dir_all(root).map_err(|_| "Could not create session data root")?;
+    let root_meta =
+        fs::symlink_metadata(root).map_err(|_| "Could not inspect session data root")?;
+    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+        return Err("Unsafe session data root".into());
+    }
     let mut path = root.to_path_buf();
     for component in relative.components() {
         let Component::Normal(part) = component else {
@@ -68,6 +73,14 @@ pub(super) fn read<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<T, 
     serde_json::from_slice(&bytes).map_err(|_| "Invalid session JSON or unsupported schema".into())
 }
 pub(super) fn write<T: Serialize>(path: &Path, value: &T, sync: bool) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err("Unsafe session JSON file".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Could not inspect session JSON".into()),
+    }
     let bytes = serde_json::to_vec_pretty(value).map_err(|_| "Could not encode session JSON")?;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {

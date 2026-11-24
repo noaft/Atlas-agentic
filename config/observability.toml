@@ -5,6 +5,7 @@ timezone = "local"
 sync_each_event = true
 max_index_bytes = 8388608
 max_event_bytes = 1048576
+max_session_bytes = 67108864
 max_text_chars = 32768
 
 [diagnostics]

@@ -15,6 +15,7 @@ pub struct SessionConfig {
     pub sync_each_event: bool,
     pub max_index_bytes: usize,
     pub max_event_bytes: usize,
+    pub max_session_bytes: usize,
     pub max_text_chars: usize,
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +74,7 @@ impl SessionConfig {
                 .any(|c| !matches!(c, Component::Normal(_)))
             || !["local", "utc"].contains(&self.timezone.as_str())
             || self.max_index_bytes < 1024
+            || self.max_session_bytes < self.max_event_bytes
             || self.max_event_bytes < 1024
             || self.max_text_chars == 0
             || self.max_text_chars > self.max_event_bytes / 4

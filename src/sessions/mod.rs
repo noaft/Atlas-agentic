@@ -2,6 +2,7 @@
 pub(crate) mod context;
 mod events;
 mod io;
+mod legacy;
 mod store;
 pub(crate) mod trace;
 mod writer;
@@ -30,7 +31,7 @@ pub struct SessionMetadata {
     pub last_finished_turn: Option<String>,
     pub context_cursor: ContextCursor,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionEvent {
     pub version: u32,
@@ -41,4 +42,19 @@ pub struct SessionEvent {
     pub kind: String,
     pub data: Value,
     pub truncated: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionDocument {
+    version: u32,
+    metadata: SessionMetadata,
+    events: Vec<SessionEvent>,
+}
+
+#[derive(Serialize)]
+struct SessionDocumentRef<'a> {
+    version: u32,
+    metadata: &'a SessionMetadata,
+    events: &'a [SessionEvent],
 }

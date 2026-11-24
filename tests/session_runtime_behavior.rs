@@ -80,7 +80,7 @@ fn failed_turn_keeps_live_steps_and_retry_reuses_session_without_replaying_histo
         )
         .unwrap();
     let id = journal.id();
-    let directory = journal.directory().to_owned();
+    let directory = journal.path().to_owned();
     let events = journal.events().unwrap();
     assert!(events.iter().any(|e| e.kind == "tool_call"));
     assert!(events
@@ -154,7 +154,7 @@ fn a_journal_write_failure_blocks_tool_execution() {
             chrono::Utc::now().fixed_offset(),
         )
         .unwrap();
-    let events_dir = seed.directory().join("events");
+    let events_dir = seed.path().to_owned();
     drop(seed);
     let result = ConversationService::new(&runtime, &store, 40)
         .with_session_key("disk-failure")
@@ -170,7 +170,7 @@ fn a_journal_write_failure_blocks_tool_execution() {
                     if matches!(event, ToolEvent::Requested { .. }) {
                         std::fs::rename(&events_dir, events_dir.with_file_name("old-events"))
                             .unwrap();
-                        std::fs::write(&events_dir, "blocked").unwrap();
+                        std::fs::create_dir(&events_dir).unwrap();
                     }
                 },
             },
@@ -195,7 +195,7 @@ fn committed_history_returns_metadata_with_warning_if_final_journal_writes_fail(
             chrono::Utc::now().fixed_offset(),
         )
         .unwrap();
-    let events = journal.directory().join("events");
+    let events = journal.path().to_owned();
     drop(journal);
     let changed = Arc::new(AtomicBool::new(false));
     let store = ConversationStore::at_with_index_publisher(
@@ -204,7 +204,7 @@ fn committed_history_returns_metadata_with_warning_if_final_journal_writes_fail(
             std::fs::rename(source, destination)?;
             if !changed.swap(true, Ordering::SeqCst) {
                 std::fs::rename(&events, events.with_file_name("old-events"))?;
-                std::fs::write(&events, "blocked")?;
+                std::fs::create_dir(&events)?;
             }
             Ok(())
         },
@@ -325,6 +325,5 @@ fn deleting_a_conversation_archives_its_session_and_rolls_both_back_on_index_fai
         .path()
         .join("trash")
         .join(format!("{}.session", result.metadata.id))
-        .join("session.json")
         .is_file());
 }

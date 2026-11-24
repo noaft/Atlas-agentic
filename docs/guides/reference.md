@@ -613,7 +613,8 @@ limits, CLI lifetime, cancellation semantics and report paging.
 
 ## Session journals and debug policy
 
-Submitted chats create dated JSON session journals under the data root, separate
+Submitted chats create one complete JSON file per session at
+`sessions/YYYY/MM/DD/HHMMSSffffff_<session-uuid>.json` under the data root, separate
 from committed chat history and rotating technical logs. See the
 [session and log contract](../architecture/sessions.md) for layout, recovery,
 context cursors and privacy. Defaults live in `config/observability.toml`;
