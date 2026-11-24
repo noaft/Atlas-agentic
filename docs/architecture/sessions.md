@@ -4,7 +4,8 @@ Implemented session tracing is separate from committed conversation history.
 `src/sessions/` owns journal storage, event recording and context provenance;
 `src/diagnostics.rs` owns technical logs. Neither layer executes or replays tools.
 
-The single-file layout below was approved on 2026-11-24 and is implemented.
+The single-file layout and completed-block recording below were approved on
+2026-11-24 and are implemented.
 
 ## Identity and chronological storage
 
@@ -59,25 +60,53 @@ Do not run old and new Atlas versions against the same data root concurrently.
 ## Durable steps and recovery
 
 Each record carries a schema version, session ID, turn ID, monotonic sequence,
-UTC timestamp, event kind, bounded data and truncation marker. Record turn start
-and outcome, descriptive turn workspace/permission/model context, streamed
-assistant deltas and authoritative final text, accepted supplemental inputs,
-progress, tool calls/approvals/start/results, execution wakeups, model-call start/end,
-usage, context counts/selections and protocol repair. Title generation has its own
-start/end markers; its usage is not chat usage. Preview events retain presence and
-length only, never transient preview text. Screenshots and image bytes are never
-persisted; context records include only their count. Native delegated workers, including direct `/agent-name` dispatch, append their
-model/tool events and streamed output to the same session with `agentRunId`;
+UTC timestamp, event kind, bounded data and truncation marker. Session output is
+recorded at completed block boundaries rather than for each streaming chunk:
+
+| Kind | Published content and boundary |
+| --- | --- |
+| `thinking` | One completed model call: call/model ID, output budget, `startedAt`, `durationMs`, outcome and available usage. |
+| `tool_call` | Complete tool request before authorization or execution; approval/start/denial records retain their existing boundaries. |
+| `tool_result` | Completed tool outcome and bounded evidence. |
+| `progress` | A complete, validated progress message associated with a tool request. |
+| `assistant` | Complete answer or sealed partial text with `status`: `succeeded`, `failed`, `stopped` or `superseded`. |
+
+`thinking` measures the entire provider call, including answer generation; it is
+phase metadata, not reasoning text or a measurement of reasoning alone. Its
+outcome describes provider completion, before tool-protocol validation. The
+runtime no longer publishes separate `model_call_started`/`model_call_finished`
+records or duplicate usage/display-status records. Transient progress previews
+and assistant deltas remain available to the UI but cause no session writes.
+Existing journals retain previously published delta/lifecycle/preview records.
+
+Assistant text is buffered in memory while streaming. Runtime return seals the
+block before chat-history persistence and title generation; no duplicate
+`assistant_final` is written after commit. A successful block alone does not
+prove chat history committed: `conversation_committed` records that boundary.
+Response resets seal the old visible text as `superseded` before resetting it;
+only the new answer can enter normal history. Transport/sink failures seal the
+accepted partial text as `failed` without committing a chat turn. Explicit Stop
+uses the authoritative native display cursor and records `stopped`, including
+an empty answer. A hard process exit may lose in-flight buffered text; completed
+blocks remain durable and unfinished turns follow interruption recovery below.
+
+Retain turn start/outcome/context, accepted supplemental inputs, execution
+wakeups, context selection/cursors and child lifecycle records. Title generation
+has its own start/end markers; its usage is not chat usage. Screenshots and image
+bytes are never persisted; context records include only their count. Native
+delegated workers, including direct `/agent-name` dispatch, append completed
+model/tool/assistant blocks to the same session with `agentRunId`;
 child lifecycle records also identify nested parent runs. The native journal
 handle is carried explicitly into each worker, without granting a tool or changing
 permissions. Child context selections use `child_context_prepared` and the frozen
 originating cursor, so parallel child activity cannot move the session's root
 context cursor or accidentally reference a later root preparation.
 
-Write each event immediately by atomically replacing the complete JSON document
+Publish each completed block or durable lifecycle event immediately by atomically
+replacing the complete JSON document
 through a private temporary file, updating metadata and events together. By default
 sync the file (and parent directory on Unix) to disk. This rewrites accumulated
-session data on each event; it trades write cost for one directly readable JSON.
+session data at those boundaries; streaming chunks do not trigger replacement.
 An unfinished temporary file is never a published session update. Stable exclusive
 leases under `.locks/` remain held across file replacements and archive rollback;
 cloned journal handles serialize updates through shared state. Opening validates

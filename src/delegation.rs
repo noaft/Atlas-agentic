@@ -380,7 +380,16 @@ impl Delegation {
                     control.set_model(&settings.model);
                     let authorizer = RunAuthorizer(control.clone());
                     let mut last_progress: Option<String> = None;
+                    let displayed_answer = std::cell::RefCell::new(String::new());
                     let mut events = |event: &ToolEvent| {
+                        if matches!(event, ToolEvent::ResponseReset) && !control.cancelled() {
+                            let content = displayed_answer.take();
+                            if !content.is_empty() {
+                                if let Some(trace) = &trace {
+                                    let _ = trace.record("assistant", serde_json::json!({"content":content,"status":"superseded"}));
+                                }
+                            }
+                        }
                         if let Some(trace) = &trace {
                             let _ = trace.event(event);
                         }
@@ -417,16 +426,26 @@ impl Delegation {
                         RuntimeAskCallbacks {
                             authorizer: &authorizer,
                             on_delta: &mut |content| {
-                                if let Some(trace) = &trace {
-                                    let _ = trace.record(
-                                        "child_assistant_delta",
-                                        serde_json::json!({"content":content}),
-                                    );
+                                if !control.cancelled() {
+                                    displayed_answer.borrow_mut().push_str(content);
                                 }
                             },
                             on_tool_event: &mut events,
                         },
                     );
+                    let stopped = control.cancelled();
+                    let content = if stopped {
+                        displayed_answer.into_inner()
+                    } else {
+                        output.as_ref().cloned().unwrap_or_else(|_| displayed_answer.into_inner())
+                    };
+                    if let Some(trace) = &trace {
+                        if trace.active() && (!content.is_empty() || output.is_ok() || stopped) {
+                            trace.record("assistant", serde_json::json!({"content":content,
+                                "status":if stopped {"stopped"} else if output.is_ok() {"succeeded"} else {"failed"}
+                            }))?;
+                        }
+                    }
                     control.check()?;
                     // Provider/transport errors are already sanitized at their boundary; no response body is retained.
                     AgentResult::parse(&output?)
@@ -1273,10 +1292,21 @@ mod integration_tests {
         let events = journal.events().unwrap();
         assert!(events
             .iter()
-            .any(|e| e.kind == "model_call_started" && e.data["agentRunId"] == runs[0].run_id));
+            .any(|e| e.kind == "thinking" && e.data["agentRunId"] == runs[0].run_id));
         assert!(events
             .iter()
             .any(|e| e.kind == "child_context_prepared" && e.data["agentRunId"] == runs[0].run_id));
+        let child_answers = events
+            .iter()
+            .filter(|e| e.kind == "assistant" && e.data["agentRunId"] == runs[0].run_id)
+            .collect::<Vec<_>>();
+        assert_eq!(child_answers.len(), 1);
+        assert!(child_answers[0].data["content"]
+            .as_str()
+            .unwrap()
+            .contains("Checked"));
+        assert_eq!(child_answers[0].data["status"], "succeeded");
+        assert!(!events.iter().any(|e| e.kind == "child_assistant_delta"));
         assert!(events.iter().any(|e| e.kind == "child_run_finished"));
         let cursor = journal.metadata().unwrap().context_cursor;
         assert_eq!(
@@ -1297,6 +1327,87 @@ mod integration_tests {
             "direct dispatch must not consume parent responses"
         );
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn child_output_blocks_preserve_transport_failure_and_protocol_reset() {
+        struct ScriptedChild(Mutex<Vec<(String, bool)>>);
+        impl ModelProvider for ScriptedChild {
+            fn complete(&self, _: &ModelRequest) -> Result<String, String> {
+                unreachable!()
+            }
+            fn stream(
+                &self,
+                _: &ModelRequest,
+                delta: &mut dyn FnMut(&str),
+            ) -> Result<String, String> {
+                let (text, fail) = self.0.lock().unwrap().remove(0);
+                for ch in text.chars() {
+                    delta(&ch.to_string());
+                }
+                if fail {
+                    Err("fake child transport failure".into())
+                } else {
+                    Ok(text)
+                }
+            }
+        }
+        for fails in [true, false] {
+            let (dir, mut runtime, manager, _) = setup("fork", "parallel", vec![]);
+            let delegation = runtime.delegation.take().unwrap().with_factory(Arc::new(move |_, definition, _, _| {
+                let partial = if fails { r#"{"type":"final","content":"partial"# } else { r#"{"type":"final","content":"stale","broken":"# };
+                let mut replies = vec![(partial.to_owned(), fails)];
+                if !fails {
+                    replies.push((final_reply(&serde_json::json!({"outcome":"done","summary":"Checked","work_done":[],"findings":[],"artifacts":[],"verification":[],"remaining":[]}).to_string()), false));
+                }
+                Ok(Runtime::new(AgentRegistry::new(vec![Box::new(LocalAgent::new(definition, Box::new(ScriptedChild(Mutex::new(replies)))))])))
+            }));
+            let runtime = runtime
+                .with_delegation(delegation)
+                .with_direct_agent_command("/reviewer inspect")
+                .unwrap();
+            let store = crate::conversations::ConversationStore::at(dir.path().join("data"));
+            let result = crate::conversations::ConversationService::new(&runtime, &store, 40)
+                .with_session_key("child-block-test")
+                .ask("/reviewer inspect", None, &mut |_| {});
+            assert_eq!(result.is_err(), fails);
+            assert_eq!(store.list().unwrap().is_empty(), fails);
+            let journals = crate::sessions::SessionStore::new(
+                store.data_root(),
+                crate::observability::ObservabilityConfig::default().session,
+            )
+            .unwrap();
+            let journal = journals
+                .open(
+                    None,
+                    Some("child-block-test"),
+                    chrono::Utc::now().fixed_offset(),
+                )
+                .unwrap();
+            let runs = manager.list("test-chat").unwrap();
+            let events = journal.events().unwrap();
+            let answers = events
+                .iter()
+                .filter(|e| e.kind == "assistant" && e.data["agentRunId"] == runs[0].run_id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                answers[0].data["content"],
+                if fails { "partial" } else { "stale" }
+            );
+            assert_eq!(
+                answers[0].data["status"],
+                if fails { "failed" } else { "superseded" }
+            );
+            assert_eq!(answers.len(), if fails { 1 } else { 2 });
+            if !fails {
+                assert_eq!(answers[1].data["status"], "succeeded");
+                assert!(answers[1].data["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Checked"));
+            }
+            assert!(!events.iter().any(|e| e.kind == "child_assistant_delta"));
+        }
     }
 
     #[test]
@@ -1410,6 +1521,27 @@ mod integration_tests {
         assert_eq!(saved.messages.len(), 2);
         assert!(saved.messages[1].content.is_empty());
         assert!(saved.activities[0].interrupted);
+        let journals = crate::sessions::SessionStore::new(
+            history.path(),
+            crate::observability::ObservabilityConfig::default().session,
+        )
+        .unwrap();
+        let journal = journals
+            .open(
+                Some(&stopped.metadata.id),
+                None,
+                chrono::Utc::now().fixed_offset(),
+            )
+            .unwrap();
+        let events = journal.events().unwrap();
+        let child_answers = events
+            .iter()
+            .filter(|e| e.kind == "assistant" && e.data["agentRunId"].is_string())
+            .collect::<Vec<_>>();
+        assert_eq!(child_answers.len(), 1);
+        assert_eq!(child_answers[0].data["status"], "stopped");
+        assert_eq!(child_answers[0].data["content"], "");
+        assert!(!events.iter().any(|e| e.kind == "child_assistant_delta"));
         assert!(
             still_running,
             "must wait for child exit before completing Stop"

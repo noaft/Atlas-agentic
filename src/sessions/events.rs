@@ -13,18 +13,17 @@ impl SessionJournal {
     ) -> Result<(), String> {
         let kind = match event {
             ToolEvent::RequestStarted { .. } => "request_started",
-            ToolEvent::ModelState { .. } => "model_state",
+            // Transient display state and streaming previews are not completed blocks.
+            // Model usage is already included in the completed thinking block.
+            ToolEvent::ModelState { .. }
+            | ToolEvent::ProgressPreview { .. }
+            | ToolEvent::Status { .. }
+            | ToolEvent::Usage { .. } => return Ok(()),
             ToolEvent::UserInputAccepted { .. } => "user_input_accepted",
-            ToolEvent::ProgressPreview { message } => {
-                self.record(turn,"progress_preview",json!({"present":message.is_some(),"characters":message.as_ref().map_or(0,|s|s.chars().count()),"agentRunId":run}))?;
-                return Ok(());
-            }
             ToolEvent::Progress { .. } => "progress",
             ToolEvent::ResponseReset => "response_reset",
             ToolEvent::Compaction { .. } => "compaction_progress",
             ToolEvent::ContextStatus { .. } => "context_status",
-            ToolEvent::Usage { .. } => "model_usage",
-            ToolEvent::Status { .. } => "runtime_status",
             ToolEvent::Requested { .. } => "tool_call",
             ToolEvent::ApprovalRequested { .. } => "approval_requested",
             ToolEvent::Denied { .. } => "tool_denied",

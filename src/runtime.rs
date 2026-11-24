@@ -449,7 +449,8 @@ impl Runtime {
                 continue;
             }
             let call_id = uuid::Uuid::new_v4().to_string();
-            context.record_step("model_call_started",serde_json::json!({"callId":call_id,"model":agent.model_name(),"maxOutputTokens":prepared.max_output_tokens}))?;
+            let model_started_at = chrono::Utc::now();
+            let model_started = std::time::Instant::now();
             if self.turn_control.is_some() {
                 on_tool_event(&ToolEvent::ModelState { generating: true });
             }
@@ -487,7 +488,18 @@ impl Runtime {
                             .is_some_and(|control| control.has_pending())
                 },
             );
-            context.record_step("model_call_finished",serde_json::json!({"callId":call_id,"model":agent.model_name(),"status":if response_result.is_ok(){"succeeded"}else{"failed"},"usage":response_result.as_ref().ok().and_then(|r|r.usage.as_ref())}))?;
+            let model_stopped = self.user_stop_requested()
+                || self
+                    .run_control
+                    .as_ref()
+                    .is_some_and(|control| control.cancelled());
+            context.record_step("thinking", serde_json::json!({
+                "callId":call_id,"model":agent.model_name(),"maxOutputTokens":prepared.max_output_tokens,
+                "startedAt":model_started_at,
+                "durationMs":u64::try_from(model_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "status":if model_stopped {"stopped"} else if response_result.is_ok(){"succeeded"}else{"failed"},
+                "usage":response_result.as_ref().ok().and_then(|r|r.usage.as_ref())
+            }))?;
             // A preview is never a committed progress record. Clear it on every exit,
             // including provider errors, repair limits, denied calls and validation errors.
             if self.turn_control.is_some() {

@@ -36,8 +36,10 @@ history stores the original User, ordered applied supplemental Users, and final
 Assistant atomically. Explicit user Stop additionally saves the authoritative
 displayed partial answer with an interrupted Activity marker and skips title
 inference. Generic failure, channel loss, and scope teardown still save no committed turn.
-The separate [session journal](sessions.md) records live steps and failed attempts
-from the first submitted ask; it never makes failed output part of future context.
+The separate [session journal](sessions.md) records completed thinking/tool/answer
+blocks and failed attempts from the first submitted ask. Streaming chunks stay
+in memory until completion, failure, Stop or response reset. Failed and superseded
+output never becomes ordinary history or future model context.
 See [Live chat input](live-chat-input.md).
 
 ## Progress messages

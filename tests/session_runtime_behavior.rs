@@ -111,17 +111,11 @@ fn failed_turn_keeps_live_steps_and_retry_reuses_session_without_replaying_histo
         events.iter().filter(|e| e.kind == "turn_started").count(),
         2
     );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.kind == "model_call_started")
-            .count(),
-        4
-    );
+    assert_eq!(events.iter().filter(|e| e.kind == "thinking").count(), 4);
     assert_eq!(events.last().unwrap().data["status"], "succeeded");
 }
 #[test]
-fn streamed_content_is_written_to_disk_before_turn_finishes() {
+fn journal_is_created_before_streaming_begins() {
     let data = tempfile::tempdir().unwrap();
     let store = ConversationStore::at(data.path().into());
     let runtime = runtime(false, Rc::new(Cell::new(0)));

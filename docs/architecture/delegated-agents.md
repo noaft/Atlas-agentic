@@ -152,8 +152,11 @@ ID to existing delegation, while their ambiguous slash commands are disabled.
 ## Session trace ownership
 
 When a parent request has a [session journal](sessions.md), native delegated workers
-inherit its journal handle and turn identity. Record child model/tool lifecycle,
-counts, wakeups and output with `agentRunId`, preserving nested parent linkage.
+inherit its journal handle and turn identity. Record completed child thinking,
+tool and assistant blocks, lifecycle, counts and wakeups with `agentRunId`,
+preserving nested parent linkage. Child output is buffered during streaming;
+normal completion, failure, cancellation and reset seal a bounded answer block
+while the parent turn is active. No per-delta child output is persisted.
 Freeze context provenance on the spawning thread alongside the child snapshot;
 child preparation never overwrites the root session cursor. This native tracing
 capability does not add tools, restore permissions or authorize action replay.

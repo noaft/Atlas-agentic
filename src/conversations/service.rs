@@ -361,6 +361,18 @@ impl<'a> ConversationService<'a> {
         let mut latest_usage = None;
         let displayed_answer = std::cell::RefCell::new(String::new());
         let mut capture_event = |event: &ToolEvent| {
+            if matches!(event, ToolEvent::ResponseReset) {
+                let content = displayed_answer.borrow();
+                if !content.is_empty() {
+                    let _ = journal.record(
+                        turn,
+                        "assistant",
+                        serde_json::json!({
+                            "content":&*content,"status":"superseded"
+                        }),
+                    );
+                }
+            }
             let _ = journal.record_runtime_event(turn, event);
             match event {
                 ToolEvent::Progress { message } => collector.progress(message),
@@ -438,11 +450,6 @@ impl<'a> ConversationService<'a> {
                     if sink_error.is_none() {
                         sink_error = (callbacks.on_delta)(delta).err();
                         if sink_error.is_none() {
-                            let _ = journal.record(
-                                turn,
-                                "assistant_delta",
-                                serde_json::json!({"content":delta}),
-                            );
                             self.runtime.record_displayed_delta(delta);
                             displayed_answer.borrow_mut().push_str(delta);
                         }
@@ -451,21 +458,43 @@ impl<'a> ConversationService<'a> {
                 on_tool_event: &mut capture_event,
             },
         );
-        journal.check()?;
-        if let Some(error) = sink_error {
-            return Err(error);
-        }
         let interrupted = self.runtime.user_stop_requested()
             && self
                 .cancelled
                 .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Relaxed));
-        let answer = if interrupted {
+        let content = if interrupted {
             self.runtime
                 .stopped_prefix()?
-                .unwrap_or_else(|| displayed_answer.into_inner())
+                .unwrap_or_else(|| displayed_answer.borrow().clone())
+        } else if sink_error.is_none() {
+            answer
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|_| displayed_answer.borrow().clone())
         } else {
-            answer?
+            displayed_answer.borrow().clone()
         };
+        let status = if sink_error.is_some() {
+            "failed"
+        } else if interrupted {
+            "stopped"
+        } else if answer.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        if !content.is_empty() || interrupted || (answer.is_ok() && sink_error.is_none()) {
+            journal.record(
+                turn,
+                "assistant",
+                serde_json::json!({"content":content,"status":status}),
+            )?;
+        }
+        journal.check()?;
+        if let Some(error) = sink_error {
+            return Err(error);
+        }
+        let answer = if interrupted { content } else { answer? };
         let additional_inputs = self.runtime.applied_user_inputs();
         let activity_duration_ms =
             u64::try_from(activity_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -526,11 +555,6 @@ impl<'a> ConversationService<'a> {
 
         let finalized = (|| {
             journal.record(turn,"conversation_committed",serde_json::json!({"conversationId":metadata.id,"messageCount":metadata.message_count}))?;
-            journal.record(
-                turn,
-                "assistant_final",
-                serde_json::json!({"content":answer,"interrupted":interrupted}),
-            )?;
             Ok::<(), String>(())
         })();
         if let Err(error) = finalized {
